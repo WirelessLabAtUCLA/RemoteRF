@@ -119,7 +119,20 @@ def test_gps_reopens_its_port_after_a_replug_and_marks_old_data_stale(gps, monke
         dev.close()
     assert len(port.opened) == 2 and {handle.port for handle in port.opened} == {path}
     assert all(handle.closed for handle in port.opened)
-    assert gps.GpsSchema.driver_version == "0.1.2"
+    assert gps.GpsSchema.driver_version == "0.1.3"
+
+
+def test_gps_auto_detect_takes_any_u_blox_but_no_other_serial_port(gps, monkeypatch):
+    def port(device, vid, description, manufacturer=None):
+        return types.SimpleNamespace(device=device, vid=vid, description=description, manufacturer=manufacturer, product=None)
+
+    ports = [port("/dev/ttyUSB0", 0x0403, "FT230X Basic UART", "FTDI"), port("/dev/ttyACM0", 0x0451, "XDS110 Class Application/User UART")]
+    monkeypatch.setattr(gps.serial.tools.list_ports, "comports", lambda: list(ports))
+    assert gps.find_gps_port() is None
+    ports.append(port("/dev/ttyACM1", 0x1546, "n/a"))  # u-blox 8 without a product string
+    assert gps.find_gps_port() == "/dev/ttyACM1"
+    ports[-1] = port("/dev/ttyUSB1", 0x067B, "USB-Serial Controller", "GlobalSat GPS")
+    assert gps.find_gps_port() == "/dev/ttyUSB1"
 
 
 # -- Bluetooth --------------------------------------------------------------
@@ -191,11 +204,12 @@ def sysfs(bt, tmp_path, monkeypatch):
     monkeypatch.setattr(FakeBus, "adapters", {})
     monkeypatch.setattr(FakeBus, "calls", [])
 
-    def plug(name, vendor, product, product_name):
+    def plug(name, vendor, product, product_name, removable=None):
         usb = tmp_path / "devices" / f"usb-{name}"
         (usb / "bluetooth" / name).mkdir(parents=True)
-        for key, value in (("idVendor", vendor), ("idProduct", product), ("product", product_name)):
-            (usb / key).write_text(value + "\n")
+        for key, value in (("idVendor", vendor), ("idProduct", product), ("product", product_name), ("removable", removable)):
+            if value is not None:  # no idVendor: a UART adapter, like a Pi's
+                (usb / key).write_text(value + "\n")
         (base / name).symlink_to(usb / "bluetooth" / name)
         FakeBus.adapters[name] = {"Powered": True, "Discovering": False}
 
@@ -215,7 +229,26 @@ def test_auto_detect_never_falls_back_to_another_adapter(bt, sysfs):
     plug("hci1", "0a12", "0001", "CSR8510 A10")
     dev = bt.BluetoothSchema.make_device()
     assert (dev.adapter_name, dev.is_zexmte, dev.bd_address) == ("hci1", True, "00:11:22:33:44:55")
-    assert bt.BluetoothSchema.driver_version == "0.1.2"
+    assert bt.BluetoothSchema.driver_version == "0.1.3"
+
+
+def test_auto_detect_takes_any_usb_dongle_but_no_built_in_adapter(bt, sysfs):
+    plug, unplug = sysfs
+    plug("hci0", None, None, None)  # UART
+    plug("hci1", "0bda", "b00c", "Bluetooth Radio", "fixed")  # laptop combo card
+    plug("hci2", "8087", "0033", "", "unknown")
+    assert bt.BluetoothSchema.make_device() is None
+    plug("hci3", "0bda", "8771", "Bluetooth Radio", "unknown")  # RTL8761B dongle behind a hub
+    dev = bt.BluetoothSchema.make_device()
+    assert (dev.adapter_name, dev.is_zexmte, dev.usb_vendor) == ("hci3", False, "0bda")
+    plug("hci4", "0a12", "0001", "CSR8510 A10", "removable")
+    assert bt.BluetoothSchema.make_device().adapter_name == "hci4"
+    unplug("hci4")
+    unplug("hci3")
+    plug("hci5", "0bda", "8771", "Bluetooth Radio", "removable")
+    FakeBus.calls.clear()
+    assert bt._run_coroutine_sync(dev.get_powered_async) is True
+    assert dev.adapter_name == "hci5"
 
 
 def test_a_renumbered_csr_is_found_again_when_bluez_forgets_it(bt, sysfs):

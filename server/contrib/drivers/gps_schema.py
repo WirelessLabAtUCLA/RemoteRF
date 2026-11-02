@@ -1,6 +1,6 @@
 # Copyright (C) 2026 RemoteRF
 #
-# RemoteRF Device Schema for USB GPS Receivers (u-blox 7 / VFAN UG-353 / NMEA-0183).
+# RemoteRF Device Schema for USB GPS Receivers (any NMEA-0183 serial receiver; auto-detects u-blox).
 # Generated for RemoteRF custom device architecture.
 #
 # Server schema file: place or symlink into ~/.config/remoterf/drivers/
@@ -25,19 +25,14 @@ def find_gps_port() -> Optional[str]:
     """Auto-detect the GPS receiver serial port on the host system."""
     ports = list(serial.tools.list_ports.comports())
 
-    # 1. Match known u-blox 7 / VFAN UG-353 hardware IDs and descriptions
+    # Any u-blox (1546:*), or a port that names itself a GPS. No guessing among
+    # other serial ports: they are radars, mmWave boards and the like, and opening
+    # one resets its baud under its own driver. A GPS behind a generic USB-serial
+    # chip (PL2303, CP210x, CH340) needs `port:` in devices.yml.
     for p in ports:
-        desc = (p.description or "").lower()
-        hwid = (p.hwid or "").lower()
-        if "1546:01a7" in hwid or "u-blox" in desc or "gps" in desc or "gnss" in desc:
+        text = " ".join(filter(None, (p.description, p.manufacturer, p.product))).lower()
+        if p.vid == 0x1546 or any(k in text for k in ("u-blox", "gps", "gnss")):
             return p.device
-
-    # 2. Fallback to /dev/ttyACM* or /dev/ttyUSB* (skipping SDRs like Pluto)
-    for p in ports:
-        if "ttyACM" in p.device or "ttyUSB" in p.device:
-            desc = (p.description or "").lower()
-            if "sdr" not in desc and "adalm" not in desc:
-                return p.device
 
     return None
 
@@ -304,7 +299,7 @@ class GpsSchema(DeviceSchema):
 
     device_type = "gps"
     client_class = "GpsModule"
-    driver_version = "0.1.2"
+    driver_version = "0.1.3"
 
     @staticmethod
     def make_device(**kwargs) -> Optional[GpsDevice]:
