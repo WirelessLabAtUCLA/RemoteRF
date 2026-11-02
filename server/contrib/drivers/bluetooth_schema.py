@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RemoteRF Schema for Bluetooth Devices (e.g. ZEXMTE CSR8510 USB Bluetooth Dongle).
+RemoteRF Schema for Bluetooth Devices (any BlueZ USB dongle, e.g. ZEXMTE CSR8510).
 Provides remote discovery, device inspection, and adapter control over RemoteRF RPC.
 
 Client usage example:
@@ -318,10 +318,12 @@ class _BluetoothDevice:
 
 
 def _find_adapter_sysfs(target_name: Optional[str] = None, allow_fallback: bool = False) -> Optional[dict]:
-    """Inspect /sys/class/bluetooth to find the target adapter or auto-detect ZEXMTE CSR8510.
+    """Inspect /sys/class/bluetooth to find the target adapter or auto-detect a USB dongle.
 
-    Auto-detection never settles for another adapter (a built-in one, say)
-    unless allow_fallback: the device is offline until the CSR is plugged in."""
+    Auto-detection prefers a CSR8510, then any plugged-in USB dongle. It never
+    settles for a built-in adapter (not on USB, on a port the kernel marks
+    'fixed', or Intel's) unless allow_fallback: the device is offline until a
+    dongle is plugged in."""
     base = _SYSFS_BLUETOOTH
     if not base.exists():
         return None
@@ -333,13 +335,14 @@ def _find_adapter_sysfs(target_name: Optional[str] = None, allow_fallback: bool 
             continue
 
         resolved = entry.resolve()
-        vendor, product, prod_name = "", "", ""
+        vendor, product, prod_name, removable = "", "", "", ""
         curr = resolved
         while curr != curr.parent:
             if (curr / "idVendor").exists() and not vendor:
                 try:
                     vendor = (curr / "idVendor").read_text().strip()
                     product = (curr / "idProduct").read_text().strip()
+                    removable = (curr / "removable").read_text().strip()
                 except OSError:
                     pass
             if (curr / "product").exists() and not prod_name:
@@ -362,6 +365,8 @@ def _find_adapter_sysfs(target_name: Optional[str] = None, allow_fallback: bool 
             "product": product,
             "product_name": prod_name or "USB Bluetooth Adapter",
             "is_zexmte": is_zexmte,
+            # ponytail: Intel ships no retail dongles; a built-in on an unmarked port is only caught by vendor
+            "builtin": not vendor or removable == "fixed" or vendor.lower() == "8087",
         })
 
     if not candidates:
@@ -371,9 +376,12 @@ def _find_adapter_sysfs(target_name: Optional[str] = None, allow_fallback: bool 
     if target_name:
         return candidates[0]
 
-    # Otherwise prefer ZEXMTE dongle
+    # Otherwise prefer the CSR, then any other dongle
     for c in candidates:
         if c["is_zexmte"]:
+            return c
+    for c in candidates:
+        if not c["builtin"]:
             return c
 
     return candidates[0] if allow_fallback else None
@@ -408,7 +416,7 @@ def _connect_bluetooth_device(
     """Factory helper to detect and open the Bluetooth controller."""
     info = _find_adapter_sysfs(target_name=adapter, allow_fallback=allow_fallback)
     if not info:
-        hint = "" if adapter or allow_fallback else " (no CSR8510; set allow_fallback: true to use another)"
+        hint = "" if adapter or allow_fallback else " (no USB dongle; set allow_fallback: true to use a built-in adapter)"
         print(f"Bluetooth: No adapter found matching {adapter or 'default'}{hint}")
         return None
 
@@ -437,12 +445,12 @@ class BluetoothSchema(DeviceSchema):
 
     device_type = "bluetooth"
     client_class = "BluetoothModule"
-    driver_version = "0.1.2"
+    driver_version = "0.1.3"
 
     @staticmethod
     def make_device(**kwargs) -> Optional[_BluetoothDevice]:
         """Open the physical Bluetooth device based on devices.yml init block.
-        Without 'adapter' the CSR's current hciN is looked up on every call."""
+        Without 'adapter' the dongle's current hciN is looked up on every call."""
         adapter = kwargs.get("adapter")
         return _connect_bluetooth_device(
             adapter=adapter, allow_fallback=bool(kwargs.get("allow_fallback", False))
