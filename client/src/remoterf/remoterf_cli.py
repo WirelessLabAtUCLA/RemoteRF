@@ -151,7 +151,7 @@ def print_help() -> None:
     printf("  remoterf -h | --help", Sty.CYAN, "              Show this help", Sty.DEFAULT)
     print()
     printf("Commands:", (Sty.BOLD, Sty.MAGENTA))
-    printf("  remoterf -l | --login [target]", Sty.CYAN, "    Login: last used, 'global', a home name, or an account (username@deployment)", Sty.DEFAULT)
+    printf("  remoterf -l | --login [target]", Sty.CYAN, "    Login: last used, 'global', or a deployment name", Sty.DEFAULT)
     printf("  remoterf -r | --register", Sty.CYAN, "          Create a RemoteRF Global account", Sty.DEFAULT)
     printf("  remoterf -r --local-only", Sty.CYAN, "          Register at a deployment with an enrollment code", Sty.DEFAULT)
     printf("  remoterf --reset-password", Sty.CYAN, "         Reset a RemoteRF Global password by email", Sty.DEFAULT)
@@ -179,7 +179,7 @@ def print_help() -> None:
     printf("  remoterf --reset-password", Sty.GREEN)
     printf("  remoterf --login ucla", Sty.GREEN)
     printf("  remoterf --login global", Sty.GREEN)
-    printf("  remoterf --login jdoe@ucla", Sty.GREEN)
+    printf("  remoterf --login ucla", Sty.GREEN)
     printf("  remoterf homes", Sty.GREEN)
     printf("  remoterf --config --addr 203.0.113.10:12321", Sty.GREEN)
     printf("  remoterf --config --wipe", Sty.GREEN)
@@ -493,49 +493,58 @@ def _login(target: str | None) -> int:
             if not _ensure_config_present()[0]:
                 return _login_by_username()
             return _account_shell(register=False)
+    if target.lower() in homes.homes() or target.lower() == 'global':
+        target = target.lower()
     if target == 'global':
         # Global's address is built in, so a fresh install can log in to an
         # existing Global account without registering again.
         return _use_global(register=False)
-    if target not in homes.homes():
+    if target in homes.homes():
+        return _use_home(target, register=False)
+    target = target.lower()
+    if not homes.NAME_RE.match(target):
         printf(f'No saved home named {target!r}.', Sty.WARNING)
         return _print_pick_a_target()
-    return _use_home(target, register=False)
-
-
-def _login_by_username() -> int:
-    """A fresh install: an account says where it lives (`alice@ucla`), so
-    asking for it is enough. Enter registers, as `-l` here always did."""
-    try:
-        name = input('Account (username@deployment, Enter to register): ').strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return 1
-    if not name:
-        return _register()
-    return _login_as(name)
-
-
-def _login_as(account: str) -> int:
-    """Log in to `name@lab` at that lab; a bare name or an email is Global."""
-    from remoterf.deployment import homes
-
-    name, lab = homes.split_account(account)
-    if lab is None or lab == homes.GLOBAL_ACCOUNTS:
-        return _use_global(register=False, username=name)
-    if lab in homes.homes():
-        return _use_home(lab, register=False, username=name)
-    host = f'{lab}.{homes.GLOBAL_DOMAIN}'
+    # Not saved here yet: look the lab up by name; the shell asks the username.
+    host = f'{target}.{homes.GLOBAL_DOMAIN}'
     try:
         with _working(f"Looking up {host}…"):
             lab, home, route = homes.register_home(host)
     except (RuntimeError, ValueError) as exc:
         printf(f'Could not reach {host}: {_reason(exc)}', Sty.WARNING)
-        return 2
+        printf('For a RemoteRF Global account, use: remoterf -l global', Sty.GRAY)
+        return _print_pick_a_target()
     return _account_shell(
         register=False, server_label=f'{lab} ({_route_label(route)})',
-        home=lab, route={**route, 'home': home}, username=name,
+        home=lab, route={**route, 'home': home},
     )
+
+
+def _login_by_username() -> int:
+    """A fresh install: ask where to log in. Enter registers, as `-l` here
+    always did."""
+    try:
+        target = input("Deployment (lab name, 'global', or Enter to register): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+    if not target:
+        return _register()
+    if target == 'global':
+        return _use_global(register=False)
+    return _login(target)
+
+
+def _login_as(account: str) -> int:
+    """Log in to Global as `name@global` or an email. A lab is
+    reached with `remoterf --login <lab>`, which asks the username."""
+    from remoterf.deployment import homes
+
+    name, lab = homes.split_account(account)
+    if lab is None or lab == homes.GLOBAL_ACCOUNTS:
+        return _use_global(register=False, username=name)
+    print(f'remoterf: to log in at {lab}, run: remoterf --login {lab}', file=sys.stderr)
+    return 2
 
 
 def _print_pick_a_target() -> int:
