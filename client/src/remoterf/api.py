@@ -18,29 +18,35 @@ It only adapts arguments; `ops` (internal) does the work. Plain dicts out,
 RemoteRFOpsError on failure; nothing prints or prompts."""
 
 import os
+import threading
 from datetime import datetime, timezone
 
 from . import ops
 from .ops import RemoteRFOpsError
 
 _session = None
+_lock = threading.Lock()
 _default = None
 
 
 def _call(fn, *args, **kwargs):
     """fn(session, ...) with the saved login, loaded once; reloaded and
-    retried once when the deployment says it expired."""
+    retried once when the deployment says it expired. Safe across threads."""
     global _session
-    if _session is None:
-        _session = ops.saved_session()
+    with _lock:
+        if _session is None:
+            _session = ops.saved_session()
+        s = _session
     try:
-        return fn(_session, *args, **kwargs)
+        return fn(s, *args, **kwargs)
     except RemoteRFOpsError as exc:
         if exc.code != "session_expired":
             raise
-    _session = None
-    _session = ops.saved_session()
-    return fn(_session, *args, **kwargs)
+    with _lock:
+        if _session is s:  # another thread may have reloaded already
+            _session = ops.saved_session()
+        s = _session
+    return fn(s, *args, **kwargs)
 
 
 def use(deployment):

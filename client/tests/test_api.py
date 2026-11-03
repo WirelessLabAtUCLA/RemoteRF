@@ -116,3 +116,25 @@ def test_nothing_reaches_stdout(session, capsys):
     with pytest.raises(remoterf.RemoteRFOpsError):
         remoterf.slots("Nope")
     assert capsys.readouterr().out == ""
+
+
+def test_session_reload_is_shared_across_threads(monkeypatch):
+    import threading
+    from remoterf import api, ops
+
+    loads = []
+    monkeypatch.setattr(api, "_session", None)
+    monkeypatch.setattr(ops, "saved_session", lambda: loads.append(1) or object())
+    seen = []
+    barrier = threading.Barrier(8)
+
+    def work():
+        barrier.wait()
+        seen.append(api._call(lambda s: s))
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(loads) == 1 and len(set(map(id, seen))) == 1
