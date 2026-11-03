@@ -16,7 +16,8 @@ remoterf -l
 
 Use register, verify, login and perms in that same shell. Prompts follow the
 home's advertised registration policy. HTTPS accounts also support refresh,
-logout, forgot-password, reset-password, and the ordinary `enroll` command.
+logout, and the ordinary `enroll` command; passwords are reset with
+`remoterf --reset-password`.
 Gate F accepts either the established prompt or `enroll <rrf2...>` and sends
 the opaque value only to the authenticated home. The home—not the Client—owns
 contract checks, grant issuance, broker routing, and signed-result validation.

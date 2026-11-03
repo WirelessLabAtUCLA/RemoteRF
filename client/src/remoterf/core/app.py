@@ -422,15 +422,7 @@ def _account_command(command):
     if command in ('forgot-password', 'reset-password'):
         if not account.is_https_home:
             raise AccountBackendError('Contact the local administrator to reset a password')
-        if command == 'forgot-password':
-            _note("Forgot password", (Sty.BOLD, Sty.BLUE))
-            account.backend.forgot(_ask('Email'))
-            _note('If eligible, check your email for a password reset token.', Sty.DEFAULT)
-        else:
-            _panel("Reset password", [("Set a new password with the emailed reset token.", Sty.DEFAULT), (_PASSWORD_HINT, Sty.GRAY)])
-            token = _ask('Password reset token', hidden=True)
-            account.backend.reset(token, _password_confirmation(enforce_policy=True))
-            _note('Password reset. Log in again.', (Sty.BOLD, Sty.GREEN))
+        _note('Reset a RemoteRF Global password from your terminal: remoterf --reset-password', Sty.DEFAULT)
         return False
     if command in ('l', 'login'):
         _note(f"Login to {_home_name()}", (Sty.BOLD, Sty.BLUE))
@@ -454,7 +446,7 @@ def _account_command(command):
             _remember_login()
             _sync_labs()
         return ok
-    printf('Choose login or register' + (', verify, forgot-password or reset-password.' if account.is_https_home else '.'), Sty.WARNING)
+    printf('Choose login or register' + (' or verify.' if account.is_https_home else '.'), Sty.WARNING)
     return False
 
 
@@ -510,7 +502,8 @@ def welcome(*, show_banner: bool = True, initial=(), route=None):
             else:
                 prompt = 'Please login or register to continue. (l/r): '
                 if account.is_https_home:
-                    prompt = 'Choose register, verify, login, forgot-password or reset-password: '
+                    printf('Forgot your password? Run: remoterf --reset-password', Sty.GRAY)
+                    prompt = 'Choose register, verify or login: '
                 command = session.prompt(stylize(prompt, Sty.DEFAULT)).strip().lower()
             if command in ('exit', 'quit'):
                 return False
@@ -519,7 +512,7 @@ def welcome(*, show_banner: bool = True, initial=(), route=None):
         except (AccountBackendError, ValidationError) as exc:
             _error(exc)
             if command in ('l', 'login') and account.is_https_home and getattr(exc, 'code', None) == 'invalid_credentials':
-                printf('Forgot your password? Run: remoterf --reset-pass', Sty.GRAY)
+                printf('Forgot your password? Run: remoterf --reset-password', Sty.GRAY)
             queue.clear()
         except (KeyboardInterrupt, EOFError):
             return False
@@ -609,7 +602,6 @@ def commands():
         ("'logout'", "Log out and forget the stored login"),
         ("'status'", "Show connection and device transport status"),
         ("'direct on|off'", "Enable or disable direct device transport"),
-        *([("'reset-password'", "Set a new password with an emailed token")] if account.is_https_home else []),
         ("'exit' or 'quit'", "Exit"),
     ]
     width = max(len(name) for name, _ in rows)
@@ -1740,12 +1732,12 @@ def run(backend=None, *, register=False, enrollment_code=None, server_label=None
                     completer=command_completer,
                 )
                 inpu = inpu.strip()
-                if inpu in ('register', 'verify', 'login', 'forgot-password', 'reset-password'):
+                if inpu in ('register', 'verify', 'login'):
                     authenticated = _account_command(inpu)
                     if inpu == 'login' and authenticated:
                         session_line()
-                    if inpu == 'reset-password' and not welcome(show_banner=False):
-                        break
+                elif inpu in ('forgot-password', 'reset-password'):
+                    _account_command(inpu)
                 elif inpu == 'refresh':
                     if not account.is_https_home:
                         raise AccountBackendError('Local passwords do not use refresh sessions')

@@ -183,13 +183,88 @@ def test_reset_password_uses_the_global_email_code_flow(monkeypatch):
     backend.close.assert_called_once_with()
 
 
-def test_reset_pass_dispatches_without_an_existing_login(monkeypatch):
+def test_reset_password_dispatches_without_an_existing_login(monkeypatch):
+    from remoterf import remoterf_cli
+
+    monkeypatch.setattr("sys.argv", ["remoterf", "--reset-password"])
+    with mock.patch.object(remoterf_cli, "_reset_password", return_value=0) as reset:
+        assert remoterf_cli.main() == 0
+    reset.assert_called_once_with()
+
+
+def test_reset_pass_is_an_unknown_command(monkeypatch, capsys):
     from remoterf import remoterf_cli
 
     monkeypatch.setattr("sys.argv", ["remoterf", "--reset-pass"])
     with mock.patch.object(remoterf_cli, "_reset_password", return_value=0) as reset:
-        assert remoterf_cli.main() == 0
-    reset.assert_called_once_with()
+        assert remoterf_cli.main() == 2
+    assert "unknown command" in capsys.readouterr().err
+    reset.assert_not_called()
+
+
+def test_reset_password_takes_no_arguments(monkeypatch, capsys):
+    from remoterf import remoterf_cli
+
+    monkeypatch.setattr("sys.argv", ["remoterf", "--reset-password", "x"])
+    with mock.patch.object(remoterf_cli, "_reset_password", return_value=0) as reset:
+        assert remoterf_cli.main() == 2
+    assert "--reset-password takes no arguments" in capsys.readouterr().err
+    reset.assert_not_called()
+
+
+def test_help_names_only_reset_password(monkeypatch):
+    from remoterf import remoterf_cli
+
+    lines = []
+    monkeypatch.setattr(remoterf_cli, "printf", lambda *parts: lines.append("".join(parts[::2])))
+    remoterf_cli.print_help()
+    out = "\n".join(lines)
+    assert "remoterf --reset-password" in out
+    assert "--reset-pass " not in out
+
+
+def _reset_command_at(https, command):
+    from remoterf.core import app
+
+    backend = mock.Mock(capabilities={"registration_policy": {}})
+    account = mock.Mock(is_https_home=https, backend=backend)
+    with mock.patch.object(app, "account", account):
+        try:
+            return app._account_command(command)
+        finally:
+            backend.forgot.assert_not_called()
+            backend.reset.assert_not_called()
+
+
+def test_in_app_reset_commands_point_to_the_cli_flag(monkeypatch):
+    from remoterf.core import app
+
+    for command in ("forgot-password", "reset-password"):
+        lines = []
+        monkeypatch.setattr(app, "printf", lambda *parts: lines.append("".join(parts[::2])))
+        assert _reset_command_at(True, command) is False
+        assert any("remoterf --reset-password" in line for line in lines)
+
+
+def test_in_app_reset_commands_at_a_local_home_name_the_administrator():
+    import pytest
+    from remoterf.deployment.http import AccountBackendError
+
+    for command in ("forgot-password", "reset-password"):
+        with pytest.raises(AccountBackendError, match="local administrator"):
+            _reset_command_at(False, command)
+
+
+def test_session_help_has_no_reset_password_row(monkeypatch):
+    from remoterf.core import app
+
+    lines = []
+    monkeypatch.setattr(app, "printf", lambda *parts: lines.append("".join(parts[::2])))
+    for https in (True, False):
+        with mock.patch.object(app, "account", mock.Mock(is_https_home=https, is_admin=False)):
+            app.commands()
+    assert any("'logout'" in line for line in lines)
+    assert not any("reset-password" in line for line in lines)
 
 
 def _login_at(home, typed, *, https=False, pending=None):
