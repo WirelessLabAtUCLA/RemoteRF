@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import socket
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -62,6 +64,23 @@ def fetch_ca_bytes(host: str, port: int, *, timeout_sec: float = 3.0) -> bytes:
 def sha256_fingerprint_pem(pem_bytes: bytes) -> str:
     h = hashlib.sha256(pem_bytes).hexdigest()
     return ":".join(h[i:i+2] for i in range(0, len(h), 2))
+
+def normalize_sha256(value: str) -> str:
+    """'sha256:AB:CD..' / 'abcd..' -> 'abcd..'; '' when it is not a sha256."""
+    v = (value or "").strip().lower()
+    if v.startswith("sha256:"):
+        v = v[len("sha256:"):]
+    v = v.replace(":", "")
+    return v if re.fullmatch(r"[0-9a-f]{64}", v) else ""
+
+def _dotenv_get_key(env_path: Path, key: str) -> str:
+    if not env_path.exists():
+        return ""
+    for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(key + "="):
+            return stripped.split("=", 1)[1].strip().strip("'\"")
+    return ""
 
 def _fetch_http(host: str, port: int, timeout_sec: float) -> bytes:
     url = f"http://{host}:{port}/ca.crt"
@@ -160,6 +179,7 @@ def fetch_and_save_ca_cert(
     overwrite: bool = True,
     write_env: bool = True,
     env_path: Optional[str | Path] = None,
+    expected_sha256: Optional[str] = None,
 ) -> bool:
     """
     Fetch CA cert and save. Optionally writes REMOTERF_CA_CERT into ~/.config/remoterf-client/.env
@@ -167,11 +187,20 @@ def fetch_and_save_ca_cert(
 
     Args:
         write_env: if True, updates REMOTERF_CA_CERT in env file to point at saved cert
+            and pins its digest as REMOTERF_CA_SHA256
         env_path: override env file location; default ~/.config/remoterf-client/.env
+        expected_sha256: the lab's CA fingerprint; without it the CA pinned
+            by an earlier fetch (REMOTERF_CA_SHA256) must still match.
     """
     try:
         if not isinstance(port, int):
             port = int(port)
+
+        if expected_sha256 is not None and not normalize_sha256(expected_sha256):
+            print(f"Not a sha256 fingerprint: {expected_sha256!r}", file=sys.stderr)
+            return False
+
+        ep = Path(env_path).expanduser().resolve() if env_path else _default_env_path()
 
         # Determine destination path
         if out_path is not None:
@@ -187,7 +216,6 @@ def fetch_and_save_ca_cert(
         if dest.exists() and not overwrite:
             # Still ensure env points to it (helpful for idempotency)
             if write_env:
-                ep = Path(env_path).expanduser().resolve() if env_path else _default_env_path()
                 _dotenv_set_key(ep, "REMOTERF_CA_CERT", dest.as_posix())
             return True
 
@@ -197,11 +225,26 @@ def fetch_and_save_ca_cert(
         if not data or not _looks_like_pem_cert(data):
             return False
 
+        # The fetch is plain HTTP: trust only a fingerprint from the lab admin,
+        # or the one pinned on first use.
+        digest = hashlib.sha256(data).hexdigest()
+        pinned = _dotenv_get_key(ep, "REMOTERF_CA_SHA256")
+        want = normalize_sha256(expected_sha256 if expected_sha256 is not None else pinned)
+        if want and digest != want:
+            print(
+                f"CA fingerprint mismatch: got {digest}, expected {want}.\n"
+                "If the lab changed its CA, pass the new fingerprint from the lab admin:\n"
+                "  remoterf --config --addr <host:port> --ca-sha256 <hex>\n"
+                "or reset the local config with: remoterf --config --wipe",
+                file=sys.stderr,
+            )
+            return False
+
         dest.write_bytes(data)
 
         # Update .env without quotes
         if write_env:
-            ep = Path(env_path).expanduser().resolve() if env_path else _default_env_path()
+            _dotenv_set_key(ep, "REMOTERF_CA_SHA256", digest)
             _dotenv_set_key(ep, "REMOTERF_CA_CERT", dest.as_posix())
 
         return True

@@ -272,7 +272,7 @@ def test_reconfiguring_the_direct_target_replaces_a_stale_default_home(monkeypat
     monkeypatch.setattr(cfg, "_host_resolves", lambda host: True)
     monkeypatch.setattr(cfg, "_confirm_tos", lambda: True)
 
-    def fetch(host, port, *, out_path, timeout_sec, overwrite):
+    def fetch(host, port, *, out_path, timeout_sec, overwrite, **_):
         out_path.write_bytes(new_cert)
         return True
 
@@ -297,7 +297,7 @@ def test_configure_keeps_a_custom_cert_port_and_wins_over_other_homes(monkeypatc
     monkeypatch.setattr(cfg, "_confirm_tos", lambda: True)
     monkeypatch.setattr(
         cfg, "fetch_and_save_ca_cert",
-        lambda host, port, *, out_path, timeout_sec, overwrite: out_path.write_bytes(CERT) or True,
+        lambda host, port, *, out_path, timeout_sec, overwrite, **_: out_path.write_bytes(CERT) or True,
     )
     cfg.configure("192.168.1.30", 61005, 7000)
 
@@ -693,7 +693,7 @@ def test_reconfiguring_forgets_the_old_servers_login(monkeypatch):
     monkeypatch.setattr(cfg, "_confirm_tos", lambda: True)
     monkeypatch.setattr(
         cfg, "fetch_and_save_ca_cert",
-        lambda host, port, *, out_path, timeout_sec, overwrite: out_path.write_bytes(CERT) or True,
+        lambda host, port, *, out_path, timeout_sec, overwrite, **_: out_path.write_bytes(CERT) or True,
     )
     cfg.configure("192.168.1.31", 61005, 61006)
     assert homes.recall_login("default") is None

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import sys
@@ -162,13 +163,16 @@ def _print_tos_notice() -> None:
         printf(stripped, Sty.DEFAULT)
 
 
-def _print_config_summary(host: str, grpc_port: int, cert_port: int, ca_out: Path, env_file: Path) -> None:
+def _print_config_summary(host: str, grpc_port: int, cert_port: int, ca_out: Path, env_file: Path,
+                          ca_sha256: str = "") -> None:
     _print_separator()
     printf("Configuration Complete!", (Sty.BOLD, Sty.GREEN))
     printf("- Details:", Sty.BOLD)
     printf("  gRPC target: ", (Sty.BOLD, Sty.DEFAULT), f"{host}:{grpc_port}", Sty.CYAN)
     printf("  Cert port  : ", (Sty.BOLD, Sty.DEFAULT), f"{host}:{cert_port}", Sty.CYAN)
     printf("  CA cert    : ", (Sty.BOLD, Sty.DEFAULT), f"{ca_out}", Sty.GRAY)
+    if ca_sha256:
+        printf("  CA SHA-256 : ", (Sty.BOLD, Sty.DEFAULT), ca_sha256, Sty.GRAY)
     printf("  Env file   : ", (Sty.BOLD, Sty.DEFAULT), f"{env_file}", Sty.GRAY)
     _print_separator()
 
@@ -224,7 +228,7 @@ def require_tos_for_login() -> bool:
     remember_tos_agreement()
     return True
 
-def configure(host: str, port: int, cert_port: int) -> int:
+def configure(host: str, port: int, cert_port: int, ca_sha256: Optional[str] = None) -> int:
     # Basic validation
     host = (host or "").strip()
     if not host:
@@ -259,24 +263,33 @@ def configure(host: str, port: int, cert_port: int) -> int:
     certs_dir.mkdir(parents=True, exist_ok=True)
     ca_out = certs_dir / f"{profile}.crt"
 
+    env_file = _env_path()
     fetched_ok = fetch_and_save_ca_cert(
         host,
         cert_port,
         out_path=ca_out,
         timeout_sec=timeout_sec,
         overwrite=overwrite,
+        env_path=env_file,
+        expected_sha256=ca_sha256,
     )
     if not fetched_ok:
         print(f"Failed to fetch CA cert from {host}:{cert_port}.", file=sys.stderr)
         return 1
 
-    env_file = _env_path()
-    _write_env_kv(env_file, {
+    try:
+        ca_digest = hashlib.sha256(ca_out.read_bytes()).hexdigest()
+    except OSError:
+        ca_digest = ""
+    env_kv = {
         "REMOTERF_ADDR": f"{host}:{grpc_port}",
         "REMOTERF_CA_CERT": str(ca_out),
         "REMOTERF_PROFILE": profile,
         "REMOTERF_CERT_PORT": str(cert_port),
-    })
+    }
+    if ca_digest:
+        env_kv["REMOTERF_CA_SHA256"] = ca_digest  # the pin the next -c checks against
+    _write_env_kv(env_file, env_kv)
     # This profile is what the "default" home was adopted from. A new address
     # or a re-fetched CA makes that adoption stale (its pin would now refuse
     # this very server), so replace it with this one, the next `-l` target.
@@ -289,7 +302,7 @@ def configure(host: str, port: int, cert_port: int) -> int:
     except Exception:  # noqa: BLE001 - never fail configuration over bookkeeping
         pass
 
-    _print_config_summary(host, grpc_port, cert_port, ca_out, env_file)
+    _print_config_summary(host, grpc_port, cert_port, ca_out, env_file, ca_digest)
 
 def wipe_config(*, yes: bool = False) -> int:
     """
