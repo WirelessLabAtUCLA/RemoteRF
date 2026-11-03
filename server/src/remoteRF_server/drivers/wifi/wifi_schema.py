@@ -566,19 +566,18 @@ class WifiDongleDevice:
 # RemoteRF Device Schema Class
 # -----------------------------------------------------------------------------
 
-@idl_register("wifi_dongle")
-class WifiDongleSchema(DeviceSchema):
+@idl_register("wifi")
+class WifiSchema(DeviceSchema):
     """
     RemoteRF Device Schema for USB Wi-Fi Dongles (RSSI Collector & RF Monitor).
 
     Exposes live wireless telemetry, accurate linear-power RSSI statistics,
     batch burst sampling, and deep 802.11 physical layer diagnostics to remote Python clients.
     """
-    device_type = "wifi_dongle"
+    device_type = "wifi"
     client_class = "WifiDongle"
     driver_version = "0.1.0"
 
-    client_modules = {"wifi_dongle": "remoteRF.drivers.support.wifi_dongle"}
 
     @staticmethod
     def make_device(**kwargs) -> Optional[WifiDongleDevice]:
@@ -599,16 +598,16 @@ class WifiDongleSchema(DeviceSchema):
         max_history = int(kwargs.get("max_history", 100))
 
         try:
-            print(f"[wifi_dongle] Initializing USB Wi-Fi dongle (interface={interface or 'auto'})...")
+            print(f"[wifi] Initializing USB Wi-Fi dongle (interface={interface or 'auto'})...")
             dev = WifiDongleDevice(
                 interface=interface,
                 auto_rescan=auto_rescan,
                 max_history=max_history
             )
-            print(f"[wifi_dongle] Bound to interface '{dev.interface}'. Default route protected.")
+            print(f"[wifi] Bound to interface '{dev.interface}'. Default route protected.")
             return dev
         except Exception as exc:
-            print(f"[wifi_dongle] Failed to initialize device: {exc}")
+            print(f"[wifi] Failed to initialize device: {exc}")
             return None
 
     # -------------------------------------------------------------------------
