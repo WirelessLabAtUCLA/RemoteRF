@@ -154,7 +154,7 @@ def print_help() -> None:
     printf("  remoterf -l | --login [target]", Sty.CYAN, "    Login: last used, 'global', a home name, or an account (username@deployment)", Sty.DEFAULT)
     printf("  remoterf -r | --register", Sty.CYAN, "          Create a RemoteRF Global account", Sty.DEFAULT)
     printf("  remoterf -r --local-only", Sty.CYAN, "          Register at a deployment with an enrollment code", Sty.DEFAULT)
-    printf("  remoterf --reset-pass", Sty.CYAN, "             Reset a RemoteRF Global password by email", Sty.DEFAULT)
+    printf("  remoterf --reset-password", Sty.CYAN, "         Reset a RemoteRF Global password by email", Sty.DEFAULT)
     printf("  remoterf homes", Sty.CYAN, "                    List saved deployment homes", Sty.DEFAULT)
     printf("  remoterf --remote-admin [lab]", Sty.CYAN, "     Open a lab's remote-admin console (-h for more)", Sty.DEFAULT)
     printf("  remoterf -v | --version", Sty.CYAN, "           Print version", Sty.DEFAULT)
@@ -186,7 +186,7 @@ def print_help() -> None:
     print()
     printf("Examples:", (Sty.BOLD, Sty.MAGENTA))
     printf("  remoterf --register --local-only", Sty.GREEN, "              then: ucla.global.remoterf.net/QEHN7", Sty.GRAY)
-    printf("  remoterf --reset-pass", Sty.GREEN)
+    printf("  remoterf --reset-password", Sty.GREEN)
     printf("  remoterf --login ucla", Sty.GREEN)
     printf("  remoterf --login global", Sty.GREEN)
     printf("  remoterf --login jdoe@ucla", Sty.GREEN)
@@ -593,9 +593,9 @@ def main() -> int:
             print("remoterf: --register takes no arguments (or '--local-only')", file=sys.stderr)
             return 2
 
-    if argv[0] in ("--reset-pass", "--reset-password"):
+    if argv[0] == "--reset-password":
         if len(argv) > 1:
-            print("remoterf: --reset-pass takes no arguments", file=sys.stderr)
+            print("remoterf: --reset-password takes no arguments", file=sys.stderr)
             return 2
         return _reset_password()
 
