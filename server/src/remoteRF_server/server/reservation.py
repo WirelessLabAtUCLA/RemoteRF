@@ -1356,7 +1356,25 @@ class ReservationHandler:
         return [(_parse_reservation_datetime(a), _parse_reservation_datetime(b)) for a, b in rows]
 
     @db_connection 
-    def print_all_reservations(self):
+    def print_all_reservations(self, *, json_output: bool = False):
+        if json_output:
+            from .json_output import local_iso, print_json
+
+            rows = self.cursor.execute(
+                "SELECT r.res_id, r.username, r.device_id, r.start_time, r.end_time, "
+                "f.issuer_deployment_id FROM Reservations r LEFT JOIN FederatedReservations f "
+                "ON f.res_id=r.res_id ORDER BY r.res_id"
+            ).fetchall()
+            print_json([{
+                "res_id": int(res_id),
+                "username": str(username),
+                "device_id": int(device_id),
+                "start_time": local_iso(start),
+                "end_time": local_iso(end),
+                "federated": issuer is not None,
+                "issuer_deployment_id": str(issuer) if issuer is not None else None,
+            } for res_id, username, device_id, start, end, issuer in rows])
+            return
         from ..common.utils.panel import print_table
 
         cursor = self.db.cursor()

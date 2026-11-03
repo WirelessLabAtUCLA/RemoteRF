@@ -362,7 +362,12 @@ def _run_in_daemon(command: Command, rest: list[str]) -> int:
         # for a remote admin: that would hand them the live console, past the policy.
         return console.run_in_console([*command.names[0].split(), *rest])
     # A prompt inside the daemon is asked here, over the socket (control.call).
-    reply = control.call([*command.names[0].split(), *rest], timeout=3600.0 if command.interactive else 30.0)
+    timeout = (
+        3600.0 if command.interactive
+        else 120.0 if command.names[0] == "reload devices"
+        else 30.0
+    )
+    reply = control.call([*command.names[0].split(), *rest], timeout=timeout)
     if reply is None:
         print("The server stopped answering.", file=sys.stderr)
         return 1

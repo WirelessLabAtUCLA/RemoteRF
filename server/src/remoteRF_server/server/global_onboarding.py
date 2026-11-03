@@ -1169,7 +1169,18 @@ _STATE_SUMMARY = {
 }
 
 
-def cmd_status(refresh: bool = True) -> int:
+def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
+    if json_output:
+        from .json_output import print_json
+
+        kv = load()
+        print_json({
+            "state": str(kv.get("GLOBAL_STATE") or ("unregistered" if kv else "unconfigured")),
+            "slug": kv.get("GLOBAL_FINAL_NAME") or kv.get("GLOBAL_NAME") or None,
+            "deployment_id": kv.get("GLOBAL_DEPLOYMENT_ID") or None,
+            "relay": kv.get("GLOBAL_RELAY_HOSTNAME") or None,
+        })
+        return 0
     from ..common.utils.panel import marker, print_panel
 
     kv = load()
@@ -1310,6 +1321,8 @@ _COMMANDS = {"status": cmd_status, "join": cmd_join, "leave": cmd_leave}
 
 
 def main(argv) -> int:
+    if argv == ["status", "--json"]:
+        return cmd_status(json_output=True)
     if argv and argv[0] == "verify":
         # A code pasted from email may arrive wrapped across lines.
         return cmd_verify("".join(argv[1:]))
