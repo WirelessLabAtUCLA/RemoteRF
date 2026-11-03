@@ -165,9 +165,9 @@ def _print_reserved(where, when, token, handle, logged_in_to, install, no_handle
         rows.append(("Handle  ", Sty.BOLD, handle, (Sty.BOLD, Sty.GREEN)))
     rows.append(())
     if handle:
-        rows += [("Token   works anywhere, no login needed.", Sty.DEFAULT),
+        rows += [("Token   Works anywhere, no login needed.", Sty.DEFAULT),
                  ("        Keep it safe: it can't be shown again.", Sty.DEFAULT),
-                 (f"Handle  works while you're logged in to {logged_in_to}", Sty.DEFAULT),
+                 (f"Handle  Works while you're logged in to {logged_in_to}", Sty.DEFAULT),
                  ("        and this reservation is active.", Sty.DEFAULT)]
     else:
         rows += [("Works anywhere, no login needed.", Sty.DEFAULT),
@@ -1453,7 +1453,7 @@ def interactive_reserve_next_days(block_minutes=60):
         
         # --- Display the available slots, using 0-based index ---
         print()
-        printf("Available time slots for device ", Sty.BOLD, f"{chosen_device_id}", Sty.MAGENTA, f" over the next {num_days} days:", Sty.DEFAULT)
+        printf("Available time slots for device ", Sty.BOLD, f"{chosen_device_id}", Sty.MAGENTA, f" over the next {num_days} days (your time, {available_slots[0][1][0].astimezone():%Z}):", Sty.DEFAULT)
         last_day = None
         for idx, (day, slot) in enumerate(available_slots):
             slot_start_str = slot[0].strftime('%I:%M %p')
@@ -1540,7 +1540,7 @@ def _pick_slot_and_reserve(chosen_device_id, chosen_device_name, block_minutes, 
 
     print()
     index_width = len(str(len(available_slots) - 1))
-    rows = [(f"{device_label}", Sty.MAGENTA, f"  {block_minutes} min blocks, next {num_days} days", Sty.GRAY)]
+    rows = [(f"{device_label}", Sty.MAGENTA, f"  {block_minutes} min blocks, next {num_days} days (your time, {available_slots[0][1][0].astimezone():%Z})", Sty.GRAY)]
     last_day = None
     for idx, (day, slot) in enumerate(available_slots):
         slot_start_str = slot[0].strftime("%I:%M %p")
