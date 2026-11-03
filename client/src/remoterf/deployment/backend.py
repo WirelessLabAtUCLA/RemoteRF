@@ -402,7 +402,7 @@ class HttpsJsonAccountBackend(DeploymentAccountBackend):
         )
 
     def device_token_rpc(self, token, deployment_id, request_bytes):
-        """Relay one frame on a Global device API token (``rfg_``): the token
+        """Relay one frame on a Global device API token: the token
         is the credential, so there is no login and no bearer."""
 
         data = {"token": token}
@@ -433,10 +433,12 @@ class HttpsJsonAccountBackend(DeploymentAccountBackend):
 
     def device_direct(self, ref, deployment_id, ice):
         """Signal a direct path to the lab behind ``ref`` (a device ref under
-        this login, or an ``rfg_`` token with no login): the ICE offer goes in,
+        this login, or a Global token with no login): the ICE offer goes in,
         the lab's signed answer comes back as Global relayed it."""
 
-        if ref.startswith("rfg_"):
+        from ..core.grpc_client import is_global_token
+
+        if is_global_token(ref):
             data, auth = {"token": ref, "ice": ice}, {}
             if deployment_id is not None:
                 data["deployment_id"] = deployment_id

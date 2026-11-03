@@ -12,7 +12,7 @@ Scenarios, each recorded on its own (one whose prerequisite did not pass is skip
   settings      sample_rate and rx_lo read back as set; the tone still at bin N/8
   bad_args      rx_buffer_size 0 and -1 refused, the device unharmed
   cancel_then_use  rx with a cancelled reservation's token refused
-  bad_token     a made-up token refused
+  bad_token     made-up tokens (legacy and 12-character) refused
   bad_window    a window in the past, and one past the horizon, refused
   two_users     a second account is refused the first one's slot, holds another
                 sim, and both rx at once
@@ -337,8 +337,12 @@ def cancel_then_use(ctx):
 def bad_token(ctx):
     from remoterf.drivers.sim_sdr import SimSDR
 
-    refused(lambda: SimSDR("rfg_" + secrets.token_urlsafe(32)), "invalid_device_token")  # Global's token shape
-    return "made-up token refused"
+    refused(lambda: SimSDR("rfg_" + secrets.token_urlsafe(32)), "invalid_device_token")  # the legacy shape
+    made_up = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12))
+    # Global's bare 12-character shape; a Global without the widened token
+    # pattern (the client ships first) refuses it as invalid_request instead.
+    refused(lambda: SimSDR(made_up), "invalid_device_token", "invalid_request")
+    return "made-up tokens refused"
 
 
 def bad_window(ctx):

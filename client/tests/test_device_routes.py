@@ -24,7 +24,8 @@ from remoterf.deployment.http import JsonTransport
 GLOBAL = "550e8400-e29b-41d4-a716-446655440000"
 DEST = "11111111-1111-4111-8111-111111111111"
 REF = f"{DEST}:12"
-RFG = "rfg_" + "A" * 43
+RFG = "rfg_" + "A" * 43  # the legacy shape
+TOKEN = "k3v9qlw2mxb7"  # Global's bare 12-character token
 SLOT = (datetime.datetime(2026, 1, 1, 10), datetime.datetime(2026, 1, 1, 11))
 WHEN = ("2026-01-01", "from", "10:00", "AM", "to", "11:00", "AM")
 GET = "pluto:tx_lo:GET"
@@ -107,6 +108,10 @@ def test_bare_strings_route_as_before(routes):
     assert grpc_client.device_route("Zm9vYmFy") == grpc_client.DeviceRoute("Zm9vYmFy", "active")
     assert grpc_client.device_route(REF).kind == "global"
     assert grpc_client.device_route(RFG) == grpc_client.DeviceRoute(RFG, "global")
+    assert grpc_client.device_route(TOKEN) == grpc_client.DeviceRoute(TOKEN, "global")
+    # A lab token is 11 characters; 12 that are not all lowercase or digits are no Global token.
+    for lab in ("Zm9vYmFyAbc", "k3v9qlw2mxb", "K3v9qlw2mxb7", "k3v9qlw2mx-7", "k3v9qlw2mxb7x"):
+        assert grpc_client.device_route(lab) == grpc_client.DeviceRoute(lab, "active")
     grpc_client.rpc_client(function_name=GET, args={"a": map_arg("Zm9vYmFy")})
     assert routes.calls == [(GET, {"a": "Zm9vYmFy"})]
 
@@ -118,15 +123,16 @@ def test_raw_tokens_never_auto_reserve(monkeypatch, routes):
     assert grpc_client.device_route(RFG).wire == RFG
 
 
-def test_a_bare_rfg_token_needs_no_login(monkeypatch, routes):
+@pytest.mark.parametrize("token", [RFG, TOKEN])
+def test_a_bare_global_token_needs_no_login(monkeypatch, routes, token):
     transport = _token_backend(monkeypatch)
-    response = grpc_client.rpc_client(function_name=GET, args={"a": map_arg(RFG)})
+    response = grpc_client.rpc_client(function_name=GET, args={"a": map_arg(token)})
     assert unmap_arg(response.results["tx_lo"]) == 7
     method, path = transport.request.call_args.args
     kwargs = transport.request.call_args.kwargs
     assert (method, path) == ("POST", "/v2/deployment/devices/token-rpc")
     assert "access" not in kwargs and set(kwargs["data"]) == {"token", "request_b64"}
-    assert kwargs["data"]["token"] == RFG
+    assert kwargs["data"]["token"] == token
     assert routes.calls == []
 
 
@@ -150,13 +156,15 @@ def test_rfg_at_deployment_is_bound_to_that_deployment(monkeypatch, routes):
     assert routes.calls == []
 
 
+@pytest.mark.parametrize("token", [RFG, TOKEN])
 @pytest.mark.parametrize("fn, key", [(GET, "a"), ("IDL:get_drivers", "token")])
-def test_the_rfg_token_never_leaves_global(monkeypatch, routes, fn, key):
+def test_the_global_token_never_leaves_global(monkeypatch, routes, fn, key, token):
     transport = _token_backend(monkeypatch)
-    grpc_client.rpc_client(function_name=fn, args={key: map_arg(RFG)})
+    grpc_client.rpc_client(function_name=fn, args={key: map_arg(token)})
     data = transport.request.call_args.kwargs["data"]
     sent = grpc_pb2.GenericRPCRequest.FromString(base64.b64decode(data["request_b64"]))
-    assert data["token"] == RFG and unmap_arg(sent.args[key]) == ""
+    assert data["token"] == token and unmap_arg(sent.args[key]) == ""
+    assert routes.calls == []
 
 
 def test_an_old_global_says_it_takes_no_device_tokens(monkeypatch, routes):
@@ -175,6 +183,9 @@ def test_a_handle_without_a_saved_login_is_a_plain_token(monkeypatch, routes):
     _login(monkeypatch, None)
     grpc_client.rpc_client(function_name=GET, args={"a": map_arg("PlutoA@ucla")})
     assert routes.calls == [(GET, {"a": "PlutoA"})]
+    # With an @ it is a handle, even when the name has a Global token's shape.
+    grpc_client.rpc_client(function_name=GET, args={"a": map_arg(f"{TOKEN}@ucla")})
+    assert routes.calls[-1] == (GET, {"a": TOKEN})
 
 
 def test_a_handle_is_exchanged_once_at_the_active_lab(monkeypatch, routes):
@@ -668,7 +679,7 @@ def test_a_global_reservation_shows_the_token_and_the_handle(monkeypatch):
 
     lines = _shown(monkeypatch, client_app)
     account = Mock()
-    account.reserve_device.return_value = RFG
+    account.reserve_device.return_value = TOKEN
     account.install_reserved_driver.return_value = "pluto"
     monkeypatch.setattr(client_app, "account", account)
     monkeypatch.setattr(homes, "discover", lambda host: {"deployment_id": DEST})
@@ -676,8 +687,8 @@ def test_a_global_reservation_shows_the_token_and_the_handle(monkeypatch):
     client_app._federated_reserve_slot(REF, day, SLOT, "10:00", "11:00", deployment_name="UCLA",
                                        device_name="Pluto SDR", device_handle="PlutoA")
     assert _row(lines, "PlutoA@ucla", *WHEN)
-    assert _row(lines, "Token", f"{RFG}@ucla") and _row(lines, "Handle", "PlutoA@ucla")
-    assert any(line.startswith("│ Token   rfg_") for line in lines)  # lines up with "Handle  "
+    assert _row(lines, "Token", TOKEN) and _row(lines, "Handle", "PlutoA@ucla")  # bare, no @ucla
+    assert any(line.startswith(f"│ Token   {TOKEN}") for line in lines)  # lines up with "Handle  "
     assert any("logged in to RemoteRF Global" in line for line in lines)
     # A display name that is not the lab's slug: the bare token, which works
     # as is, and no handle (it needs @<slug> to route).
@@ -685,7 +696,7 @@ def test_a_global_reservation_shows_the_token_and_the_handle(monkeypatch):
     client_app._federated_reserve_slot(REF, day, SLOT, "10:00", "11:00", deployment_name="UCLA Lab",
                                        device_name="Pluto SDR", device_handle="PlutoA")
     assert _row(lines, "PlutoA@UCLA", "Lab", *WHEN)
-    assert _row(lines, "Token", RFG) and not any("Handle" in line for line in lines)
+    assert _row(lines, "Token", TOKEN) and not any("Handle" in line for line in lines)
     assert not any("has no handle" in line for line in lines)
     assert "Its handle PlutoA can't be used from here: this deployment's Global name is unknown" in _text(lines)
 

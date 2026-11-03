@@ -48,7 +48,8 @@ Close the device in `finally`. `adi.Pluto(virtual=True)` simulates a Pluto offli
   As a token it works for the logged-in account that holds the reservation, on a machine with that saved login.
   With no live reservation of that account on the device, the client reserves the current slot if it is free
   (`REMOTERF_AUTO_RESERVE=0` turns this off).
-- A Global token `rfg_...@deployment` works from any machine, with no login.
+- A Global token is a bare 12-character code (for example `k3v9qlw2mxb7`); it works from any machine, with no login.
+  Handles are always `Name@deployment`.
 - A deployment's own token (11 characters) works on a machine whose client is set up for that deployment.
 - Every token works only inside its reservation window, from start to end.
 - Drivers take `token=`, and fall back to the `REMOTERF_TOKEN` environment variable. Generated scripts use

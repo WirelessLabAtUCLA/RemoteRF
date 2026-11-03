@@ -88,14 +88,15 @@ def test_non_device_calls_and_REMOTERF_DIRECT_0_stay_on_the_relay(fresh, monkeyp
     assert FakePath.instances == [] and fresh.device_rpc.call_count == 2
 
 
-def test_an_rfg_token_signals_with_the_token_and_no_bearer(fresh, monkeypatch):
+@pytest.mark.parametrize("token, dep", [(RFG, DEST), ("k3v9qlw2mxb7", None)])
+def test_a_global_token_signals_with_the_token_and_no_bearer(fresh, monkeypatch, token, dep):
     monkeypatch.setattr(grpc_client, "federated_backend", Mock(side_effect=AssertionError("no login")))
-    route = grpc_client.DeviceRoute(RFG, "global", deployment_id=DEST)
+    route = grpc_client.DeviceRoute(token, "global", deployment_id=dep)
     grpc_client._federated_call(route, "pluto:rx_lo:GET", {"a": map_arg("")})
     path = FakePath.instances[0]
-    assert path.memo == DEST
+    assert path.memo == (dep or token)
     assert path.offer({"id": "x"}) == PIN
-    fresh.device_direct.assert_called_once_with(RFG, DEST, json.dumps({"id": "x"}))
+    fresh.device_direct.assert_called_once_with(token, dep, json.dumps({"id": "x"}))
 
 
 @pytest.mark.parametrize("code, unavailable", [

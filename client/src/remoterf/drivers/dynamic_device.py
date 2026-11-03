@@ -95,7 +95,7 @@ def fetch_idl(
     from remoterf_federation_core import is_global_ref
 
     # A bare HOME-minted device reference is fetched through the same relayed
-    # IDL RPC every driver uses; an rfg_ token tries v2 over the relayed device
+    # IDL RPC every driver uses; a Global token tries v2 over the relayed device
     # plane first.
     federated = is_global_ref(token) or is_global_ref(device_id)
     if token is not None and device_id is None and prefer_v2 and not federated:

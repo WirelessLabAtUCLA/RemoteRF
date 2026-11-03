@@ -23,7 +23,7 @@ punch fails or the path dies, calls fall back to gRPC; a Global host relay is
 tried first after both QUIC paths fail. A path that died is retried after 30 s,
 a failed attempt only once a device call wants it.
 Signaling is ACC:direct_offer over the channel the client already has. See
-RemoteRF-Server docs/gate-i-direct-path.md. A Global device ref or rfg_
+RemoteRF-Server docs/gate-i-direct-path.md. A Global device ref or Global
 token signals through Global instead (global_path).
 
 A partner lab's device (one the home lists on a federation agreement) gets a
@@ -896,12 +896,12 @@ def _partner(token: str) -> Optional[DirectPath]:
 
 
 def _global_offer(ref: str, deployment_id: Optional[str]) -> Callable[[dict], dict]:
-    """The offer through Global: an ``rfg_`` token is its own credential, a ref takes the login."""
+    """The offer through Global: a Global token is its own credential, a ref takes the login."""
     def send(offer: dict) -> dict:
         from ..deployment.http import AccountBackendError
         from . import grpc_client
 
-        backend = grpc_client._token_backend() if ref.startswith("rfg_") else grpc_client.federated_backend()
+        backend = grpc_client._token_backend() if grpc_client.is_global_token(ref) else grpc_client.federated_backend()
         try:
             answer = json.loads(backend.device_direct(ref, deployment_id, json.dumps(offer)))
         except AccountBackendError as exc:
@@ -917,7 +917,7 @@ def _global_offer(ref: str, deployment_id: Optional[str]) -> Callable[[dict], di
 
 
 def global_path(ref: str, deployment_id: Optional[str] = None) -> Optional[DirectPath]:
-    """The path to the lab behind a Global device ref or ``rfg_`` token,
+    """The path to the lab behind a Global device ref or Global token,
     signaled through Global, when it is ready for this call."""
     if not enabled():
         return None

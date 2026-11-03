@@ -129,7 +129,7 @@ class RemoteRFAccount:
         if self.is_https_home:
             with self._busy("Reserving…"):
                 reservation = self.backend.reserve(device_id, int(start_time.timestamp()), int(end_time.timestamp()))
-            # Global's device API token (rfg_...), else (an older Global) the
+            # Global's device API token, else (an older Global) the
             # HOME reference, which also drives: adi.Pluto("<deployment>:<id>")
             return reservation.get('token') or reservation['device_id']
         username, credential_secret = self._rpc_credentials()
@@ -148,7 +148,7 @@ class RemoteRFAccount:
         try:
             from ..drivers.dynamic_device import install_driver
             if self.is_https_home:
-                # By the ref, which needs no live slot (an rfg_ token does).
+                # By the ref, which needs no live slot (a Global token does).
                 return install_driver(device_id=device_id).name
             return install_driver(token=handle, device_id=device_id).name
         except Exception as e:

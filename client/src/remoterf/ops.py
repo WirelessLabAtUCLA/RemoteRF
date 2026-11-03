@@ -27,7 +27,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import grpc
 
 from .common.utils import map_arg, str_to_list, unmap_arg
-from .core.grpc_client import _key
+from .core.grpc_client import _key, is_global_token
 from .core.messages import explain
 from .deployment.http import AccountBackendError
 
@@ -750,8 +750,9 @@ def reserve(s, handle, start, end, *, reveal_token=False) -> dict:
                                  minutes=int(row.get("max_reservation_time_sec") or 0) // 60 or None,
                                  days=_days(row.get("max_horizon_sec"))) from exc
         rid, token = reservation["reservation_id"], reservation.get("token")
-        # An older Global issues no rfg_ token; the handle still works.
-        token = f"{token}@{h.rpartition('@')[2]}" if token and token.startswith("rfg_") else None
+        # Global's token is bare and works as is; an older Global issues none,
+        # and the handle still works.
+        token = token if is_global_token(token) else None
     else:
         before = _native_reservations(s)
         try:
