@@ -226,6 +226,18 @@
       ]
      ]
     },
+    "reservations.db:ReservationCount": {
+     "columns": [
+      "id",
+      "n"
+     ],
+     "rows": [
+      [
+       1,
+       2
+      ]
+     ]
+    },
     "reservations.db:Reservations": {
      "columns": [
       "res_id",
@@ -515,7 +527,7 @@
      ]
     }
    },
-   "why": "Additive schema: 16 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
+   "why": "Additive schema: 17 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
   },
   "files": {
    "kind": "review",
@@ -799,6 +811,18 @@
       ]
      ]
     },
+    "reservations.db:ReservationCount": {
+     "columns": [
+      "id",
+      "n"
+     ],
+     "rows": [
+      [
+       1,
+       2
+      ]
+     ]
+    },
     "reservations.db:Reservations": {
      "columns": [
       "res_id",
@@ -1088,7 +1112,7 @@
      ]
     }
    },
-   "why": "Additive schema: 16 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
+   "why": "Additive schema: 17 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
   },
   "files": {
    "kind": "review",
@@ -1242,6 +1266,18 @@
      ],
      "rows": []
     },
+    "reservations.db:ReservationCount": {
+     "columns": [
+      "id",
+      "n"
+     ],
+     "rows": [
+      [
+       1,
+       1
+      ]
+     ]
+    },
     "reservations.db:Reservations": {
      "columns": [
       "res_id",
@@ -1531,7 +1567,7 @@
      ]
     }
    },
-   "why": "Additive schema: 16 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
+   "why": "Additive schema: 17 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
   },
   "files": {
    "kind": "review",
