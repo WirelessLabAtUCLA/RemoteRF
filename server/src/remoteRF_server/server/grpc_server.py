@@ -1290,6 +1290,33 @@ def cmd_users_purge(argv): reservation_handler.remove_all_users()
 def cmd_reservations_list(argv): reservation_handler.print_all_reservations()
 
 
+def cmd_reservations_cancel(argv):
+    args = [arg for arg in argv if arg not in ("-y", "--yes")]
+    if len(args) != 1 or any(arg.startswith("-") for arg in args):
+        print("Usage: reservations cancel <res_id> [-y]")
+        return 2
+    try:
+        res_id = int(args[0])
+        if not 0 < res_id < 2**63 or str(res_id) != args[0]:
+            raise ValueError
+    except ValueError:
+        print("Reservation ID must be a positive integer.")
+        return 2
+    row = reservation_handler.cancel_reservation_admin(res_id)
+    if row is None:
+        print(f"Reservation {res_id} was not found or has already ended.")
+        return 1
+    if row is False:
+        print(f"Reservation {res_id} is on a partner lab; the user cancels it from their client.")
+        return 3
+    print(" ".join(str(value) for value in row))
+    try:
+        reservation_handler.update_devices()
+    except Exception as exc:  # noqa: BLE001 - the delete is committed; report the pending release
+        print(f"Warning: device release pending ({exc}); it completes on the next device update.")
+    return 0
+
+
 def cmd_users_prune_proxies(argv):
     """Dry run unless -y: proxies whose home left, half-deleted ones, and with
     --stale DAYS those unseen that long with nothing booked."""

@@ -139,7 +139,8 @@ def cmd_cluster_info(name: str) -> int:
     for index, (lab, role, sharing) in enumerate(labs):
         if index:
             rows.append("")
-        rows.append(f"{_lab(lab)}  {role}" + ("  (you)" if lab["deployment_id"] == me["deployment_id"] else ""))
+        rows.append(f"{_lab(lab)}  {role}  {lab['deployment_id']}"
+                    + ("  (you)" if lab["deployment_id"] == me["deployment_id"] else ""))
         if not sharing.get("detail"):
             rows.append("    shares nothing")
         for group in sharing["detail"]:

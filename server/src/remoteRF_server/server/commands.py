@@ -126,6 +126,7 @@ def _table() -> list[Command]:
         Command(("users prune-proxies",), "Partner-deployment visitors whose home is gone: list them, -y removes [--stale DAYS]", _daemon("cmd_users_prune_proxies"), "Users", where=D),
         # ---- reservations ----
         Command(("reservations list",), "List reservations", _daemon("cmd_reservations_list"), "Reservations", where=D),
+        Command(("reservations cancel",), "Cancel one reservation: reservations cancel <res_id> [-y]", _daemon("cmd_reservations_cancel"), "Reservations", where=D),
         Command(("reservations purge",), "Remove ALL reservations", _daemon("cmd_reservations_purge"), "Reservations", where=D),
         # ---- groups ----
         Command(("groups list",), "List user groups", _shell("cmd_groups_list"), "Groups"),

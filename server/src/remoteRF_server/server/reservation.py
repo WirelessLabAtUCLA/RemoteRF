@@ -802,6 +802,26 @@ class ReservationHandler:
     def remove_reservation(self, *, res_id):
        self.cursor.execute('DELETE FROM Reservations WHERE res_id = ?', (res_id,))
        return {"UC": map_arg(f'Removed reservation {res_id}')}
+
+    @db_connection
+    def cancel_reservation_admin(self, res_id: int):
+        row = self.cursor.execute(
+            "SELECT res_id, username, device_id, start_time, end_time "
+            "FROM Reservations WHERE res_id = ?",
+            (int(res_id),),
+        ).fetchone()
+        if row is None or _parse_reservation_datetime(row[4]) <= datetime.now():
+            return None
+        # A booking our user holds on a partner lab is cancelled there first (home_devices.cancel).
+        if self.cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='HomeFederatedReservations'"
+        ).fetchone() and self.cursor.execute(
+            "SELECT 1 FROM HomeFederatedReservations WHERE res_id = ?", (int(res_id),)
+        ).fetchone():
+            return False
+        self.cursor.execute("DELETE FROM Reservations WHERE res_id = ?", (int(res_id),))
+        self.cursor.execute("DELETE FROM FederatedReservations WHERE res_id = ?", (int(res_id),))
+        return row
     
     @db_connection 
     def rm_db(self):
