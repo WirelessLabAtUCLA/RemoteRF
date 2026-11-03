@@ -164,6 +164,7 @@ def print_help() -> None:
     printf("  remoterf -c | --config [options]", Sty.CYAN)
     printf("    -a, --addr <host:port>", Sty.CYAN, "          Set target server", Sty.DEFAULT)
     printf("    --cert-port <port>", Sty.CYAN, "              Cert server port (default: grpc port + 1)", Sty.DEFAULT)
+    printf("    --ca-sha256 <hex>", Sty.CYAN, "               Lab CA fingerprint (default: pin on first use)", Sty.DEFAULT)
     printf("    -w, --wipe", Sty.CYAN, "                      Delete all local config", Sty.DEFAULT)
     printf("    -y, --yes", Sty.CYAN, "                       Skip wipe confirmation", Sty.DEFAULT)
     printf("    -r, --register", Sty.CYAN, "                  Register right after configuring", Sty.DEFAULT)
@@ -630,6 +631,7 @@ def main() -> int:
         register = False
         account_transport = None
         cert_port_arg = None
+        ca_sha256 = None
 
         i = 1
         while i < len(argv):
@@ -660,6 +662,14 @@ def main() -> int:
                 except Exception:
                     print("remoterf: --cert-port must be an integer", file=sys.stderr)
                     return 2
+                i += 2
+                continue
+
+            if tok in ("--ca-sha256", "-ca-sha256"):
+                if i + 1 >= len(argv):
+                    print("remoterf: missing required argument after --ca-sha256", file=sys.stderr)
+                    return 2
+                ca_sha256 = argv[i + 1]
                 i += 2
                 continue
 
@@ -734,7 +744,8 @@ def main() -> int:
 
             # configure returns the proper exit code
             cert_port = cert_port_arg if cert_port_arg is not None else port + 1
-            result = configure(host, port, cert_port)
+            pin = {"ca_sha256": ca_sha256} if ca_sha256 is not None else {}
+            result = configure(host, port, cert_port, **pin)
             if result not in (None, 0):
                 return int(result)
             select_direct()

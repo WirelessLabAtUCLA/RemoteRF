@@ -57,6 +57,16 @@ class RemoteRFCliTests(unittest.TestCase):
         self.assertEqual(remoterf_cli.main(), 0)
         configure.assert_called_once_with("10.0.0.1", 12321, 12322)
 
+    @mock.patch("remoterf.config.config.configure")
+    @mock.patch.object(
+        remoterf_cli.sys, "argv", ["remoterf", "-c", "-a", "10.0.0.1:12321", "--ca-sha256", "ab" * 32]
+    )
+    @mock.patch("remoterf.deployment.state.select_direct")
+    def test_config_passes_the_ca_fingerprint(self, _select_direct, configure):
+        configure.return_value = 0
+        self.assertEqual(remoterf_cli.main(), 0)
+        configure.assert_called_once_with("10.0.0.1", 12321, 12322, ca_sha256="ab" * 32)
+
 
 if __name__ == "__main__":
     unittest.main()

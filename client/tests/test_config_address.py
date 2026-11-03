@@ -85,7 +85,7 @@ class HostResolvesTests(unittest.TestCase):
 class ConfigurePreservesHostnameTests(unittest.TestCase):
     """`configure()` must store the hostname as configured, never a resolved IP."""
 
-    def _run_configure(self, host, port=443, cert_port=444):
+    def _run_configure(self, host, port=443, cert_port=444, **kwargs):
         written: dict[str, dict[str, str]] = {}
 
         def fake_write_env_kv(path, kv):
@@ -96,9 +96,17 @@ class ConfigurePreservesHostnameTests(unittest.TestCase):
              mock.patch.object(config_mod, "fetch_and_save_ca_cert", return_value=True) as fetch, \
              mock.patch.object(config_mod, "_write_env_kv", side_effect=fake_write_env_kv), \
              mock.patch.object(config_mod, "_print_config_summary"):
-            config_mod.configure(host, port, cert_port)
+            config_mod.configure(host, port, cert_port, **kwargs)
 
         return written["kv"], fetch
+
+    def test_no_fingerprint_by_default(self):
+        _, fetch = self._run_configure("192.168.1.20")
+        self.assertIsNone(fetch.call_args.kwargs["expected_sha256"])
+
+    def test_ca_sha256_is_passed_to_the_fetch(self):
+        _, fetch = self._run_configure("192.168.1.20", ca_sha256="ab" * 32)
+        self.assertEqual(fetch.call_args.kwargs["expected_sha256"], "ab" * 32)
 
     def test_hostname_is_preserved_in_saved_config(self):
         kv, fetch = self._run_configure("ucla.global.remoterf.net")
