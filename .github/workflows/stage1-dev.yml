@@ -66,6 +66,7 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
+          attestations: false
 
   deploy-testlab:
     needs: build
@@ -229,7 +230,7 @@ jobs:
           out() { printf 'reason=%s\ndetail=%s\n' "$1" "${2//$'\n'/ }" >> "$GITHUB_OUTPUT"; exit 0; }
           case $TEST in success) ;; cancelled) out cancelled "tests cancelled" ;; *) out tests "unit tests failed" ;; esac
           case $BUILD in success) ;; cancelled) out cancelled "build cancelled" ;; *) out build ".devN wheel build failed" ;; esac
-          case $TESTPYPI in success|skipped) ;; cancelled) out cancelled "TestPyPI upload cancelled" ;; *) out build "TestPyPI upload failed" ;; esac
+          case $TESTPYPI in success|skipped) ;; cancelled) out cancelled "TestPyPI upload cancelled" ;; *) out infra "TestPyPI upload failed" ;; esac
           # Skipped: no server change (smoke then tests the current test lab) or deploys are off.
           case $DEPLOY in
             success|skipped) ;;

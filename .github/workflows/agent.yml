@@ -272,6 +272,11 @@ jobs:
           path: |
             ${{ runner.temp }}/agent.patch
             ${{ runner.temp }}/summary.md
+      - if: steps.auth.outputs.ok == 'true' && steps.diff.outputs.changed != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-summary
+          path: ${{ runner.temp }}/summary.md
 
   publish:
     needs: [gate, work]
@@ -375,10 +380,22 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       N: ${{ needs.gate.outputs.issue }}
-      MSG: "${{ needs.gate.outputs.mode == 'autofix' && 'Auto-fix stopped: the agent pushed no fix' || 'Agent stopped: it made no change, or the run failed' }}"
+      PREFIX: "${{ needs.gate.outputs.mode == 'autofix' && 'Auto-fix' || 'Agent' }}"
+      MSG: "${{ needs.work.result != 'success' && 'the agent run failed' || needs.publish.result == 'failure' && 'publishing its change failed' || 'the agent found nothing to change' }}"
     steps:
+      - if: needs.work.result == 'success' && needs.publish.result == 'skipped'
+        continue-on-error: true # no summary must not cost the comment
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-summary
+          path: ${{ runner.temp }}/agent
       - run: |
-          gh issue comment "$N" --body "🛑 $MSG: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          printf '🛑 %s stopped: %s: %s/%s/actions/runs/%s' "$PREFIX" "$MSG" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/comment.md"
+          if [ -s "$RUNNER_TEMP/agent/summary.md" ]; then
+            printf '\n\n' >> "$RUNNER_TEMP/comment.md"
+            python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).read_text()[:300].replace("@", "@​"), end="")' "$RUNNER_TEMP/agent/summary.md" >> "$RUNNER_TEMP/comment.md"
+          fi
+          gh issue comment "$N" --body-file "$RUNNER_TEMP/comment.md"
 
   # No agent. /quick-edit: apply every pending /quick-edit diff on the issue verbatim, one commit
   # each, bump, push issue-N, open a draft PR, run ci (and stage1-dev on a ready PR). /ship: the

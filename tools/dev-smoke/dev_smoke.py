@@ -271,10 +271,16 @@ def direct_rx(ctx):
     sdr, token = ctx["sdr"], ctx["res"]["token"]
     os.environ["REMOTERF_DIRECT"] = "1"  # read on every call (direct_path.enabled)
     try:
-        sdr.ip()  # a device call opens the path; it comes up in the background
-        deadline = time.monotonic() + 15
-        while (path := direct_path.global_path(token)) is None and time.monotonic() < deadline:
-            time.sleep(0.5)
+        path = None
+        for attempt in range(2):
+            sdr.ip()  # a device call opens the path; it comes up in the background
+            deadline = time.monotonic() + 15
+            while (path := direct_path.global_path(token)) is None and time.monotonic() < deadline:
+                time.sleep(0.5)
+            if path is not None:
+                break
+            if attempt == 0:
+                direct_path.stop()
         check(path is not None, f"no direct path in 15 s: {direct_path.describe()}")
         calls = path.calls
         detail = tone(sdr, N)
