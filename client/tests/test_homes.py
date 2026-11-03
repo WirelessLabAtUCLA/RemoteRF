@@ -412,6 +412,17 @@ def test_login_a_saved_lab_does_no_lookup(monkeypatch):
     lookup.assert_not_called()
 
 
+def test_login_lab_names_ignore_case(monkeypatch):
+    homes.save_home("ucla", document())
+    used_home = mock.Mock(return_value=0)
+    assert run_cli(["-l", "UCLA"], monkeypatch, _use_home=used_home) == 0
+    used_home.assert_called_once_with("ucla", register=False)
+    lookup = _lab_lookup(monkeypatch)
+    shell = mock.Mock(return_value=0)
+    assert run_cli(["-l", "Westwood"], monkeypatch, _account_shell=shell) == 0
+    lookup.assert_called_once_with("westwood.global.remoterf.net")
+
+
 def _lab_lookup(monkeypatch):
     route = {"kind": "relay"}
     lookup = mock.Mock(return_value=("ucla", {"display_name": "UCLA"}, route))

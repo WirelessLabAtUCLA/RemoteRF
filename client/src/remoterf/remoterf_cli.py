@@ -179,7 +179,7 @@ def print_help() -> None:
     printf("  remoterf --reset-password", Sty.GREEN)
     printf("  remoterf --login ucla", Sty.GREEN)
     printf("  remoterf --login global", Sty.GREEN)
-    printf("  remoterf --login jdoe@ucla", Sty.GREEN)
+    printf("  remoterf --login ucla", Sty.GREEN)
     printf("  remoterf homes", Sty.GREEN)
     printf("  remoterf --config --addr 203.0.113.10:12321", Sty.GREEN)
     printf("  remoterf --config --wipe", Sty.GREEN)
@@ -493,12 +493,15 @@ def _login(target: str | None) -> int:
             if not _ensure_config_present()[0]:
                 return _login_by_username()
             return _account_shell(register=False)
+    if target.lower() in homes.homes() or target.lower() == 'global':
+        target = target.lower()
     if target == 'global':
         # Global's address is built in, so a fresh install can log in to an
         # existing Global account without registering again.
         return _use_global(register=False)
     if target in homes.homes():
         return _use_home(target, register=False)
+    target = target.lower()
     if not homes.NAME_RE.match(target):
         printf(f'No saved home named {target!r}.', Sty.WARNING)
         return _print_pick_a_target()
@@ -509,6 +512,7 @@ def _login(target: str | None) -> int:
             lab, home, route = homes.register_home(host)
     except (RuntimeError, ValueError) as exc:
         printf(f'Could not reach {host}: {_reason(exc)}', Sty.WARNING)
+        printf('For a RemoteRF Global account, use: remoterf -l global', Sty.GRAY)
         return _print_pick_a_target()
     return _account_shell(
         register=False, server_label=f'{lab} ({_route_label(route)})',

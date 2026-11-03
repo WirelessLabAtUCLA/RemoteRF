@@ -481,7 +481,7 @@ def welcome(*, show_banner: bool = True, initial=(), route=None):
         except Exception as exc:  # noqa: BLE001 - same rule for the HTTPS session
             if not getattr(exc, 'sent', True):
                 # Global did not answer: the session is fine, so keep it.
-                printf('RemoteRF Global is not answering. Try again, or open a lab directly: remoterf -l <you>@<lab>', Sty.WARNING)
+                printf('RemoteRF Global is not answering. Try again, or open a lab directly: remoterf -l <lab>', Sty.WARNING)
                 return False
             account.backend.credentials = None
             try:
