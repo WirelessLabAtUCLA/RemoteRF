@@ -151,7 +151,7 @@ def build_server(*, allow_reserve: bool, session_factory=ops.saved_session):
         return read(lambda: _docs().guide()["text"], session=False)
 
     @server.resource("remoterf://docs/{page}", name="docs", title="RemoteRF guide section", mime_type="text/markdown",
-                     description="One section of the agent guide: workflow, tokens, cli, mcp, safety, errors.")
+                     description="One section of the agent guide: workflow, tokens, cli, python, mcp, safety, errors.")
     def docs_resource(page: str):
         return read(lambda: _docs().guide(page)["text"], session=False)
 

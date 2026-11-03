@@ -20,3 +20,20 @@ def devices():
     from .core.availability import devices as _devices
 
     return _devices()
+
+
+# The stable reservation API (remoterf.api), imported on first use: `ops` is internal.
+_API = ("use", "whoami", "list_devices", "slots", "reservations", "reserve", "reserve_now", "cancel",
+        "RemoteRFOpsError")
+
+
+def __getattr__(name):
+    if name in _API:
+        from . import api
+
+        return getattr(api, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted({*globals(), *_API})
