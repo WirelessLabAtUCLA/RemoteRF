@@ -339,7 +339,9 @@ def bad_token(ctx):
 
     refused(lambda: SimSDR("rfg_" + secrets.token_urlsafe(32)), "invalid_device_token")  # the legacy shape
     made_up = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12))
-    refused(lambda: SimSDR(made_up), "invalid_device_token")  # Global's bare 12-character shape
+    # Global's bare 12-character shape; a Global without the widened token
+    # pattern (the client ships first) refuses it as invalid_request instead.
+    refused(lambda: SimSDR(made_up), "invalid_device_token", "invalid_request")
     return "made-up tokens refused"
 
 
