@@ -165,9 +165,9 @@ def _print_reserved(where, when, token, handle, logged_in_to, install, no_handle
         rows.append(("Handle  ", Sty.BOLD, handle, (Sty.BOLD, Sty.GREEN)))
     rows.append(())
     if handle:
-        rows += [("Token   works anywhere, no login needed.", Sty.DEFAULT),
+        rows += [("Token   Works anywhere, no login needed.", Sty.DEFAULT),
                  ("        Keep it safe: it can't be shown again.", Sty.DEFAULT),
-                 (f"Handle  works while you're logged in to {logged_in_to}", Sty.DEFAULT),
+                 (f"Handle  Works while you're logged in to {logged_in_to}", Sty.DEFAULT),
                  ("        and this reservation is active.", Sty.DEFAULT)]
     else:
         rows += [("Works anywhere, no login needed.", Sty.DEFAULT),
