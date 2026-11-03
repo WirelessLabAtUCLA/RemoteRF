@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import base64
 import secrets
 import hashlib
+import json
 import getpass
 import yaml
 
@@ -1485,11 +1486,14 @@ def _device_remove(global_id_str: str) -> int:
     return 0
 
 
-def _device_show() -> int:
+def _device_show(*, json_output: bool = False) -> int:
     from remoteRF_server.common.utils.panel import print_table
 
     p = _devices_yaml_path()
     if not p.exists() and not _devices_env_path().exists():
+        if json_output:
+            print("[]")
+            return 0
         print(f"No devices configured (missing {p}).")
         return 0
 
@@ -1508,6 +1512,18 @@ def _device_show() -> int:
         if is_device_handle(h):
             handles[gid] = h if h not in seen else f"{h} ignored (duplicate name)"
             seen.add(h)
+    if json_output:
+        print(json.dumps([{
+            "device_id": int(gid),
+            "name": str(record.get("NAME", "")),
+            "handle": str(handles.get(gid, "")),
+            "type": str(record.get("TYPE", "")),
+            "host": "local",
+            "online": False,
+            "state": None,
+            "last_seen": None,
+        } for gid, record in sorted(recs.items())], separators=(",", ":")))
+        return 0
     rows = [
         {"id": gid, "type": r.get("TYPE", ""), "name": r.get("NAME", ""),
          "handle": handles.get(gid, "-"),
@@ -1641,13 +1657,13 @@ def cmd_devices_list(argv: List[str]) -> int:
     if commands._IN_DAEMON:
         from remoteRF_server.server.grpc_server import get_devices
 
-        get_devices()
+        get_devices(json_output="--json" in argv)
         return 0
-    reply = control.call(["devices", "list"])
+    reply = control.call(["devices", "list", *(["--json"] if "--json" in argv else [])])
     if reply is not None:
         sys.stdout.write(reply[1])
         return reply[0]
-    return _device_show()
+    return _device_show(json_output="--json" in argv)
 
 
 # -----------------------------
@@ -2424,7 +2440,7 @@ def cmd_global(argv: List[str]) -> int:
     from remoteRF_server.server.global_onboarding import main as global_main
 
     rc = global_main(list(argv))
-    if rc == 0:
+    if rc == 0 and "--json" not in argv:
         _ensure_certificate_names()
     return rc
 

@@ -56,7 +56,7 @@ TIERS = {
     "cluster create": WRITE, "cluster invite": WRITE, "cluster join": WRITE, "cluster kick": WRITE,
     "cluster cap": WRITE, "cluster peers": WRITE, "restart": WRITE, "reload devices": WRITE,
     "db export": WRITE, "cluster groups": WRITE, "cluster codes create": WRITE, "cluster accept": WRITE,
-    "schema download": WRITE,
+    "schema download": WRITE, "reservations cancel": WRITE,
     # write, interactive in the daemon: through the control socket's prompt bridge
     "users manage": WRITE, "diag": WRITE,
     # destructive: password again, a typed word, an automatic backup, then -y

@@ -802,6 +802,26 @@ class ReservationHandler:
     def remove_reservation(self, *, res_id):
        self.cursor.execute('DELETE FROM Reservations WHERE res_id = ?', (res_id,))
        return {"UC": map_arg(f'Removed reservation {res_id}')}
+
+    @db_connection
+    def cancel_reservation_admin(self, res_id: int):
+        row = self.cursor.execute(
+            "SELECT res_id, username, device_id, start_time, end_time "
+            "FROM Reservations WHERE res_id = ?",
+            (int(res_id),),
+        ).fetchone()
+        if row is None or _parse_reservation_datetime(row[4]) <= datetime.now():
+            return None
+        # A booking our user holds on a partner lab is cancelled there first (home_devices.cancel).
+        if self.cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='HomeFederatedReservations'"
+        ).fetchone() and self.cursor.execute(
+            "SELECT 1 FROM HomeFederatedReservations WHERE res_id = ?", (int(res_id),)
+        ).fetchone():
+            return False
+        self.cursor.execute("DELETE FROM Reservations WHERE res_id = ?", (int(res_id),))
+        self.cursor.execute("DELETE FROM FederatedReservations WHERE res_id = ?", (int(res_id),))
+        return row
     
     @db_connection 
     def rm_db(self):
@@ -1336,7 +1356,25 @@ class ReservationHandler:
         return [(_parse_reservation_datetime(a), _parse_reservation_datetime(b)) for a, b in rows]
 
     @db_connection 
-    def print_all_reservations(self):
+    def print_all_reservations(self, *, json_output: bool = False):
+        if json_output:
+            from .json_output import local_iso, print_json
+
+            rows = self.cursor.execute(
+                "SELECT r.res_id, r.username, r.device_id, r.start_time, r.end_time, "
+                "f.issuer_deployment_id FROM Reservations r LEFT JOIN FederatedReservations f "
+                "ON f.res_id=r.res_id ORDER BY r.res_id"
+            ).fetchall()
+            print_json([{
+                "res_id": int(res_id),
+                "username": str(username),
+                "device_id": int(device_id),
+                "start_time": local_iso(start),
+                "end_time": local_iso(end),
+                "federated": issuer is not None,
+                "issuer_deployment_id": str(issuer) if issuer is not None else None,
+            } for res_id, username, device_id, start, end, issuer in rows])
+            return
         from ..common.utils.panel import print_table
 
         cursor = self.db.cursor()

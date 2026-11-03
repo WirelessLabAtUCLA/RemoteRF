@@ -103,6 +103,13 @@ class TwoDoorsTests(unittest.TestCase):
         self.assertEqual((rc, out), (0, "daemon ran: users list\n"))
         self.assertEqual(daemon.seen, [["users", "list"]])
 
+    def test_reload_devices_uses_extended_control_timeout(self):
+        with mock.patch.object(control, "running", return_value=True), \
+                mock.patch.object(control, "call", return_value=(0, "Devices reloaded.\n")) as call:
+            rc, out = self.run_shell(["reload", "devices"])
+        self.assertEqual((rc, out), (0, "Devices reloaded.\n"))
+        call.assert_called_once_with(["reload", "devices"], timeout=120.0)
+
     def test_daemon_command_without_a_server_says_so(self):
         rc, out = self.run_shell(["reservations", "list"])
         self.assertEqual(rc, 1)

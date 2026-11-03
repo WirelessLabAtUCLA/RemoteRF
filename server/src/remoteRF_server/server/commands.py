@@ -126,6 +126,7 @@ def _table() -> list[Command]:
         Command(("users prune-proxies",), "Partner-deployment visitors whose home is gone: list them, -y removes [--stale DAYS]", _daemon("cmd_users_prune_proxies"), "Users", where=D),
         # ---- reservations ----
         Command(("reservations list",), "List reservations", _daemon("cmd_reservations_list"), "Reservations", where=D),
+        Command(("reservations cancel",), "Cancel one reservation: reservations cancel <res_id> [-y]", _daemon("cmd_reservations_cancel"), "Reservations", where=D),
         Command(("reservations purge",), "Remove ALL reservations", _daemon("cmd_reservations_purge"), "Reservations", where=D),
         # ---- groups ----
         Command(("groups list",), "List user groups", _shell("cmd_groups_list"), "Groups"),
@@ -361,7 +362,12 @@ def _run_in_daemon(command: Command, rest: list[str]) -> int:
         # for a remote admin: that would hand them the live console, past the policy.
         return console.run_in_console([*command.names[0].split(), *rest])
     # A prompt inside the daemon is asked here, over the socket (control.call).
-    reply = control.call([*command.names[0].split(), *rest], timeout=3600.0 if command.interactive else 30.0)
+    timeout = (
+        3600.0 if command.interactive
+        else 120.0 if command.names[0] == "reload devices"
+        else 30.0
+    )
+    reply = control.call([*command.names[0].split(), *rest], timeout=timeout)
     if reply is None:
         print("The server stopped answering.", file=sys.stderr)
         return 1

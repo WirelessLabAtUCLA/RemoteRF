@@ -47,7 +47,27 @@ def _day(epoch) -> str:
     return datetime.datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d")
 
 
-def cmd_clusters() -> int:
+def _cluster_json(item: dict) -> dict:
+    if item["role"] == "owner":
+        parties = item.get("members", [])
+    else:
+        parties = [{
+            "deployment_id": item["peer"],
+            "display_name": item.get("peer_name"),
+            "state": item.get("state"),
+        }, *item.get("peers", [])]
+    return {
+        "name": str(item["name"]),
+        "lab_cap": int(item["lab_cap"]) if item.get("lab_cap") else None,
+        "members": [{
+            "deployment_id": str(member["deployment_id"]),
+            "display_name": str(member.get("display_name") or member["deployment_id"]),
+            "state": str(member.get("state") or ""),
+        } for member in parties],
+    }
+
+
+def cmd_clusters(*, json_output: bool = False) -> int:
     from ...common.utils.panel import marker, print_panel
     from . import cluster
 
@@ -59,8 +79,13 @@ def cmd_clusters() -> int:
         print(f"Federation is not enabled: {exc}")
         return 1
     state = load_state(Path(config["identity_dir"]))
-    rows = [f"{marker()} {config['display_name']}", ""]
     items = cluster.list_clusters()
+    if json_output:
+        from ..json_output import print_json
+
+        print_json([_cluster_json(item) for item in items])
+        return 0
+    rows = [f"{marker()} {config['display_name']}", ""]
     if not items:
         rows.append("No clusters. Start one with `cluster create <name>`.")
     me = {"display_name": config["display_name"], "deployment_id": state.deployment_id}
@@ -108,11 +133,8 @@ def cmd_clusters() -> int:
     return 0
 
 
-def cmd_cluster_info(name: str) -> int:
+def cmd_cluster_info(name: str, *, json_output: bool = False) -> int:
     """Every lab in the cluster, each shared group with its limits, each device."""
-    from ...common.utils.panel import print_panel
-    from ..device_manager import describe_devices
-    from ..user_group_cli import _fmt_duration
     from . import cluster
 
     config = load_config()
@@ -120,6 +142,15 @@ def cmd_cluster_info(name: str) -> int:
     item = {i["name"]: i for i in cluster.list_clusters()}.get(name)
     if item is None:
         raise cluster.ClusterError(f"no cluster named {name}")
+    if json_output:
+        from ..json_output import print_json
+
+        print_json(_cluster_json(item))
+        return 0
+    from ...common.utils.panel import print_panel
+    from ..device_manager import describe_devices
+    from ..user_group_cli import _fmt_duration
+
     me = {"display_name": config["display_name"], "deployment_id": state.deployment_id}
     mine = {"groups": len(item["groups"]), "detail": [
         {"name": g["group_name"], "max_reservation_time_sec": g["max_reservation_time_sec"],
@@ -139,7 +170,8 @@ def cmd_cluster_info(name: str) -> int:
     for index, (lab, role, sharing) in enumerate(labs):
         if index:
             rows.append("")
-        rows.append(f"{_lab(lab)}  {role}" + ("  (you)" if lab["deployment_id"] == me["deployment_id"] else ""))
+        rows.append(f"{_lab(lab)}  {role}  {lab['deployment_id']}"
+                    + ("  (you)" if lab["deployment_id"] == me["deployment_id"] else ""))
         if not sharing.get("detail"):
             rows.append("    shares nothing")
         for group in sharing["detail"]:
@@ -310,7 +342,7 @@ def cmd_cluster(argv: list[str]) -> int:
     flags = [a for a in argv[1:] if a.startswith("--")]
     words = [a for a in argv[1:] if not a.startswith("--")]
     if verb == "list" and not words:
-        return cmd_clusters()
+        return cmd_clusters(json_output="--json" in flags)
     if verb == "codes" and (not words or words[0] not in ("create", "list")):
         print("Usage: cluster codes create [<cluster>] | cluster codes list [<cluster>]", file=sys.stderr)
         return 2
@@ -370,7 +402,7 @@ def cmd_cluster(argv: list[str]) -> int:
                    + (_n(int(answer), "reservation") if int(answer) else "any number of reservations")
                    + " on your devices at a time.", Sty.GRAY)
         elif verb == "info" and arg:
-            return cmd_cluster_info(arg)
+            return cmd_cluster_info(arg, json_output="--json" in flags)
         elif verb == "groups" and len(words) == 1:
             cluster._find(cluster.load(), arg)
             return _share_groups(arg)

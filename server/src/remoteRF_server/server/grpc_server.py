@@ -54,7 +54,8 @@ from .dynamic_v2 import (
 from .host_dynamic_v2 import host_session_proxy
 from .acc_perms import perms
 from ..common.utils import *
-from .device_manager import close_local_devices, reload_devices, get_registered_devices, get_all_devices_str, handle_report
+from .device_manager import (close_local_devices, reload_devices, get_registered_devices,
+                             get_all_devices_str, handle_report, device_inventory_snapshot)
 from .user_group_cli import make_user_group_local, edit_user_group_local, list_user_groups_local, remove_user_group_local, make_enrollment_codes_local, remove_enrollment_code_local, list_enrollment_codes_local, export_user_groups_csv_local, export_enrollment_codes_csv_local
 from .user_group_handler import start_usergroup_cleanup_loop
 from .global_onboarding import start_agent
@@ -681,7 +682,33 @@ def set_acc():
     elif inpu == 'c':
         print("Canceled. Exiting ...")
 
-def get_devices():
+def _devices_json() -> list[dict]:
+    from .json_output import epoch_ms_iso
+
+    reg = hts.get_tunnel_registry(create=False)
+    live = reg.list_devices() if reg is not None else {}
+    rows = []
+    for device_id, item in sorted(device_inventory_snapshot().items()):
+        ds = live.get(str(device_id))
+        rows.append({
+            "device_id": int(device_id),
+            "name": str(item["name"]),
+            "handle": str(item["handle"]),
+            "type": str(item["device_type"] or ""),
+            "host": f"{ds.host_id} #{ds.host_local_id}" if ds else "local",
+            "online": bool(item["online"]),
+            "state": None,
+            "last_seen": epoch_ms_iso(ds.last_seen_ms) if ds else None,
+        })
+    return rows
+
+
+def get_devices(*, json_output: bool = False):
+    if json_output:
+        from .json_output import print_json
+
+        print_json(_devices_json())
+        return
     from ..common.utils.panel import print_table
 
     reg = hts.get_tunnel_registry(create=False)
@@ -711,7 +738,33 @@ def _fmt_ms_ago(ms: int) -> str:
         return f"{dt/1000:.1f}s"
     return f"{dt/60_000:.1f}m"
 
-def _cmd_hosts_status() -> None:
+def _hosts_json() -> list[dict]:
+    from .json_output import epoch_ms_iso
+
+    reg = hts.get_tunnel_registry()
+    assert reg is not None
+    hosts = reg.list_hosts()
+    by_host: dict[str, list[int]] = {}
+    for key, ds in reg.list_devices().items():
+        try:
+            device_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        by_host.setdefault(ds.host_id or "-", []).append(device_id)
+    return [{
+        "host_id": str(host_id),
+        "online": bool(status.online),
+        "last_seen": epoch_ms_iso(status.last_seen_ms),
+        "devices": sorted(by_host.get(host_id, [])),
+    } for host_id, status in sorted(hosts.items())]
+
+
+def _cmd_hosts_status(*, json_output: bool = False) -> None:
+    if json_output:
+        from .json_output import print_json
+
+        print_json(_hosts_json())
+        return
     from ..common.utils.panel import print_table
 
     reg = hts.get_tunnel_registry()
@@ -1139,7 +1192,32 @@ def _cmd_detach() -> None:
         printf("Not in the console; the server runs in this terminal. Use quit to stop it.", Sty.GRAY)
 
 
-def _cmd_status() -> None:
+def _status_json() -> dict:
+    from . import global_onboarding as g
+
+    devices = device_inventory_snapshot()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    active = g._count(
+        reservation_handler.filepath,
+        "SELECT COUNT(*) FROM Reservations WHERE start_time <= ? AND end_time > ?",
+        (now, now),
+    )
+    return {
+        "server_version": g.server_version(),
+        "online": True,
+        "uptime_s": max(0, int((datetime.now() - start_time).total_seconds())),
+        "devices_total": len(devices),
+        "devices_online": sum(bool(item["online"]) for item in devices.values()),
+        "reservations_active": int(active),
+    }
+
+
+def _cmd_status(*, json_output: bool = False) -> None:
+    if json_output:
+        from .json_output import print_json
+
+        print_json(_status_json())
+        return
     from ..common.utils.panel import marker, print_panel
     from . import global_onboarding as g
 
@@ -1278,16 +1356,43 @@ def _reexec() -> None:
 
 
 # The shared command table calls these by name (commands.py).
-def cmd_status(argv): _cmd_status()
+def cmd_status(argv): _cmd_status(json_output="--json" in argv)
 def cmd_detach(argv): _cmd_detach()
 def cmd_clear(argv): clear()
-def cmd_hosts_status(argv): _cmd_hosts_status()
+def cmd_hosts_status(argv): _cmd_hosts_status(json_output="--json" in argv)
 def cmd_hosts_wipe(argv): _cmd_hosts_wipe(yes=("-y" in argv or "--yes" in argv))
 def cmd_users_list(argv): reservation_handler.print_all_accounts()
 def cmd_users_manage(argv): set_acc()
 def cmd_users_perms(argv): perms.print_perms()
 def cmd_users_purge(argv): reservation_handler.remove_all_users()
-def cmd_reservations_list(argv): reservation_handler.print_all_reservations()
+def cmd_reservations_list(argv): reservation_handler.print_all_reservations(json_output="--json" in argv)
+
+
+def cmd_reservations_cancel(argv):
+    args = [arg for arg in argv if arg not in ("-y", "--yes")]
+    if len(args) != 1 or any(arg.startswith("-") for arg in args):
+        print("Usage: reservations cancel <res_id> [-y]")
+        return 2
+    try:
+        res_id = int(args[0])
+        if not 0 < res_id < 2**63 or str(res_id) != args[0]:
+            raise ValueError
+    except ValueError:
+        print("Reservation ID must be a positive integer.")
+        return 2
+    row = reservation_handler.cancel_reservation_admin(res_id)
+    if row is None:
+        print(f"Reservation {res_id} was not found or has already ended.")
+        return 1
+    if row is False:
+        print(f"Reservation {res_id} is on a partner lab; the user cancels it from their client.")
+        return 3
+    print(" ".join(str(value) for value in row))
+    try:
+        reservation_handler.update_devices()
+    except Exception as exc:  # noqa: BLE001 - the delete is committed; report the pending release
+        print(f"Warning: device release pending ({exc}); it completes on the next device update.")
+    return 0
 
 
 def cmd_users_prune_proxies(argv):
@@ -1353,7 +1458,7 @@ def cmd_stats_purge(argv):
             printf("No activity log to purge.", Sty.GRAY)
             return
     printf(f"Purged activity log: {reservation.LOG_PATH}", Sty.GRAY)
-def cmd_devices_list(argv): get_devices()
+def cmd_devices_list(argv): get_devices(json_output="--json" in argv)
 
 
 def cmd_diag(argv):
