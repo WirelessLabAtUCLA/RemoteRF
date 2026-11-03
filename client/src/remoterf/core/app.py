@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from remoterf.core.grpc_client import addr as server_addr, handle_admin_command, _key
+from remoterf.core.grpc_client import addr as server_addr, handle_admin_command, _key, is_global_token
 from . import *
 from ..common.utils import *
 
@@ -154,7 +154,7 @@ def _native_label(label):
 
 
 def _print_reserved(where, when, token, handle, logged_in_to, install, no_handle=_NO_HANDLE):
-    """The token and, when the device has one, its handle (both @<deployment>).
+    """The token and, when the device has one, its handle (Name@<deployment>).
     Boxed before the driver install, which can fail or stall; the usage box
     follows it, once the device type is known. `no_handle`: why no handle is
     shown."""
@@ -850,15 +850,15 @@ def _federated_reserve_slot(device_id, chosen_day, chosen_slot, slot_start_str, 
         return
     when = _format_reservation_range(*chosen_slot)
     install = lambda: account.install_reserved_driver(token, device_id)
-    slug = _global_slug(device_id, deployment_name) if token.startswith("rfg_") else None
+    slug = _global_slug(device_id, deployment_name) if is_global_token(token) else None
     label = _device_label(device_name, device_handle, slug or deployment_name)
-    if not token.startswith("rfg_"):
+    if not is_global_token(token):
         # An older Global: the HOME reference goes where a token goes.
         _panel("Reserved", [(label, (Sty.BOLD, Sty.MAGENTA), f"  {when}", Sty.CYAN), (),
                             ("Token  ", Sty.BOLD, token, (Sty.BOLD, Sty.GREEN))])
         _print_usage(install(), token)
         return
-    _print_reserved(label, when, f"{token}@{slug}" if slug else token,
+    _print_reserved(label, when, token,
                     f"{device_handle}@{slug}" if device_handle and slug else None, "RemoteRF Global", install,
                     _UNROUTABLE.format(device_handle, "this deployment's Global name is unknown") if device_handle else _NO_HANDLE)
 

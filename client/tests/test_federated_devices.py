@@ -133,6 +133,9 @@ def test_device_direct_posts_bearer_or_token_body():
     assert kwargs["data"] == {"token": rfg, "deployment_id": DEST, "ice": "OFFER"} and "access" not in kwargs
     backend.device_direct(rfg, None, "OFFER")
     assert transport.request.call_args.kwargs["data"] == {"token": rfg, "ice": "OFFER"}
+    backend.device_direct("k3v9qlw2mxb7", None, "OFFER")  # Global's bare token
+    kwargs = transport.request.call_args.kwargs
+    assert kwargs["data"] == {"token": "k3v9qlw2mxb7", "ice": "OFFER"} and "access" not in kwargs
 
     for bad in ({"provenance": "home", "ice": "x"}, {"provenance": "destination"}, {"provenance": "destination", "ice": 1}):
         transport.request.return_value = bad

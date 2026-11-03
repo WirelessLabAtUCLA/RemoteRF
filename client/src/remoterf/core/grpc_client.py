@@ -189,6 +189,15 @@ def get_tcp_calls():
 # relayed through the HOME; the response is the destination's ordinary
 # GenericRPCResponse, so generated drivers do not know the difference.
 
+_GLOBAL_TOKEN = re.compile(r"[a-z0-9]{12}")
+
+
+def is_global_token(s) -> bool:
+    """A Global device token: 12 lowercase letters and digits, or a legacy
+    ``rfg_`` one. A lab token is 11 characters, so it never matches."""
+    return isinstance(s, str) and (s.startswith("rfg_") or _GLOBAL_TOKEN.fullmatch(s) is not None)
+
+
 _federated_backend = None
 # A direct-path thread may ask at the same moment: two backends would each
 # refresh the stored session, and Global revokes a replayed refresh token.
@@ -227,7 +236,7 @@ def _federated_ref(function_name, args):
 
 
 def _federated_call(route, function_name, args):
-    """Relay through Global: an ``rfg_`` token needs no login, a ref the bearer."""
+    """Relay through Global: a Global token needs no login, a ref the bearer."""
     from ..deployment.http import AccountBackendError
     ref = getattr(route, "wire", route)
     # A driver schema always takes the relay, in one piece: Global screens each one it carries.
@@ -246,7 +255,7 @@ def _federated_call(route, function_name, args):
                 if not refused:
                     return response
     def send(request):
-        if ref.startswith("rfg_"):
+        if is_global_token(ref):
             return _token_backend().device_token_rpc(
                 ref, getattr(route, "deployment_id", None), request.SerializeToString()
             )
@@ -274,7 +283,7 @@ def _federated_call(route, function_name, args):
                     "768 KiB limit for one call and this deployment does not page it; read fewer "
                     "samples per call (about 98k complex64) or use a direct path"
                 ) from None
-            if ref.startswith("rfg_") and str(exc) == "not_found":
+            if is_global_token(ref) and str(exc) == "not_found":
                 raise RuntimeError(
                     "this RemoteRF Global does not accept device tokens yet; use the device reference"
                 ) from None
@@ -298,7 +307,7 @@ _token_backend_cache = None
 
 
 def _token_backend():
-    """Global, unauthenticated: an ``rfg_`` token is its own credential."""
+    """Global, unauthenticated: a Global token is its own credential."""
     global _token_backend_cache
     if _token_backend_cache is None:
         from ..deployment import homes
@@ -388,7 +397,7 @@ def _resolve(t):
     from remoterf_federation_core import is_global_ref
 
     if "@" not in t:
-        return DeviceRoute(t, "global" if t.startswith("rfg_") or is_global_ref(t) else "active")
+        return DeviceRoute(t, "global" if is_global_token(t) or is_global_ref(t) else "active")
     x, _, dep = t.rpartition("@")
     dep = dep.strip().lower()
     if not x or not dep:
@@ -848,8 +857,8 @@ def _dispatch(function_name, args, connection):
 
 def _route_call(route, function_name, args):
     key = "token" if function_name == "IDL:get_drivers" else "a"
-    if route.wire.startswith("rfg_"):
-        # The rfg_ token is Global's credential and goes only in the request body;
+    if route.kind == "global" and is_global_token(route.wire):
+        # The Global token is Global's credential and goes only in the request body;
         # the frame is relayed to the lab, which pins the device itself.
         args = {**args, key: map_arg("")}
     elif unmap_arg(args[key]) != route.wire:

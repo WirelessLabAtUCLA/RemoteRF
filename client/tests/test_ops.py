@@ -85,7 +85,7 @@ class Home:
                 "destinations": [{"deployment_id": DEP, "display_name": "ucla", "status": "ok"}]}
 
     def reserve(self, device_id, start, end):
-        return {"reservation_id": f"{DEP}:10", "device_id": device_id, "token": "rfg_abc"}
+        return {"reservation_id": f"{DEP}:10", "device_id": device_id, "token": "k3v9qlw2mxb7"}
 
     def cancel(self, rid):
         return True
@@ -233,7 +233,7 @@ def test_lab_reserve_finds_its_id_when_the_lab_is_in_another_zone(lab, monkeypat
 
 def test_global_reserve_and_reservations(home):
     out = ops.reserve(home, "Pluto_01@ucla", "2026-03-02T15:00:00Z", "2026-03-02T15:30:00Z", reveal_token=True)
-    assert (out["reservation_id"], out["token"], out["use_as_token"]) == (f"{DEP}:10", "rfg_abc@ucla", "Pluto_01@ucla")
+    assert (out["reservation_id"], out["token"], out["use_as_token"]) == (f"{DEP}:10", "k3v9qlw2mxb7", "Pluto_01@ucla")  # bare, no @ucla
     assert out["start"] == "2026-03-02T15:00:00Z"
     rows = ops.list_reservations(home)["reservations"]
     assert [(r["handle"], r["device"], r["deployment"], r["start"], r["mine"]) for r in rows] == [
