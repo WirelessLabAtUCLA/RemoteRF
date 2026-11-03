@@ -395,6 +395,10 @@ def _connect_from_record(rec: Dict[str, Any], *, connect: bool = True):
     # Keep those inventories usable while all new writes use the canonical type.
     if dtype == "pluto":
         dtype = "adalm_pluto"
+    # The built-in Wi-Fi driver's original public type was "wifi_dongle".
+    # Keep existing inventories usable while all new schemas use "wifi".
+    if dtype == "wifi_dongle":
+        dtype = "wifi"
     ident = (rec.get("IDENT") or "").strip()
     init_kwargs = rec.get("INIT") or {}
     if not connect:
@@ -493,6 +497,13 @@ def _packaged_driver_schema_path(filename: str) -> Path:
     for candidate in sorted(drivers_root.glob(f"*/{filename}")):
         if candidate.exists():
             return candidate
+    server_drivers_root = Path(__file__).resolve().parents[1] / "drivers"
+    direct = server_drivers_root / filename
+    if direct.exists():
+        return direct
+    for candidate in sorted(server_drivers_root.glob(f"*/{filename}")):
+        if candidate.exists():
+            return candidate
     return drivers_root / "adalm_pluto" / filename
 
 def _driver_registers_type(path: Path, device_type: str) -> bool:
@@ -550,6 +561,27 @@ def _refresh_managed_driver(
         if target_hash != source_hash:
             shutil.copy2(source, target)
         marker.write_text(source_hash + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def _remove_managed_driver(target: Path) -> bool:
+    """Remove a schema only when its managed marker still matches its contents."""
+    marker = _managed_driver_marker(target)
+    if not target.is_file() or not marker.is_file():
+        return False
+    try:
+        marker_hash = marker.read_text(encoding="utf-8").strip()
+        target_hash = _driver_sha256(target)
+        normalized_hash = _driver_normalized_sha256(target)
+    except OSError:
+        return False
+    if marker_hash not in (target_hash, normalized_hash):
+        return False
+    try:
+        target.unlink()
+        marker.unlink()
     except OSError:
         return False
     return True
@@ -655,6 +687,14 @@ def _seed_default_usrp_phaser_driver() -> None:
     _seed_default_driver("usrp_phaser_schema.py", "usrp_phaser")
 
 
+def _seed_default_wifi_driver() -> None:
+    drivers_dir = get_drivers_dir()
+    legacy = drivers_dir / "wifi_dongle_schema.py"
+    if not _remove_managed_driver(legacy) and legacy.is_file():
+        print(f"[drivers] Kept {legacy}: not a managed copy. Remove it, or two Wi-Fi drivers register.")
+    _seed_default_driver("wifi_schema.py", "wifi")
+
+
 # Only the C library from conda: pip already installed pyadi-iio, and conda's
 # pulls a cryptography that breaks the pip-installed pyOpenSSL aioquic needs.
 _LIBIIO_FIX = "conda install -c conda-forge libiio  (in the server's conda env; not pyadi-iio, pip already has it)"
@@ -667,6 +707,7 @@ def _load_all_drivers() -> None:
     _seed_default_hackrf_driver()
     _seed_default_ti_mmwave_driver()
     _seed_default_usrp_phaser_driver()
+    _seed_default_wifi_driver()
 
     # The Pluto drivers need the native libiio behind pylibiio; without it
     # every one of them fails the same way, which is worth one line, not four.
@@ -690,6 +731,7 @@ def _load_all_drivers() -> None:
         ("built-in hackrf driver", "..drivers.hackrf.hackrf_schema"),
         ("built-in TI mmWave driver", "..drivers.ti_mmwave.ti_mmwave_schema"),
         ("built-in USRP Phaser driver", "..drivers.usrp_phaser.usrp_phaser_schema"),
+        ("built-in Wi-Fi driver", "..drivers.wifi.wifi_schema"),
     ):
         try:
             importlib.import_module(module, __package__)

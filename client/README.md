@@ -94,6 +94,26 @@ generic native dispatch, but are not release-qualified as exact UHD overload
 parity until the server's UHD 4.10 target-introspection and hardware
 differential gates pass.
 
+## Wi-Fi
+
+USB Wi-Fi clients are generated from the server's `wifi` schema and installed
+under the matching package name:
+
+```python
+from remoterf.drivers import ensure_driver
+
+token = "reservation-token"
+ensure_driver(token=token)
+
+from remoterf.drivers.wifi import WifiDongle
+
+radio = WifiDongle(token)
+print(radio.scan())
+```
+
+Existing server inventories that use `device_type: wifi_dongle` are accepted
+as `wifi` during upgrade. New inventory entries should use `device_type: wifi`.
+
 ## RTL-SDR
 
 RTL-SDR clients are generated from the server's `rtl_sdr` schema. The machine
