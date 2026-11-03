@@ -373,6 +373,31 @@ to require a reservation first.
 
 Each account may ask once every 10 seconds; a repeat call within that reprints the last table with the remaining wait.
 
+#### Python reservation API
+
+Scripts can find slots, reserve and cancel with the saved login. These top-level functions are the stable API
+(`remoterf.ops` is internal). They print nothing, return plain dicts, and raise `remoterf.RemoteRFOpsError`
+(with `.code` and `.message`) on failure:
+
+```python
+import remoterf
+
+remoterf.use("ucla")                       # default deployment for handles without @ (or set REMOTERF_DEPLOYMENT)
+
+free = remoterf.slots("Pluto_00")["slots"]  # today's free slots, aligned from local midnight
+r = remoterf.reserve("Pluto_00", free[0]["start"], minutes=60)   # or end=...; must be whole free slots
+print(r["handle"], r["start"], r["end"])
+
+for row in remoterf.reservations()["reservations"]:
+    print(row["reservation_id"], row["handle"], row["start"])
+
+remoterf.cancel(r)                         # the dict from reserve()/reservations(), or an id such as "10@ucla"
+```
+
+Also: `remoterf.whoami()`, `remoterf.list_devices()` (the non-printing `devices()`) and `remoterf.reserve_now(handle)`.
+Without `use()` or `REMOTERF_DEPLOYMENT`, a bare name means the deployment you logged in to directly; an explicit
+`Name@lab` always wins. Driver tokens (`Pluto(token=...)`) still need the full handle.
+
 ## Closing
 
 This is fundamentally a experimental platform, and there will be many unknown bugs and issues. Some devices do not have universal support for all its functions at the moment, I am working on that aspect. 

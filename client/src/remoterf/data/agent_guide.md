@@ -3,7 +3,7 @@
 RemoteRF gives remote access to real radios (ADALM-Pluto, USRP, RTL-SDR, HackRF and deployment-defined devices) at
 RemoteRF deployments, by reservation. Experiments are ordinary Python on the user's machine; the `remoterf` drivers carry each call to the radio.
 This guide ships with the installed `remoterf` package, so it matches that version. `remoterf guide TOPIC` prints one
-section: workflow, tokens, cli, mcp, safety, errors.
+section: workflow, tokens, cli, python, mcp, safety, errors.
 
 ## workflow
 
@@ -86,6 +86,34 @@ looks: `~/.claude/skills/remoterf/SKILL.md`, `~/.codex/AGENTS.md`, `~/.gemini/GE
 `--dir PATH` into that project instead. In AGENTS.md and GEMINI.md it keeps its own marked block and leaves the rest alone.
 `auth apps` lists the apps connected to a Global account; connected apps arrive with the RemoteRF Global connector,
 which isn't available yet.
+
+## python
+
+Scripts can find slots, reserve and cancel without the CLI. These top-level names are the stable Python API;
+`remoterf.ops` is internal and may change. They use the saved login (loaded once, reloaded once if it expired), never
+print or prompt, return plain dicts like the `--json` output, and raise `remoterf.RemoteRFOpsError` (`code`, `message`,
+`retryable`, `retry_after`; the codes are those under errors).
+
+```python
+import remoterf
+
+remoterf.use("ucla")                          # default deployment for handles without @; use(None) clears it
+remoterf.whoami()
+remoterf.list_devices()                       # deployment=None, online_only=True, type=None
+free = remoterf.slots("Pluto_00", days=1)     # start_day=None, tz=None
+r = remoterf.reserve("Pluto_00", free["slots"][0]["start"], minutes=60)   # or end=...; reveal_token=False
+remoterf.reservations()                       # mine_only=True
+remoterf.cancel(r)                            # the dict, or its id such as "10@ucla"
+remoterf.reserve_now("Pluto_00")              # the free slot running now
+```
+
+- A handle without `@` gets the default deployment: `remoterf.use()`, else `REMOTERF_DEPLOYMENT`, else the deployment
+  this login is at (a Global login has none). An explicit `@lab` always wins. Returned handles are always full.
+- `start` is a datetime or RFC 3339 string; naive means this machine's local time. Give exactly one of `end` or
+  `minutes`. The window must be one or more consecutive free slots: a misaligned one raises `invalid_argument` and a
+  taken one `slot_unavailable`, both before anything is sent, naming the slot length and the next free slot.
+- `remoterf.devices()` still prints its table; `list_devices()` is the quiet form.
+- The safety rules apply: reserve and cancel only with the user's approval, and never retry them automatically.
 
 ## mcp
 

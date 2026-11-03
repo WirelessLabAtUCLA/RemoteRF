@@ -13,7 +13,7 @@ _TX = re.compile(r"\btx\b|tx_|_tx|transmit|send_waveform|dds")
 
 def test_guide_topics_and_sections():
     whole = guide()
-    assert whole["topic"] is None and whole["topics"] == ["workflow", "tokens", "cli", "mcp", "safety", "errors"]
+    assert whole["topic"] is None and whole["topics"] == ["workflow", "tokens", "cli", "python", "mcp", "safety", "errors"]
     for topic in whole["topics"]:
         part = guide(topic.upper())
         assert part["topic"] == topic and part["text"].startswith(f"## {topic}\n") and part["text"] in whole["text"]

@@ -117,7 +117,7 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "topic": {"type": "string", "description": "One section: workflow, tokens, cli, mcp, safety, errors. Default: the whole guide."}
+          "topic": {"type": "string", "description": "One section: workflow, tokens, cli, python, mcp, safety, errors. Default: the whole guide."}
         },
         "required": []
       }
