@@ -471,6 +471,8 @@ class StatusReportTests(TunnelTests):
                     ("b", 1, "2000-01-01 00:00:00", "2000-01-02 00:00:00"),
                 ],
             )
+            conn.execute("CREATE TABLE ReservationCount (id INTEGER PRIMARY KEY, n INTEGER)")
+            conn.execute("INSERT INTO ReservationCount VALUES (1, 5)")
         (g.cfg_dir() / "devices.yml").write_text(
             "devices:\n"
             "  - device_id: 0\n    device_type: adalm_pluto\n"
@@ -491,6 +493,7 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["users"], 3)  # a partner's visitor is not one of ours
         self.assertEqual(payload["proxies"], 1)
         self.assertEqual(payload["active_reservations"], 1)
+        self.assertEqual(payload["reservations"], 5)
         self.assertEqual(
             sorted(entry["type"] for entry in payload["devices"]),
             ["adalm_pluto", "usrp_2901"],
@@ -505,12 +508,19 @@ class StatusReportTests(TunnelTests):
         for name in ("a", "b", "c"):
             self.assertNotIn(f"'{name}'", serialized)
 
+        # Each deployment field Global's stats.json publishes (vpsrf stats.public) is named.
+        text = " ".join(g.CONSENT_TEXT.split())
+        for item in ("name, version", "devices", "joined", "last online", "how many reservations",
+                     "time reserved, at https://{domain}/stats.json"):
+            self.assertIn(item, text)
+
     def test_status_payload_survives_missing_state(self):
         self.activate()
         payload = g.status_payload()
         self.assertEqual(set(payload), g.STATUS_FIELDS)
         self.assertEqual(payload["users"], 0)
         self.assertEqual(payload["proxies"], 0)
+        self.assertEqual(payload["reservations"], 0)
         self.assertEqual(payload["devices"], [])
         self.assertIsNone(payload["cert_sha256"])
 
@@ -525,7 +535,32 @@ class StatusReportTests(TunnelTests):
 
         with mock.patch.object(g, "call", side_effect=old_global):
             g.send_status()
-        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"proxies", "reserved_s"}])
+        self.assertEqual(sent, [
+            set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS) - {"reservations"},
+            set(g.STATUS_FIELDS) - {"reservations", "proxies", "reserved_s"},
+        ])
+
+    def test_status_drops_only_reservations_for_a_global_that_predates_it(self):
+        self.activate()
+        sent = []
+
+        def global_with_reserved_s(method, path, body):
+            sent.append(set(body["status"]))
+            if "reservations" in body["status"]:
+                raise g.GlobalError("invalid_status")
+
+        with mock.patch.object(g, "call", side_effect=global_with_reserved_s):
+            g.send_status()
+        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"reservations"}])
+
+    def test_status_gives_up_when_even_the_oldest_note_is_refused(self):
+        self.activate()
+
+        with mock.patch.object(g, "call", side_effect=g.GlobalError("invalid_status")) as call:
+            with self.assertRaises(g.GlobalError):
+                g.send_status()
+        self.assertEqual(call.call_count, 3)
 
     def test_reports_only_flow_once_active(self):
         self.join()

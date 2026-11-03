@@ -60,10 +60,13 @@ cluster). Joining Global shares none of your hardware on its own.
 
 Once an hour it sends Global a short note: this deployment's name and
 ID, version, uptime, how many accounts (and how many visit from partner
-deployments), what devices it has, how many reservations are active, the total
-time reserved so far (a single number), and your LAN address. Nothing else leaves your
-server -- no credentials, no user or reservation details -- and the
-connection only goes outward.
+deployments), what devices it has, how many reservations are active, how many
+reservations have been made and the total time reserved so far (two numbers),
+and your LAN address. Nothing else leaves your server -- no credentials, no
+user or reservation details -- and the connection only goes outward.
+Global publishes the network totals, and each deployment's name, version,
+devices, when it joined and was last online, and how many reservations it
+has had and the time reserved, at https://{domain}/stats.json.
 
 A RemoteRF admin will review your new deployment before its address goes live.
 If you opt out, you cannot opt back in without a full data reset. You may leave
@@ -732,6 +735,7 @@ STATUS_FIELDS = frozenset(
         "proxies",
         "devices",
         "active_reservations",
+        "reservations",
         "reserved_s",
         "lan_address",
         "cert_sha256",
@@ -826,6 +830,7 @@ def status_payload() -> dict:
             "SELECT COUNT(*) FROM Reservations WHERE start_time <= ? AND end_time > ?",
             (now, now),
         ),
+        "reservations": _count(reservations, "SELECT n FROM ReservationCount"),
         "reserved_s": _count(reservations, "SELECT CAST(ROUND(seconds) AS INTEGER) FROM ReservedTotal"),
         "lan_address": lan_endpoint(),
         "cert_sha256": cert_sha256(),
@@ -845,13 +850,16 @@ def send_status() -> None:
     from datetime import datetime, timezone
 
     payload = status_payload()
-    try:
-        call("POST", REPORT_PATH, {"kind": "status", "status": payload})
-    except GlobalError as exc:
-        if exc.code != "invalid_status":
-            raise
-        # A Global older than `proxies`/`reserved_s` takes the note as it was before.
-        call("POST", REPORT_PATH, {"kind": "status", "status": {k: v for k, v in payload.items() if k not in ("proxies", "reserved_s")}})
+    # A Global older than a field refuses the note: drop the newest first
+    # (`reservations`), then `proxies`/`reserved_s`, as the note was before them.
+    steps = ((), ("reservations",), ("reservations", "proxies", "reserved_s"))
+    for drop in steps:
+        try:
+            call("POST", REPORT_PATH, {"kind": "status", "status": {k: v for k, v in payload.items() if k not in drop}})
+            break
+        except GlobalError as exc:
+            if exc.code != "invalid_status" or drop is steps[-1]:
+                raise
     update(GLOBAL_LAST_REPORT_AT=datetime.now(timezone.utc).isoformat())
 
 

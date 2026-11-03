@@ -212,17 +212,43 @@ class ReservationHandler:
 
         # Cumulative reserved seconds, kept by triggers because expired rows are
         # purged. A cancel gives back the unused remainder, so only time actually
-        # held counts. Reported to Global as `reserved_s`.
+        # held counts. Reported to Global as `reserved_s`. A partner's device
+        # (alias id >= 1000000) is left to its owner, like ReservationCount below;
+        # the triggers are recreated so labs that had the unfiltered ones get these.
         self.cursor.executescript('''
+        BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS ReservedTotal (id INTEGER PRIMARY KEY CHECK (id = 1), seconds REAL NOT NULL);
         INSERT OR IGNORE INTO ReservedTotal
-            SELECT 1, COALESCE(SUM((julianday(end_time) - julianday(start_time)) * 86400), 0) FROM Reservations;
-        CREATE TRIGGER IF NOT EXISTS reserved_total_ins AFTER INSERT ON Reservations BEGIN
+            SELECT 1, COALESCE(SUM((julianday(end_time) - julianday(start_time)) * 86400), 0) FROM Reservations
+            WHERE device_id < 1000000;
+        DROP TRIGGER IF EXISTS reserved_total_ins;
+        DROP TRIGGER IF EXISTS reserved_total_del;
+        CREATE TRIGGER reserved_total_ins AFTER INSERT ON Reservations
+        WHEN NEW.device_id < 1000000 BEGIN
             UPDATE ReservedTotal SET seconds = seconds + (julianday(NEW.end_time) - julianday(NEW.start_time)) * 86400;
         END;
-        CREATE TRIGGER IF NOT EXISTS reserved_total_del AFTER DELETE ON Reservations BEGIN
+        CREATE TRIGGER reserved_total_del AFTER DELETE ON Reservations
+        WHEN OLD.device_id < 1000000 BEGIN
             UPDATE ReservedTotal SET seconds = seconds - MAX(0,
                 (julianday(OLD.end_time) - julianday(MAX(OLD.start_time, datetime('now', 'localtime')))) * 86400);
+        END;
+        COMMIT;
+        ''')
+
+        # Reservations ever made, kept the same way; one cancelled before it
+        # started is taken back. Reported to Global as `reservations`. Only our
+        # own devices count: a partner's device (alias id >= ALIAS_BASE,
+        # home_devices) is counted by its owner.
+        self.cursor.executescript('''
+        CREATE TABLE IF NOT EXISTS ReservationCount (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL);
+        INSERT OR IGNORE INTO ReservationCount SELECT 1, COUNT(*) FROM Reservations WHERE device_id < 1000000;
+        CREATE TRIGGER IF NOT EXISTS reservation_count_ins AFTER INSERT ON Reservations
+        WHEN NEW.device_id < 1000000 BEGIN
+            UPDATE ReservationCount SET n = n + 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS reservation_count_del AFTER DELETE ON Reservations
+        WHEN OLD.device_id < 1000000 AND OLD.start_time > datetime('now', 'localtime') BEGIN
+            UPDATE ReservationCount SET n = MAX(n - 1, 0);
         END;
         ''')
 
