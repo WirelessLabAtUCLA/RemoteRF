@@ -114,7 +114,7 @@ def _password_confirmation(*, enforce_policy=False):
 
 # The code typed at `remoterf -r`, used once for this registration.
 pending_enrollment_code = None
-# A username already given (`name@lab` at `-l`): the login asks only the password.
+# A username already given (`name@global` or an email at `-l`): the login asks only the password.
 pending_username = None
 # The saved home this shell is attached to (None on a bare direct profile).
 home_name = None

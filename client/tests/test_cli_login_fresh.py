@@ -39,14 +39,14 @@ def test_an_account_name_says_where_it_lives():
     assert split_account("jdoe@") == ("jdoe@", None)
 
 
-def test_login_on_a_fresh_install_goes_to_the_lab_in_the_account_name():
+def test_login_on_a_fresh_install_looks_up_the_lab_typed():
     from remoterf import remoterf_cli
 
     tmp, env = _fresh_home()
     route = {"kind": "relay", "host": "ucla.global.remoterf.net", "port": 12321}
     with tmp, env, \
             mock.patch("remoterf.config.config.require_tos_for_login", return_value=True), \
-            mock.patch("builtins.input", return_value="jdoe@ucla"), \
+            mock.patch("builtins.input", return_value="ucla"), \
             mock.patch("remoterf.deployment.homes.register_home",
                        return_value=("ucla", {"display_name": "UCLA"}, route)) as register_home, \
             mock.patch.object(remoterf_cli, "_account_shell", return_value=0) as shell:
@@ -54,13 +54,13 @@ def test_login_on_a_fresh_install_goes_to_the_lab_in_the_account_name():
     register_home.assert_called_once_with("ucla.global.remoterf.net")
     assert shell.call_args.kwargs["register"] is False
     assert shell.call_args.kwargs["home"] == "ucla"
-    assert shell.call_args.kwargs["username"] == "jdoe"
+    assert shell.call_args.kwargs.get("username") is None  # the shell asks it
 
 
-def test_login_on_a_fresh_install_global_bare_names_and_emails_go_to_global():
+def test_login_on_a_fresh_install_global_names_and_emails_go_to_global():
     from remoterf import remoterf_cli
 
-    for typed, username in (("jdoe@global", "jdoe"), ("jdoe", "jdoe"), ("jdoe@ucla.edu", "jdoe@ucla.edu")):
+    for typed, username in (("jdoe@global", "jdoe"), ("jdoe@ucla.edu", "jdoe@ucla.edu")):
         tmp, env = _fresh_home()
         with tmp, env, \
                 mock.patch("remoterf.config.config.require_tos_for_login", return_value=True), \
@@ -78,7 +78,7 @@ def test_login_to_a_lab_that_does_not_answer():
     tmp, env = _fresh_home()
     with tmp, env, \
             mock.patch("remoterf.config.config.require_tos_for_login", return_value=True), \
-            mock.patch("builtins.input", return_value="jdoe@nolab"), \
+            mock.patch("builtins.input", return_value="nolab"), \
             mock.patch("remoterf.deployment.homes.register_home",
                        side_effect=RuntimeError("no such deployment")) as register_home, \
             mock.patch.object(remoterf_cli, "_account_shell") as shell:
@@ -87,7 +87,7 @@ def test_login_to_a_lab_that_does_not_answer():
     shell.assert_not_called()
 
 
-def test_login_with_an_account_uses_the_saved_home():
+def test_login_with_name_at_lab_points_to_the_lab_login(capsys):
     from remoterf import remoterf_cli
 
     tmp, env = _fresh_home()
@@ -96,8 +96,9 @@ def test_login_with_an_account_uses_the_saved_home():
             mock.patch("remoterf.deployment.homes.homes", return_value={"ucla": {}}), \
             mock.patch("remoterf.deployment.homes.register_home") as register_home, \
             mock.patch.object(remoterf_cli, "_use_home", return_value=0) as use_home:
-        assert remoterf_cli._login("jdoe@ucla") == 0
-    use_home.assert_called_once_with("ucla", register=False, username="jdoe")
+        assert remoterf_cli._login("jdoe@ucla") == 2
+    assert "remoterf --login ucla" in capsys.readouterr().err
+    use_home.assert_not_called()
     register_home.assert_not_called()
 
 

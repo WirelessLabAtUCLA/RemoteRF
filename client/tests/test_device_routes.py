@@ -32,7 +32,7 @@ GET = "pluto:tx_lo:GET"
 
 
 def _unreachable(dep):
-    return f"can't reach {dep}: log in with remoterf --login username@{dep} or use a token from {dep}"
+    return f"can't reach {dep}: log in with remoterf --login {dep} or use a token from {dep}"
 
 
 class Stub:

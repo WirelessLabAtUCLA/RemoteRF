@@ -349,7 +349,7 @@ _auto_tried: set = set()  # x@lab handles auto-reservation already tried for in 
 
 def _unreachable(dep):
     return RuntimeError(
-        f"can't reach {dep}: log in with remoterf --login username@{dep} or use a token from {dep}"
+        f"can't reach {dep}: log in with remoterf --login {dep} or use a token from {dep}"
     )
 
 

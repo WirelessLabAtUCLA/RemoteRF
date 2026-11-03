@@ -395,7 +395,88 @@ def test_login_names_a_home_explicitly(monkeypatch, reachable):
     assert run_cli(["-l", "ucla"], monkeypatch, _account_shell=shell) == 0
     assert shell.call_args.kwargs["server_label"] == "ucla (LAN)"
 
-    assert run_cli(["-l", "nope"], monkeypatch, _account_shell=shell) == 2
+    # A name that is no deployment slug is never looked up.
+    lookup = mock.Mock()
+    monkeypatch.setattr(homes, "register_home", lookup)
+    assert run_cli(["-l", "Bad Name!"], monkeypatch, _account_shell=shell) == 2
+    lookup.assert_not_called()
+
+
+def test_login_a_saved_lab_does_no_lookup(monkeypatch):
+    homes.save_home("ucla", document())
+    lookup = mock.Mock()
+    monkeypatch.setattr(homes, "register_home", lookup)
+    used_home = mock.Mock(return_value=0)
+    assert run_cli(["-l", "ucla"], monkeypatch, _use_home=used_home) == 0
+    used_home.assert_called_once_with("ucla", register=False)
+    lookup.assert_not_called()
+
+
+def _lab_lookup(monkeypatch):
+    route = {"kind": "relay"}
+    lookup = mock.Mock(return_value=("ucla", {"display_name": "UCLA"}, route))
+    monkeypatch.setattr(homes, "register_home", lookup)
+    return lookup
+
+
+def test_login_looks_up_an_unsaved_lab_and_asks_the_username(monkeypatch):
+    lookup = _lab_lookup(monkeypatch)
+    shell = mock.Mock(return_value=0)
+    assert run_cli(["-l", "ucla"], monkeypatch, _account_shell=shell) == 0
+    lookup.assert_called_once_with("ucla.global.remoterf.net")
+    kwargs = shell.call_args.kwargs
+    assert kwargs.get("username") is None and kwargs["home"] == "ucla"
+    assert kwargs["register"] is False and kwargs["server_label"] == "ucla (relay)"
+    assert kwargs["route"]["home"] == {"display_name": "UCLA"}
+
+
+def test_login_an_unreachable_lab_lists_the_saved_homes(monkeypatch):
+    homes.save_home("ucla", document())
+    monkeypatch.setattr(homes, "register_home", mock.Mock(side_effect=RuntimeError("no such lab")))
+    lines = []
+    shell = mock.Mock(return_value=0)
+    assert run_cli(
+        ["-l", "nope"], monkeypatch, _account_shell=shell,
+        printf=lambda *args: lines.append("".join(map(str, args[::2]))),
+    ) == 2
+    printed = "\n".join(lines)
+    assert "Could not reach nope.global.remoterf.net" in printed
+    assert "ucla" in printed and "Choose one" in printed
+    shell.assert_not_called()
+
+
+def test_login_with_a_global_account_name(monkeypatch):
+    used_global = mock.Mock(return_value=0)
+    assert run_cli(["-l", "joe@uni.edu"], monkeypatch, _use_global=used_global) == 0
+    used_global.assert_called_once_with(register=False, username="joe@uni.edu")
+    used_global.reset_mock()
+    assert run_cli(["-l", "joe@global"], monkeypatch, _use_global=used_global) == 0
+    used_global.assert_called_once_with(register=False, username="joe")
+
+
+def test_login_name_at_lab_points_to_the_lab_login(monkeypatch, capsys):
+    lookup = mock.Mock()
+    monkeypatch.setattr(homes, "register_home", lookup)
+    used_global, shell, used_home = mock.Mock(), mock.Mock(), mock.Mock()
+    assert run_cli(
+        ["-l", "joe@ucla"], monkeypatch, _use_global=used_global, _account_shell=shell, _use_home=used_home
+    ) == 2
+    assert "remoterf --login ucla" in capsys.readouterr().err
+    for never in (lookup, used_global, shell, used_home):
+        never.assert_not_called()
+
+
+def test_fresh_install_prompt_asks_the_deployment(monkeypatch):
+    lookup = _lab_lookup(monkeypatch)
+    shell, used_global, registered = mock.Mock(return_value=0), mock.Mock(return_value=0), mock.Mock(return_value=0)
+    patches = dict(_account_shell=shell, _use_global=used_global, _register=registered)
+    for answer in ("ucla", "", "global"):
+        monkeypatch.setattr("builtins.input", lambda *_, answer=answer: answer)
+        assert run_cli(["-l"], monkeypatch, **patches) == 0
+    lookup.assert_called_once_with("ucla.global.remoterf.net")
+    assert shell.call_args.kwargs["home"] == "ucla" and shell.call_args.kwargs.get("username") is None
+    registered.assert_called_once_with()
+    used_global.assert_called_once_with(register=False)
 
 
 def test_login_global_works_without_a_saved_global_account(monkeypatch):
