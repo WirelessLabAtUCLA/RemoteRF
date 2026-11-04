@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import re
@@ -35,7 +36,8 @@ from contextlib import contextmanager
 from remoterf_federation_core import is_device_handle
 
 from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, device_name_key
-from ..common.idl.schema import get_driver_class, load_drivers
+from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_drivers,
+                                 override_stale)
 from ..host import host_tunnel_server as hts
 
 logger = logging.getLogger(__name__)
@@ -1382,6 +1384,33 @@ def acquire_device_by_gid(gid: int) -> Iterator[Tuple[int, object]]:
         yield int(gid), dev
     finally:
         lock.release()
+
+
+def schema_served(device_type: str) -> Dict[str, Any]:
+    """`schema served <type>`: the file whose class serves a type now, its v1 hash, and how each drivers file loaded."""
+    out: Dict[str, Any] = {"type": device_type, "hash": None, "module": None, "override": False,
+                           "source_sha256": None, "loads": last_load_results()}
+    try:
+        cls = get_driver_class(device_type)
+        out["module"] = os.path.abspath(inspect.getfile(cls))
+    except (KeyError, TypeError):
+        return out
+    out["override"] = Path(out["module"]).name.startswith(OVERRIDE_PREFIX)
+    try:
+        out["hash"] = cls().get_idl_hash()
+    except Exception:
+        pass
+    try:
+        out["source_sha256"] = _driver_sha256(Path(out["module"]))
+    except OSError:
+        pass
+    return out
+
+
+def driver_overrides() -> List[Dict[str, Any]]:
+    """The @ops-rrf overrides in the drivers folder, stale ones included (they do not load)."""
+    return [{"type": f.stem[len(OVERRIDE_PREFIX):], "file": f.name, "stale": override_stale(f)}
+            for f in sorted(get_drivers_dir().glob(f"{OVERRIDE_PREFIX}*.py"))]
 
 
 def device_inventory_snapshot() -> Dict[int, Dict[str, object]]:

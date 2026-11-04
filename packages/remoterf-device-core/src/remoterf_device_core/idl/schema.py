@@ -38,10 +38,12 @@ That's it. The server never needs to be modified.
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import importlib.util
 import json
 import keyword
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -516,26 +518,80 @@ def _drivers_dir() -> Path:
     return Path(_drivers_dir_provider())
 
 
+OVERRIDE_PREFIX = "zz_rrfops_"
+_OVERRIDE_GUARD = re.compile(rb"# rrfops-override base-sha256=([0-9a-f]{64})\n")
+_LOAD_RESULTS: list = []
+
+
+def builtin_driver_file(device_type: str) -> Optional[Path]:
+    """This device-core's own `<type>_schema.py`, or None when it ships none."""
+    if not re.fullmatch(r"[a-z0-9_]{1,64}", device_type):
+        return None
+    root = Path(__file__).resolve().parents[1] / "drivers"
+    return next(iter(sorted(root.rglob(f"{device_type}_schema.py"))), None)
+
+
+def override_stale(path) -> bool:
+    """
+    Whether an @ops-rrf override `zz_rrfops_<type>.py` must not load.
+
+    The lab ops gate writes one (driver-put) as a copy of the live
+    `<type>_schema.py` with one function body replaced. Its first line is
+    exactly
+
+        # rrfops-override base-sha256=<hex>
+
+    where <hex> is the sha256 of the installed device-core `<type>_schema.py`
+    (builtin_driver_file) at the time of the edit. A device-core upgrade
+    changes that file, so the override goes stale: load_drivers skips it and
+    the stock driver serves again. A missing or malformed header, a type
+    device-core does not ship, or an unreadable file also count as stale.
+    """
+    path = Path(path)
+    base = builtin_driver_file(path.stem[len(OVERRIDE_PREFIX):])
+    try:
+        with path.open("rb") as handle:
+            guard = _OVERRIDE_GUARD.fullmatch(handle.readline())
+        return not (guard and base and guard.group(1).decode() == hashlib.sha256(base.read_bytes()).hexdigest())
+    except OSError:
+        return True
+
+
+def last_load_results() -> list:
+    """How each drivers file loaded on the last load_drivers(): [{file, ok, error}]."""
+    return [dict(row) for row in _LOAD_RESULTS]
+
+
 def load_drivers(drivers_dir: Optional[Path] = None) -> Dict[str, str]:
     """
     Import every .py in the drivers config dir.  Each file's @idl_register
     decorator self-registers into the global registry.
 
-    Returns {filename: status} for logging.
+    Files load in name order, overrides (`zz_rrfops_<type>.py`, see
+    override_stale) last, so an override's class wins over `<type>_schema.py`.
+    A file that fails, sys.exit() included, leaves the registry and
+    sys.modules as they were before it.
+
+    Returns {filename: status} for logging; last_load_results() keeps it.
 
     Called once at server startup:
         load_drivers()
     """
     drivers_dir = Path(drivers_dir) if drivers_dir is not None else _drivers_dir()
     results: Dict[str, str] = {}
+    _LOAD_RESULTS.clear()
 
     if not drivers_dir.is_dir():
         return {"__error__": f"{drivers_dir} is not a directory"}
 
-    for f in sorted(drivers_dir.glob("*.py")):
+    for f in sorted(drivers_dir.glob("*.py"), key=lambda p: (p.name.startswith(OVERRIDE_PREFIX), p.name)):
         if f.name.startswith("_"):
             continue
+        registry = dict(_DRIVER_REGISTRY)
+        previous = sys.modules.get(f.stem)
         try:
+            if f.name.startswith(OVERRIDE_PREFIX) and override_stale(f):
+                raise RuntimeError("stale override: device-core changed under it, the stock driver serves")
             spec = importlib.util.spec_from_file_location(f.stem, str(f))
             if spec is None or spec.loader is None:
                 results[f.name] = "skip: not a valid module"
@@ -546,9 +602,22 @@ def load_drivers(drivers_dir: Optional[Path] = None) -> Dict[str, str]:
             sys.modules[f.stem] = mod
             spec.loader.exec_module(mod)
             results[f.name] = "ok"
-        except Exception as e:
-            results[f.name] = f"error: {e}"
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:
+            _DRIVER_REGISTRY.clear()
+            _DRIVER_REGISTRY.update(registry)
+            if previous is None:
+                sys.modules.pop(f.stem, None)
+            else:
+                sys.modules[f.stem] = previous
+            results[f.name] = f"error: {e}" if isinstance(e, Exception) else f"error: {type(e).__name__}: {e}"
 
+    _LOAD_RESULTS.extend(
+        {"file": name, "ok": status == "ok",
+         "error": None if status == "ok" else " ".join(status.removeprefix("error: ").split())}
+        for name, status in results.items()
+    )
     return results
 
 

@@ -162,6 +162,7 @@ def _table() -> list[Command]:
         # ---- driver schemas approved on RemoteRF Global (server/schema_registry.py) ----
         Command(("schema browse",), "Driver schemas approved on RemoteRF Global: schema browse [text]", _lazy(".schema_registry", "cmd_browse"), "Schemas"),
         Command(("schema download",), "Save one to the drivers folder, hash checked: schema download <name|hash> [-y]", _lazy(".schema_registry", "cmd_download"), "Schemas"),
+        Command(("schema served",), "Which file serves a driver type, its hash, how each drivers file loaded: schema served <type> [--json]", _daemon("cmd_schema_served"), "Schemas", where=D),
         # ---- clusters (sharing devices with other deployments) ----
         Command(("cluster list",), "Clusters shared with other deployments", _federation("list"), "Clusters"),
         Command(("cluster info",), "Every deployment, shared group and device in a cluster", _federation("info"), "Clusters"),

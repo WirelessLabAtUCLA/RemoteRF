@@ -55,7 +55,8 @@ from .host_dynamic_v2 import host_session_proxy
 from .acc_perms import perms
 from ..common.utils import *
 from .device_manager import (close_local_devices, reload_devices, get_registered_devices,
-                             get_all_devices_str, handle_report, device_inventory_snapshot)
+                             get_all_devices_str, handle_report, device_inventory_snapshot,
+                             driver_overrides, schema_served)
 from .user_group_cli import make_user_group_local, edit_user_group_local, list_user_groups_local, remove_user_group_local, make_enrollment_codes_local, remove_enrollment_code_local, list_enrollment_codes_local, export_user_groups_csv_local, export_enrollment_codes_csv_local
 from .user_group_handler import start_usergroup_cleanup_loop
 from .global_onboarding import start_agent
@@ -1205,6 +1206,7 @@ def _status_json() -> dict:
         "devices_total": len(devices),
         "devices_online": sum(bool(item["online"]) for item in devices.values()),
         "reservations_active": int(active),
+        "driver_overrides": driver_overrides(),
     }
 
 
@@ -1455,6 +1457,27 @@ def cmd_stats_purge(argv):
             return
     printf(f"Purged activity log: {reservation.LOG_PATH}", Sty.GRAY)
 def cmd_devices_list(argv): get_devices(json_output="--json" in argv)
+
+
+def cmd_schema_served(argv):
+    words = [a for a in argv if a != "--json"]
+    if len(words) != 1 or not re.fullmatch(r"[a-z0-9_]{1,64}", words[0]):
+        print("Usage: schema served <type> [--json]")
+        return 2
+    value = schema_served(words[0])
+    if "--json" in argv:
+        from .json_output import print_json
+
+        print_json(value)
+        return 0
+    print(f"{value['type']}: {value['hash'] or 'no driver registered'}")
+    if value["module"]:
+        print(f"  served by {value['module']}{' (rrfops override)' if value['override'] else ''}")
+        print(f"  file sha256 {value['source_sha256'] or '-'}")
+    for load in value["loads"]:
+        if not load["ok"]:
+            print(f"  {load['file']}: {load['error']}")
+    return 0
 
 
 def cmd_diag(argv):
