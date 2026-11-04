@@ -64,7 +64,9 @@ deployments), what devices it has, how many reservations are active, how many
 reservations have been made and the total time reserved so far (two numbers),
 and your LAN address. For the devices you share on Global it also sends how
 many reservations start in each hour of the day and on each day of the week
-(UTC), and the reservations and time reserved per device type (counts only).
+(UTC), the reservations and time reserved per device type, and for each
+device shared on Global its name and its daily reservation counts and time
+reserved over the last 31 days (counts only).
 Nothing else leaves your server -- no credentials, no user or reservation
 details -- and the connection only goes outward. Global publishes the network
 totals, these breakdowns, and each deployment's name, version, devices, when
@@ -867,22 +869,39 @@ def _device_type(item: dict) -> str:
     return str(item.get("device_type") or "unknown").lower()
 
 
+def _host_devices() -> dict:
+    """Device id -> DeviceInfo from the Host directory `serverrf status` lists."""
+    try:
+        from ..host import host_tunnel_server as hts
+
+        directory = hts.get_tunnel_registry().device_directory_cached(ttl_ms=0)
+    except Exception:  # noqa: BLE001 - drivers are optional at report time
+        return {}
+    return {int(device_id): info for device_id, (_host_id, info, _active) in directory.items()
+            if str(device_id).isdigit()}
+
+
 def _device_types() -> dict:
     """Device id -> type: devices.yml entries, then the Host directory `serverrf status` lists.
 
     Types are bounded the way Global accepts them: a Host names its own kinds.
     """
     types = {int(item["device_id"]): _device_type(item) for item in _registered_devices()}
-    try:
-        from ..host import host_tunnel_server as hts
-
-        directory = hts.get_tunnel_registry().device_directory_cached(ttl_ms=0)
-    except Exception:  # noqa: BLE001 - drivers are optional at report time
-        directory = {}
-    for device_id, (_host_id, info, _active) in directory.items():
-        if str(device_id).isdigit():
-            types.setdefault(int(device_id), str(getattr(info, "kind", "") or "").strip().lower() or "unknown")
+    for device_id, info in _host_devices().items():
+        types.setdefault(device_id, str(getattr(info, "kind", "") or "").strip().lower() or "unknown")
     return {gid: re.sub(r"[^a-z0-9_]", "_", kind)[:64] for gid, kind in types.items()}
+
+
+def _device_names() -> dict:
+    """Device id -> the name the devices list shows: devices.yml, then the Host's label.
+
+    Printable and at most 64 characters, the way Global accepts them.
+    """
+    names = {int(item["device_id"]): item.get("name") for item in _registered_devices()}
+    for device_id, info in _host_devices().items():
+        names.setdefault(device_id, getattr(info, "label", ""))
+    return {gid: "".join(filter(str.isprintable, str(name or ""))).strip()[:64].rstrip() or f"device {gid}"
+            for gid, name in names.items()}
 
 
 def device_summary() -> list:
@@ -901,13 +920,15 @@ def device_summary() -> list:
 
 def usage_summary() -> dict:
     """Reservations made on the devices shared on Global: by the UTC hour and
-    weekday they start, and reservations and seconds reserved per device type.
+    weekday they start, reservations and seconds reserved per device type, and
+    per device by the UTC day they start over the last 31 days.
 
-    Counts only (ReservationBuckets); all zero when nothing is shared there.
+    Counts only (ReservationBuckets, ReservationDays); all zero when nothing is shared there.
     """
+    from datetime import datetime, timedelta, timezone
     from .federation import cluster
 
-    usage = {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}}
+    usage = {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []}
     try:
         shared = {int(d) for group in cluster.groups(cluster.GLOBAL) for d in group["devices"]}
     except Exception:  # noqa: BLE001 - not in the global cluster (yet), or its state is unreadable
@@ -927,6 +948,24 @@ def usage_summary() -> dict:
             usage["by_hour" if bucket[0] == "h" else "by_weekday"][int(bucket[1:])] += n
     busiest = sorted((kv for kv in by_type.items() if kv[1]["reservations"]), key=lambda kv: -kv[1]["reservations"])
     usage["by_type"] = dict(busiest[:64])  # Global takes at most 64 types
+
+    # Global takes at most 128 devices and 1000 days in all: the oldest days go first.
+    today = datetime.now(timezone.utc).date()
+    by_device, entries = {}, 0
+    for device_id, day, n, seconds in _rows(
+            _db_dir() / "reservations.db",
+            "SELECT device_id, day, reservations, CAST(ROUND(seconds) AS INTEGER) FROM ReservationDays "
+            "WHERE day BETWEEN ? AND ? ORDER BY day DESC, device_id",
+            (str(today - timedelta(days=30)), str(today))):
+        if device_id not in shared or not (n or seconds) or (device_id not in by_device and len(by_device) == 128):
+            continue
+        if entries == 1000:
+            break
+        by_device.setdefault(device_id, {})[day] = [min(n, 2**31), min(seconds, 2**31)]
+        entries += 1
+    names = _device_names()
+    usage["by_device"] = [{"id": gid, "name": names.get(gid, f"device {gid}"), "type": types.get(gid, "unknown"),
+                           "days": days} for gid, days in sorted(by_device.items())]
     return usage
 
 
@@ -980,15 +1019,17 @@ def send_status() -> None:
 
     payload = status_payload()
     # A Global older than a field refuses the note: drop the newest first
-    # (`usage`, then `reservations`), then `proxies`/`reserved_s`, as the note
-    # was before each of them.
-    steps = ((), ("usage",), ("usage", "reservations"), ("usage", "reservations", "proxies", "reserved_s"))
-    for drop in steps:
+    # (`usage.by_device`, `usage`, then `reservations`), then
+    # `proxies`/`reserved_s`, as the note was before each of them.
+    steps = [payload, dict(payload, usage={k: v for k, v in payload["usage"].items() if k != "by_device"})]
+    for drop in (("usage",), ("usage", "reservations"), ("usage", "reservations", "proxies", "reserved_s")):
+        steps.append({k: v for k, v in payload.items() if k not in drop})
+    for status in steps:
         try:
-            call("POST", REPORT_PATH, {"kind": "status", "status": {k: v for k, v in payload.items() if k not in drop}})
+            call("POST", REPORT_PATH, {"kind": "status", "status": status})
             break
         except GlobalError as exc:
-            if exc.code != "invalid_status" or drop is steps[-1]:
+            if exc.code != "invalid_status" or status is steps[-1]:
                 raise
     update(GLOBAL_LAST_REPORT_AT=datetime.now(timezone.utc).isoformat())
 

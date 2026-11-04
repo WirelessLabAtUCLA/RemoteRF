@@ -207,7 +207,7 @@ class ReservationCountTests(unittest.TestCase):
 
 
 class ReservationBucketsTests(unittest.TestCase):
-    """Per device, by UTC hour and weekday of the start: counted like the totals above."""
+    """Per device, by UTC hour, weekday and date of the start: counted like the totals above."""
 
     def setUp(self):
         import time
@@ -244,6 +244,11 @@ class ReservationBucketsTests(unittest.TestCase):
         rows = db.execute("SELECT bucket, reservations, seconds FROM ReservationBuckets WHERE device_id = ?", (device_id,))
         return {bucket: (n, round(seconds)) for bucket, n, seconds in rows}
 
+    @staticmethod
+    def days(db, device_id):
+        rows = db.execute("SELECT day, reservations, seconds FROM ReservationDays WHERE device_id = ?", (device_id,))
+        return {day: (n, round(seconds)) for day, n, seconds in rows}
+
     def test_buckets_by_utc_hour_and_weekday_survive_purge_and_skip_partner_devices(self):
         from datetime import datetime
         from remoteRF_server.server.federation.home_devices import ALIAS_BASE
@@ -256,8 +261,12 @@ class ReservationBucketsTests(unittest.TestCase):
         expected = {"all": (2, 3 * 3600), "h20": (1, 3600), "d6": (1, 3600), "h06": (1, 2 * 3600), "d2": (1, 2 * 3600)}
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.buckets(db, ALIAS_BASE), {})
+        days = {"2026-11-01": (1, 3600), "2026-11-04": (1, 2 * 3600)}  # the first starts the UTC day before
+        self.assertEqual(self.days(db, 1), days)
+        self.assertEqual(self.days(db, ALIAS_BASE), {})
         db.execute("DELETE FROM Reservations WHERE end_time < ?", (datetime.now(),))  # purge: no change
         self.assertEqual(self.buckets(db, 1), expected)
+        self.assertEqual(self.days(db, 1), days)
 
     def test_a_cancel_gives_back_like_the_totals_and_never_below_zero(self):
         from datetime import datetime, timedelta
@@ -268,17 +277,18 @@ class ReservationBucketsTests(unittest.TestCase):
         self.add(db, 2, now + timedelta(hours=1), now + timedelta(hours=3))
         self.add(db, 3, now - timedelta(hours=1), now + timedelta(hours=1))
         self.add(db, 4, now + timedelta(hours=1), now + timedelta(hours=2))
-        values = lambda device_id: sorted(self.buckets(db, device_id).values())  # noqa: E731
-        self.assertEqual(values(2), [(1, 2 * 3600)] * 3)
+        values = lambda gid: sorted([*self.buckets(db, gid).values(), *self.days(db, gid).values()])  # noqa: E731
+        self.assertEqual(values(2), [(1, 2 * 3600)] * 4)
         db.execute("DELETE FROM Reservations WHERE device_id = 2")  # cancel before start: all given back
-        self.assertEqual(values(2), [(0, 0)] * 3)
+        self.assertEqual(values(2), [(0, 0)] * 4)
         db.execute("DELETE FROM Reservations WHERE device_id = 3")  # cancel after start: unused hour back
         for n, seconds in values(3):
             self.assertEqual(n, 1)
             self.assertAlmostEqual(seconds, 3600, delta=2)
-        db.execute("UPDATE ReservationBuckets SET reservations = 0, seconds = 0 WHERE device_id = 4")
+        for table in ("ReservationBuckets", "ReservationDays"):
+            db.execute(f"UPDATE {table} SET reservations = 0, seconds = 0 WHERE device_id = 4")
         db.execute("DELETE FROM Reservations WHERE device_id = 4")
-        self.assertEqual(values(4), [(0, 0)] * 3)  # never negative
+        self.assertEqual(values(4), [(0, 0)] * 4)  # never negative
 
     def test_buckets_seed_from_old_rows_once(self):
         import time
@@ -292,15 +302,33 @@ class ReservationBucketsTests(unittest.TestCase):
         self.add(db, 1, "2026-11-02 02:15:00", "2026-11-02 02:45:00")
         self.add(db, ALIAS_BASE, "2026-11-02 02:00:00", "2026-11-02 03:00:00")
         expected = {"all": (2, 5400), "h20": (2, 5400), "d6": (2, 5400)}
+        days = {"2026-11-01": (2, 5400)}
         self.handler()
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.buckets(db, ALIAS_BASE), {})
+        self.assertEqual(self.days(db, 1), days)
+        self.assertEqual(self.days(db, ALIAS_BASE), {})
         self.handler()  # a restart does not seed again
         self.assertEqual(self.buckets(db, 1), expected)
+        self.assertEqual(self.days(db, 1), days)
         with mock.patch.dict("os.environ", {"TZ": "UTC0"}):
             time.tzset()
-            self.handler()  # nor one under another TZ, where the rows map to h02/d0
+            self.handler()  # nor one under another TZ, where the rows map to h02/d0/2026-11-02
         time.tzset()
         self.assertEqual(self.buckets(db, 1), expected)
+        self.assertEqual(self.days(db, 1), days)
         self.add(db, 1, "2026-11-02 02:20:00", "2026-11-02 02:50:00")  # 20:50 UTC
         self.assertEqual(self.buckets(db, 1)["h20"], (3, 7200))
+        self.assertEqual(self.days(db, 1), {"2026-11-01": (3, 7200)})
+
+    def test_days_seed_into_an_existing_lab_that_already_has_buckets(self):
+        """A lab upgrading from 1.7.14 has ReservationBuckets but no ReservationDays yet."""
+        self.handler()
+        db = self.connect()
+        db.executescript("DROP TRIGGER reservation_days_ins; DROP TRIGGER reservation_days_del; "
+                         "DROP TABLE ReservationDays;")
+        self.add(db, 1, "2026-11-04 12:00:00", "2026-11-04 13:00:00")
+        buckets = self.buckets(db, 1)
+        self.handler()
+        self.assertEqual(self.days(db, 1), {"2026-11-04": (1, 3600)})
+        self.assertEqual(self.buckets(db, 1), buckets)

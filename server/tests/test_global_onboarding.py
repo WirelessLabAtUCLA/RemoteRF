@@ -509,7 +509,8 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["proxies"], 1)
         self.assertEqual(payload["active_reservations"], 1)
         self.assertEqual(payload["reservations"], 5)
-        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})  # not on global
+        self.assertEqual(payload["usage"],  # not on global
+                         {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
         self.assertEqual(
             sorted(entry["type"] for entry in payload["devices"]),
             ["adalm_pluto", "usrp_2901"],
@@ -528,7 +529,8 @@ class StatusReportTests(TunnelTests):
         text = " ".join(g.CONSENT_TEXT.split())
         for item in ("name, version", "devices", "joined", "last online", "how many reservations",
                      "time reserved, at https://{domain}/stats.json", "devices you share on Global",
-                     "each hour of the day", "each day of the week", "per device type", "these breakdowns"):
+                     "each hour of the day", "each day of the week", "per device type", "these breakdowns",
+                     "for each device shared on Global its name and its daily reservation counts and time reserved"):
             self.assertIn(item, text)
 
     def test_status_payload_survives_missing_state(self):
@@ -539,7 +541,7 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["proxies"], 0)
         self.assertEqual(payload["reservations"], 0)
         self.assertEqual(payload["devices"], [])
-        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
+        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
         self.assertIsNone(payload["cert_sha256"])
 
     def test_usage_counts_only_the_devices_shared_on_global(self):
@@ -568,7 +570,76 @@ class StatusReportTests(TunnelTests):
                                             "unknown": {"reservations": 1, "seconds": 60}})
 
         with mock.patch.object(cluster, "groups", side_effect=cluster.ClusterError("no cluster named global")):
-            self.assertEqual(g.usage_summary(), {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
+            self.assertEqual(g.usage_summary(),
+                             {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
+
+    def days_table(self, rows):
+        import sqlite3
+
+        with sqlite3.connect(g.cfg_dir() / "db" / "reservations.db") as conn:
+            conn.execute("CREATE TABLE ReservationDays (device_id INTEGER, day TEXT, reservations INTEGER, "
+                         "seconds REAL, PRIMARY KEY (device_id, day))")
+            conn.executemany("INSERT INTO ReservationDays VALUES (?,?,?,?)", rows)
+
+    def test_by_device_reports_the_last_31_days_of_shared_devices_by_name(self):
+        from datetime import datetime, timedelta, timezone
+        from remoteRF_server.server.federation import cluster
+
+        self.seed()
+        (g.cfg_dir() / "devices.yml").write_text(
+            "devices:\n"
+            "  - {device_id: 0, device_type: adalm_pluto, name: Bench Pluto}\n"
+            "  - {device_id: 1, device_type: usrp_2901, name: Not shared}\n"
+            "  - {device_id: 2, device_type: adalm_pluto, name: \"\\e[31mRed\\nPluto \"}\n"
+            "  - {device_id: 3, device_type: adalm_pluto, name: \"\\t\"}\n"
+            f"  - {{device_id: 4, device_type: adalm_pluto, name: {'x' * 80}}}\n",
+            encoding="utf-8",
+        )
+        self.use_host_registry([("host-a", 200, "adalm_pluto_mimo_ykush")])
+        today = datetime.now(timezone.utc).date()
+        day = lambda n: str(today - timedelta(days=n))  # noqa: E731
+        self.days_table([
+            (0, day(0), 2, 5400.4), (0, day(30), 1, 60.0), (0, day(31), 9, 999.0),  # day 31 is out of the window
+            (0, str(today + timedelta(days=1)), 1, 60.0),  # not started yet
+            (0, day(3), 0, 0.2),  # every reservation cancelled
+            (1, day(0), 4, 400.0),  # not shared on Global
+            (2, day(1), 1, 30.0), (3, day(1), 0, 30.0), (4, day(1), 1, 0.0),
+            (5, day(2), 1, 60.0),  # gone from devices.yml
+            (6, day(31), 1, 60.0),  # nothing left in the window
+            (200, day(5), 3, 180.0),
+        ])
+        shared = [{"devices": [0, 2, 3, 4, 5, 6]}, {"devices": [200]}]
+        with mock.patch.object(cluster, "groups", return_value=shared):
+            by_device = g.usage_summary()["by_device"]
+        self.assertEqual(by_device, [
+            {"id": 0, "name": "Bench Pluto", "type": "adalm_pluto", "days": {day(0): [2, 5400], day(30): [1, 60]}},
+            {"id": 2, "name": "[31mRedPluto", "type": "adalm_pluto", "days": {day(1): [1, 30]}},
+            {"id": 3, "name": "device 3", "type": "adalm_pluto", "days": {day(1): [0, 30]}},
+            {"id": 4, "name": "x" * 64, "type": "adalm_pluto", "days": {day(1): [1, 0]}},
+            {"id": 5, "name": "device 5", "type": "unknown", "days": {day(2): [1, 60]}},
+            {"id": 200, "name": "Pluto 200", "type": "adalm_pluto_mimo_ykush", "days": {day(5): [3, 180]}},
+        ])
+
+        # A rename shows on the next note.
+        path = g.cfg_dir() / "devices.yml"
+        path.write_text(path.read_text(encoding="utf-8").replace("Bench Pluto", "Bench A"), encoding="utf-8")
+        with mock.patch.object(cluster, "groups", return_value=shared):
+            self.assertEqual(g.usage_summary()["by_device"][0]["name"], "Bench A")
+
+    def test_by_device_drops_the_oldest_days_first_to_fit_globals_caps(self):
+        from datetime import datetime, timedelta, timezone
+        from remoteRF_server.server.federation import cluster
+
+        self.seed()
+        today = datetime.now(timezone.utc).date()
+        self.days_table([(gid, str(today - timedelta(days=n)), 1, 60.0) for gid in range(130) for n in range(10)])
+        with mock.patch.object(cluster, "groups", return_value=[{"devices": list(range(130))}]):
+            by_device = g.usage_summary()["by_device"]
+        self.assertEqual([entry["id"] for entry in by_device], list(range(128)))
+        days = [d for entry in by_device for d in entry["days"]]
+        self.assertEqual(len(days), 1000)
+        self.assertEqual(min(days), str(today - timedelta(days=7)))  # days 8 and 9 dropped, day 7 cut short
+        self.assertEqual(sum(d == min(days) for d in days), 1000 - 7 * 128)
 
     def use_host_registry(self, persisted=(), online_hosts=()):
         """The Host directory as the server loads it at boot, with online_hosts connected."""
@@ -648,6 +719,7 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS),
             set(g.STATUS_FIELDS) - {"usage"},
             set(g.STATUS_FIELDS) - {"usage", "reservations"},
             set(g.STATUS_FIELDS) - {"usage", "reservations", "proxies", "reserved_s"},
@@ -666,6 +738,7 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS),
             set(g.STATUS_FIELDS) - {"usage"},
             set(g.STATUS_FIELDS) - {"usage", "reservations"},
         ])
@@ -681,7 +754,21 @@ class StatusReportTests(TunnelTests):
 
         with mock.patch.object(g, "call", side_effect=global_with_reservations):
             g.send_status()
-        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"usage"}])
+        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"usage"}])
+
+    def test_status_drops_only_by_device_for_a_global_that_predates_it(self):
+        self.activate()
+        sent = []
+
+        def global_with_usage(method, path, body):
+            sent.append(body["status"])
+            if "by_device" in body["status"]["usage"]:
+                raise g.GlobalError("invalid_status")
+
+        with mock.patch.object(g, "call", side_effect=global_with_usage):
+            g.send_status()
+        self.assertEqual([set(status) for status in sent], [set(g.STATUS_FIELDS)] * 2)
+        self.assertEqual(sent[1]["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
 
     def test_status_gives_up_when_even_the_oldest_note_is_refused(self):
         self.activate()
@@ -689,7 +776,7 @@ class StatusReportTests(TunnelTests):
         with mock.patch.object(g, "call", side_effect=g.GlobalError("invalid_status")) as call:
             with self.assertRaises(g.GlobalError):
                 g.send_status()
-        self.assertEqual(call.call_count, 4)
+        self.assertEqual(call.call_count, 5)
 
     def test_reports_only_flow_once_active(self):
         self.join()
