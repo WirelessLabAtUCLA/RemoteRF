@@ -1345,7 +1345,9 @@ def enroll(code=None):
     if account.is_https_home and host:
         # With the password, the lab also gets a login for this account (never
         # the password itself): usable on its LAN, and when Global is down.
-        typed_password = _ask(f'Password, to also log in at {host} directly (Enter to skip)', hidden=True)
+        _note(f"Optional: type your RemoteRF Global password to also get a login at {host}, "
+              "for its LAN and for when Global is down. Press Enter to skip.", Sty.GRAY)
+        typed_password = _ask('RemoteRF Global password (Enter to skip)', hidden=True)
         data = account.backend.enroll(code, password=typed_password or None)
     else:
         data = account.set_enroll()
