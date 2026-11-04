@@ -795,6 +795,24 @@ def _device_type(item: dict) -> str:
     return str(item.get("device_type") or "unknown").lower()
 
 
+def _device_types() -> dict:
+    """Device id -> type: devices.yml entries, then the Host directory `serverrf status` lists.
+
+    Types are bounded the way Global accepts them: a Host names its own kinds.
+    """
+    types = {int(item["device_id"]): _device_type(item) for item in _registered_devices()}
+    try:
+        from ..host import host_tunnel_server as hts
+
+        directory = hts.get_tunnel_registry().device_directory_cached(ttl_ms=0)
+    except Exception:  # noqa: BLE001 - drivers are optional at report time
+        directory = {}
+    for device_id, (_host_id, info, _active) in directory.items():
+        if str(device_id).isdigit():
+            types.setdefault(int(device_id), str(getattr(info, "kind", "") or "").strip().lower() or "unknown")
+    return {gid: re.sub(r"[^a-z0-9_]", "_", kind)[:64] for gid, kind in types.items()}
+
+
 def device_summary() -> list:
     """One entry per registered device: its type and whether it is connected.
 
@@ -806,8 +824,7 @@ def device_summary() -> list:
         connected = set(device_manager.get_all_devices())
     except Exception:  # noqa: BLE001 - drivers are optional at report time
         connected = set()
-    return [{"type": _device_type(item), "online": int(item["device_id"]) in connected}
-            for item in _registered_devices()]
+    return [{"type": kind, "online": gid in connected} for gid, kind in _device_types().items()]
 
 
 def usage_summary() -> dict:
@@ -823,8 +840,7 @@ def usage_summary() -> dict:
         shared = {int(d) for group in cluster.groups(cluster.GLOBAL) for d in group["devices"]}
     except Exception:  # noqa: BLE001 - not in the global cluster (yet), or its state is unreadable
         return usage
-    types = {int(item["device_id"]): re.sub(r"[^a-z0-9_]", "_", _device_type(item))[:64]
-             for item in _registered_devices()}
+    types = _device_types()
     by_type = {}
     for device_id, bucket, n, seconds in _rows(
             _db_dir() / "reservations.db",
