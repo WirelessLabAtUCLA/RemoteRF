@@ -72,8 +72,7 @@ it joined and was last online, and how many reservations it has had and the
 time reserved, at https://{domain}/stats.json.
 
 A RemoteRF admin will review your new deployment before its address goes live.
-If you opt out, you cannot opt back in without a full data reset. You may leave
-at any time:
+If you opt out, you can still join later, and you may leave at any time:
 
     serverrf global join
     serverrf global leave"""
@@ -318,11 +317,14 @@ def _prompt_name() -> Optional[str]:
         return name
 
 
+def _clean_display_name(name: str, default: str) -> str:
+    return name[:200] if name and all(ord(c) >= 32 and ord(c) != 127 for c in name) else default
+
+
 def _prompt_display_name(default: str) -> str:
     """A human-readable lab name. It is what a RemoteRF admin sees when they
     review the request, and what your users see in the client."""
-    name = _ask(f"  Display name [{default}]: ") or default
-    return name[:200] if all(ord(c) >= 32 and ord(c) != 127 for c in name) else default
+    return _clean_display_name(_ask(f"  Display name [{default}]: "), default)
 
 
 def _prompt_email() -> str:
@@ -351,7 +353,13 @@ def configure() -> bool:
     return True
 
 
-def submit_and_report() -> bool:
+def mask_email(email: str) -> str:
+    """`a***@example.org`: recognisable to the operator, not quoted in a journal."""
+    local, _, host = email.partition("@")
+    return f"{local[:1]}***@{host}" if host else "***"
+
+
+def submit_and_report(*, interactive: bool = True) -> bool:
     """Send the request and tell the operator where it stands."""
     from ..common.utils.panel import marker, print_panel
 
@@ -359,7 +367,7 @@ def submit_and_report() -> bool:
         try:
             submit_request()
         except GlobalError as exc:
-            if exc.code == "name_taken":
+            if exc.code == "name_taken" and interactive:
                 _warn(f"  {load().get('GLOBAL_NAME')} was just taken on RemoteRF Global.")
                 name = _prompt_name()
                 if name is None:
@@ -378,12 +386,13 @@ def submit_and_report() -> bool:
         break
 
     kv = load()
+    email = kv.get("GLOBAL_EMAIL", "")
     print()
     print_panel(
         "One more step",
         [
             f"{marker()} Requested as {kv.get('GLOBAL_NAME')}. Once a RemoteRF "
-            f"admin approves, they email a code to {kv.get('GLOBAL_EMAIL')}. "
+            f"admin approves, they email a code to {email if interactive else mask_email(email)}. "
             "Redeeming it puts you live:",
             "",
             "    serverrf global verify <code>",
@@ -393,18 +402,81 @@ def submit_and_report() -> bool:
     return True
 
 
+ENV_LABELS = {"name": "REMOTERF_GLOBAL_NAME", "email": "REMOTERF_GLOBAL_EMAIL"}
+CLI_LABELS = {"name": "--name", "email": "--email"}
+
+
+def _env_answers() -> Dict[str, str]:
+    """REMOTERF_GLOBAL_{CONSENT,NAME,DISPLAY_NAME,EMAIL}: the process
+    environment first, then the lab's server.env (where a service keeps them)."""
+    server_env = read_env_kv(cfg_dir() / "server.env")
+    return {
+        field: (os.getenv(f"REMOTERF_GLOBAL_{field}") or server_env.get(f"REMOTERF_GLOBAL_{field}", "")).strip()
+        for field in ("CONSENT", "NAME", "DISPLAY_NAME", "EMAIL")
+    }
+
+
+def join_unattended(name: str, email: str, display_name: str = "", *, labels: Dict[str, str]) -> bool:
+    """configure() + submit_and_report() without a prompt, for consent given
+    explicitly (REMOTERF_GLOBAL_CONSENT=yes, `global join --yes`). A missing or
+    invalid answer is one line naming it, and nothing is recorded or sent."""
+    name = name.strip().lower()
+    email = email.strip()
+    problem = None
+    if not NAME_RE.match(name):
+        problem = f"{labels['name']} " + (
+            f"{name!r} is not a valid name: use 3-32 lowercase letters, digits and dashes"
+            if name else "is not set"
+        )
+    elif not EMAIL_RE.match(email):
+        problem = f"{labels['email']} " + ("is not a valid email address" if email else "is not set")
+    elif name_available(name) is False:
+        problem = f"{name} is already registered on RemoteRF Global; choose another {labels['name']}"
+    if problem:
+        _warn(f"  RemoteRF Global: {problem}. Not joining.")
+        return False
+    update(
+        GLOBAL_CONSENT="yes",
+        GLOBAL_NAME=name,
+        GLOBAL_DISPLAY_NAME=_clean_display_name(display_name, name),
+        GLOBAL_EMAIL=email,
+        GLOBAL_STATE="unregistered",
+    )
+    ensure_identity()
+    return submit_and_report(interactive=False)
+
+
 def ensure_consent() -> bool:
     """Ask once, at first run, immediately after the Terms of Service.
 
+    REMOTERF_GLOBAL_CONSENT=yes|no (environment or server.env) answers it
+    without a terminal; unset, a service start leaves it unanswered.
     Returns False only when the operator aborted the prompt outright; a plain
     "no" is a complete, durable answer and the server starts normally.
     """
     if load().get("GLOBAL_CONSENT", "").lower() in {"yes", "no"}:
         return True
+    env = _env_answers()
+    answer = env["CONSENT"].lower()
+    if answer == "no":
+        update(GLOBAL_CONSENT="no")
+        print("RemoteRF Global: opted out (REMOTERF_GLOBAL_CONSENT=no); `serverrf global join` joins later.")
+        return True
+    if answer == "yes":
+        join_unattended(env["NAME"], env["EMAIL"], env["DISPLAY_NAME"], labels=ENV_LABELS)
+        return True
+    if answer:
+        _warn(f"  RemoteRF Global: REMOTERF_GLOBAL_CONSENT={answer!r} is not yes or no; ignored.")
     if sys.stdin is None or not sys.stdin.isatty():
         # A service start (--headless under systemd) has no one to answer:
-        # start outside Global and ask at the next start from a terminal.
-        print("RemoteRF Global participation not asked (no terminal); `serverrf global join` joins.")
+        # start outside Global and say how to answer without a terminal.
+        print(
+            "RemoteRF Global participation not asked (no terminal). To join, set "
+            "REMOTERF_GLOBAL_CONSENT=yes, REMOTERF_GLOBAL_NAME and REMOTERF_GLOBAL_EMAIL "
+            f"(environment or {cfg_dir() / 'server.env'}) and restart, or run "
+            "`serverrf global join --yes --name <name> --email <email>`; "
+            "REMOTERF_GLOBAL_CONSENT=no opts out."
+        )
         return True
     from ..common.utils.panel import print_panel
 
@@ -1315,10 +1387,36 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
     return 0
 
 
-def cmd_join() -> int:
+def _join_args(argv):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="serverrf global join")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="consent without asking; needs --name and --email")
+    parser.add_argument("--name", default="", help="3-32 lowercase letters, digits and dashes")
+    parser.add_argument("--email", default="", help="contact address for the approval code")
+    parser.add_argument("--display-name", default="", help="lab name shown to users (default: --name)")
+    return parser.parse_args(list(argv))
+
+
+def cmd_join(argv=()) -> int:
+    try:
+        args = _join_args(argv)
+    except SystemExit as exc:  # -h, or a bad flag argparse already explained
+        return int(exc.code or 0)
     if participating() and state() == "active":
         _warn(f"  Already live on RemoteRF Global as {hostname()}.")
         _hint("  To re-register under different details, run `global leave` first.")
+        return 1
+    from ..common.utils.panel import print_panel
+
+    # Shown with --yes too: the operator sees what they are agreeing to.
+    print()
+    print_panel("RemoteRF Global participation", CONSENT_TEXT.format(domain=domain()))
+    print()
+    if args.yes:
+        return 0 if join_unattended(args.name, args.email, args.display_name, labels=CLI_LABELS) else 1
+    if not _confirm("Join RemoteRF Global?"):
         return 1
     if not configure():
         return 1
@@ -1389,12 +1487,15 @@ _COMMANDS = {"status": cmd_status, "join": cmd_join, "leave": cmd_leave}
 def main(argv) -> int:
     if argv == ["status", "--json"]:
         return cmd_status(json_output=True)
+    if argv and argv[0] == "join":
+        return cmd_join(argv[1:])
     if argv and argv[0] == "verify":
         # A code pasted from email may arrive wrapped across lines.
         return cmd_verify("".join(argv[1:]))
     if len(argv) != 1 or argv[0] not in _COMMANDS:
         print(
-            "Usage: serverrf global status | join | verify <code> | leave",
+            "Usage: serverrf global status | join [--yes --name <name> --email <email>] "
+            "| verify <code> | leave",
             file=sys.stderr,
         )
         return 2

@@ -29,6 +29,8 @@ class ConsentTests(unittest.TestCase):
         )
         patch.start()
         self.addCleanup(patch.stop)
+        for field in ("CONSENT", "NAME", "DISPLAY_NAME", "EMAIL"):
+            g.os.environ.pop(f"REMOTERF_GLOBAL_{field}", None)  # restored by patch.stop
         # The prompts are only asked at a terminal; these tests answer them.
         tty = mock.patch.object(g.sys, "stdin", mock.Mock(isatty=mock.Mock(return_value=True)))
         tty.start()
@@ -56,10 +58,23 @@ class ConsentTests(unittest.TestCase):
     def test_a_start_without_a_terminal_is_not_asked(self):
         # A service start must not refuse to run on an unanswered question.
         g.sys.stdin.isatty.return_value = False
-        with mock.patch.object(builtins, "input", mock.Mock(side_effect=AssertionError)):
+        with mock.patch.object(builtins, "input", mock.Mock(side_effect=AssertionError)), \
+                mock.patch("builtins.print") as printed:
             self.assertTrue(g.ensure_consent())
         self.assertNotIn("GLOBAL_CONSENT", g.load())
         self.assertFalse(g.participating())
+        # One line, and it says how to answer without a terminal.
+        printed.assert_called_once()
+        line = printed.call_args[0][0]
+        for needed in ("REMOTERF_GLOBAL_CONSENT=yes", "REMOTERF_GLOBAL_NAME", "REMOTERF_GLOBAL_EMAIL",
+                       "server.env", "serverrf global join --yes --name <name> --email <email>"):
+            self.assertIn(needed, line)
+
+    def test_consent_text_allows_joining_after_opting_out(self):
+        text = " ".join(g.CONSENT_TEXT.split())
+        self.assertNotIn("cannot opt back in", text)
+        self.assertIn("If you opt out, you can still join later", text)
+        self.assertIn("serverrf global join", text)
 
     def test_joining_writes_configuration_and_identity(self):
         with mock.patch.object(g, "name_available", return_value=True):
@@ -736,7 +751,7 @@ class UnknownDeploymentTests(TunnelTests):
                 g.fetch_me()  # a repeat is not a second warning
         self.assertEqual(len(warnings), 1)
         self.assertIn("unknown", g._STATE_SUMMARY)
-        with mock.patch.object(g, "configure", return_value=True) as configure:
+        with mock.patch.object(g, "configure", return_value=True) as configure, self.answer("y"):
             self.assertEqual(g.cmd_join(), 0)
         configure.assert_called_once()
 
@@ -857,6 +872,131 @@ class SubmitReportTests(RequestTests):
                     self.assertTrue(g.ensure_consent())
         self.assertEqual(calls, ["ucla", "ucla2"])
         self.assertEqual(g.load()["GLOBAL_NAME"], "ucla2")
+
+
+class UnattendedJoinTests(unittest.TestCase):
+    """Consent without a terminal: REMOTERF_GLOBAL_* or `global join --yes`."""
+
+    # ConsentTests' hermetic config, without re-running its tests here.
+    setUp = ConsentTests.setUp
+    answer = ConsentTests.answer
+
+    def setUpSubmitStub(self):
+        # A service start, and the real submit path down to its one network call.
+        g.sys.stdin.isatty.return_value = False
+        for name, patch in (
+            ("call", mock.patch.object(g, "call", return_value={"status": "unverified", "name": None, "relay": None})),
+            ("name_available", mock.patch.object(g, "name_available", return_value=True)),
+            ("input", mock.patch.object(builtins, "input", mock.Mock(side_effect=AssertionError("prompted")))),
+        ):
+            setattr(self, name, patch.start())
+            self.addCleanup(patch.stop)
+
+    def env(self, **fields):
+        return mock.patch.dict("os.environ", {f"REMOTERF_GLOBAL_{k}": v for k, v in fields.items()})
+
+    def output(self, fn, *args):
+        import contextlib
+        import io
+
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.output.plain_text import PlainTextOutput
+
+        out = io.StringIO()
+        with create_app_session(output=PlainTextOutput(out)), contextlib.redirect_stdout(out):
+            result = fn(*args)
+        return result, out.getvalue()
+
+    def test_env_consent_submits_once_and_records_it(self):
+        # A service keeps them in server.env; the process environment wins.
+        g.write_env_kv(g.cfg_dir() / "server.env", {
+            "REMOTERF_GLOBAL_CONSENT": "yes", "REMOTERF_GLOBAL_NAME": "ucla",
+            "REMOTERF_GLOBAL_EMAIL": "admin@example.org",
+            "REMOTERF_GLOBAL_DISPLAY_NAME": "Westwood Radio Lab",
+        })
+        with self.env(NAME="westwood"):
+            ok, text = self.output(g.ensure_consent)
+        self.assertTrue(ok)
+        self.call.assert_called_once()
+        method, path, payload = self.call.call_args[0]
+        self.assertEqual((method, path), ("POST", g.REQUEST_PATH))
+        self.assertEqual(
+            (payload["name"], payload["display_name"], payload["email"]),
+            ("westwood", "Westwood Radio Lab", "admin@example.org"),
+        )
+        kv = g.load()
+        self.assertEqual(kv["GLOBAL_CONSENT"], "yes")
+        self.assertEqual(kv["GLOBAL_STATE"], "unverified")
+        # The journal names the next step but never quotes the address.
+        self.assertIn("serverrf global verify <code>", text)
+        self.assertIn("a***@example.org", text)
+        self.assertNotIn("admin@example.org", text)
+
+    def test_a_missing_or_invalid_field_sends_nothing(self):
+        cases = [
+            ({"EMAIL": "admin@example.org"}, "REMOTERF_GLOBAL_NAME is not set"),
+            ({"NAME": "-Bad-", "EMAIL": "admin@example.org"}, "REMOTERF_GLOBAL_NAME '-bad-' is not a valid name"),
+            ({"NAME": "westwood"}, "REMOTERF_GLOBAL_EMAIL is not set"),
+            ({"NAME": "westwood", "EMAIL": "admin@example"}, "REMOTERF_GLOBAL_EMAIL is not a valid email address"),
+        ]
+        for fields, message in cases:
+            with self.subTest(fields=fields), self.env(CONSENT="yes", **fields), \
+                    mock.patch.object(g, "_warn") as warn:
+                self.assertTrue(g.ensure_consent())
+                warn.assert_called_once()
+                self.assertIn(message, warn.call_args[0][0])
+                self.assertNotIn("admin@example", warn.call_args[0][0])
+        self.call.assert_not_called()
+        self.assertNotIn("GLOBAL_CONSENT", g.load())
+
+    def test_a_taken_name_is_not_requested(self):
+        self.name_available.return_value = False
+        with self.env(CONSENT="yes", NAME="westwood", EMAIL="admin@example.org"), \
+                mock.patch.object(g, "_warn") as warn:
+            self.assertTrue(g.ensure_consent())
+        self.assertIn("westwood is already registered", warn.call_args[0][0])
+        self.call.assert_not_called()
+
+    def test_env_opt_out_records_no(self):
+        with self.env(CONSENT="no"):
+            self.assertTrue(g.ensure_consent())
+        self.assertEqual(g.load()["GLOBAL_CONSENT"], "no")
+        self.call.assert_not_called()
+
+    def test_an_answered_question_is_never_overridden(self):
+        for earlier, env in (("no", "yes"), ("yes", "no")):
+            with self.subTest(earlier=earlier):
+                g.update(GLOBAL_CONSENT=earlier)
+                with self.env(CONSENT=env, NAME="westwood", EMAIL="admin@example.org"):
+                    self.assertTrue(g.ensure_consent())
+                self.assertEqual(g.load()["GLOBAL_CONSENT"], earlier)
+        self.call.assert_not_called()
+
+    def test_join_yes_shows_the_text_once_and_submits(self):
+        with mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+            rc = g.main(["join", "--yes", "--name", "westwood", "--email", "admin@example.org"])
+        self.assertEqual(rc, 0)
+        labels = [c[0][0] for c in panel.call_args_list]
+        self.assertEqual(labels.count("RemoteRF Global participation"), 1)
+        self.call.assert_called_once()
+        self.assertEqual(g.load()["GLOBAL_CONSENT"], "yes")
+
+    def test_join_yes_without_a_name_sends_nothing(self):
+        with mock.patch.object(g, "_warn") as warn:
+            self.assertEqual(g.main(["join", "--yes", "--email", "admin@example.org"]), 1)
+        self.assertIn("--name is not set", warn.call_args[0][0])
+        self.call.assert_not_called()
+
+    def test_join_after_opting_out_is_allowed_and_recorded(self):
+        g.update(GLOBAL_CONSENT="no")
+        g.sys.stdin.isatty.return_value = True
+        with self.answer("n"):
+            self.assertEqual(g.cmd_join(), 1)
+        self.assertEqual(g.load()["GLOBAL_CONSENT"], "no")
+        with self.answer("y", "westwood", "", "admin@example.org"):
+            self.assertEqual(g.cmd_join(), 0)
+        self.assertEqual(g.load()["GLOBAL_CONSENT"], "yes")
+        self.call.assert_called_once()
 
 
 if __name__ == "__main__":
