@@ -126,6 +126,18 @@ def test_enroll_can_carry_the_password_for_a_lab_login():
     assert backend.transport.request.call_args.kwargs["data"] == {"code": "ucla/ABC123"}
 
 
+def test_enrolling_through_global_asks_for_the_global_password_by_name():
+    from remoterf.core import app
+
+    account = mock.Mock(is_https_home=True)
+    account.backend.enroll.return_value = {"status": "enrolled", "lab": {}}
+    with mock.patch.object(app, "account", account), \
+         mock.patch.object(app, "_ask", return_value="") as ask:
+        assert app.enroll("ucla/ABC123") is True
+    assert "RemoteRF Global password" in ask.call_args.args[0]
+    account.backend.enroll.assert_called_once_with("ucla/ABC123", password=None)
+
+
 def test_a_lab_on_global_sends_registration_there():
     from remoterf.common.utils import map_arg
     from remoterf.core.grpc_acc import RemoteRFAccount
