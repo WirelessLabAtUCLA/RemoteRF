@@ -48,7 +48,7 @@ TIERS = {
     "reservations list": READ, "groups list": READ, "codes list": READ, "hosts status": READ,
     "hosts tokens": READ, "certs list": READ, "config list": READ, "global status": READ,
     "cluster list": READ, "cluster info": READ, "users prune-proxies": READ,
-    "cluster codes list": READ, "schema browse": READ,
+    "cluster codes list": READ, "schema browse": READ, "schema served": READ,
     # write
     "devices add": WRITE, "devices remove": WRITE, "devices rename": WRITE, "groups create": WRITE,
     "groups edit": WRITE, "groups public": WRITE, "groups share": WRITE, "codes create": WRITE,

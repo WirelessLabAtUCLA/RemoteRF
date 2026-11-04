@@ -1,10 +1,12 @@
 """Exact machine-readable contracts for the serverrf reads used by lab ops."""
 
 import contextlib
+import hashlib
 import io
 import json
 import socket
 import sqlite3
+import sys
 import threading
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -60,7 +62,8 @@ def test_status_json_exact_keys_and_types(monkeypatch):
 
     assert rc is None
     _assert_keys(value, ("server_version", "online", "uptime_s", "devices_total",
-                         "devices_online", "reservations_active"))
+                         "devices_online", "reservations_active", "driver_overrides"))
+    assert value["driver_overrides"] == []
     assert type(value["server_version"]) is str and value["online"] is True
     assert value["uptime_s"] is None or type(value["uptime_s"]) is int
     assert all(type(value[key]) is int for key in
@@ -204,11 +207,88 @@ def test_json_survives_control_protocol_and_read_tiers_stay_read(monkeypatch):
     assert reply["rc"] == 0
     value = json.loads(reply["out"])
     _assert_keys(value, ("server_version", "online", "uptime_s", "devices_total",
-                         "devices_online", "reservations_active"))
+                         "devices_online", "reservations_active", "driver_overrides"))
     assert set(remote_admin_shell.TIERS[name] for name in (
         "status", "devices list", "hosts status", "global status", "cluster list",
-        "cluster info", "reservations list",
+        "cluster info", "reservations list", "schema served",
     )) == {remote_admin_shell.READ}
+
+
+def _override(device_type: str, base_sha256: str) -> str:
+    return (f"# rrfops-override base-sha256={base_sha256}\n"
+            "from remoterf_device_core.idl.schema import DeviceSchema, idl_register\n\n"
+            f"@idl_register({device_type!r})\n"
+            "class Probe(DeviceSchema):\n"
+            f"    device_type = {device_type!r}\n"
+            "    driver_version = 'override'\n")
+
+
+def _builtin_sha(device_type):
+    from remoterf_device_core.idl import schema
+
+    return hashlib.sha256(schema.builtin_driver_file(device_type).read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def drivers_dir(monkeypatch):
+    from remoteRF_server.common.utils import get_drivers_dir
+    from remoteRF_server.server import grpc_server  # noqa: F401  (its first import seeds the drivers folder)
+    from remoterf_device_core.idl import schema
+
+    monkeypatch.setattr(schema, "_DRIVER_REGISTRY", dict(schema._DRIVER_REGISTRY))
+    monkeypatch.setattr(schema, "_LOAD_RESULTS", [])
+    monkeypatch.setitem(sys.modules, "zz_rrfops_rtl_sdr", None)
+    path = get_drivers_dir()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_schema_served_json_names_the_override_that_serves(drivers_dir):
+    from remoteRF_server.server import grpc_server
+    from remoterf_device_core.idl import schema
+
+    override = drivers_dir / "zz_rrfops_rtl_sdr.py"
+    override.write_text(_override("rtl_sdr", _builtin_sha("rtl_sdr")))
+    (drivers_dir / "broken.py").write_text("raise ValueError('bad\\ndriver')\n")
+    schema.load_drivers(drivers_dir)
+    rc, value = _run(grpc_server.cmd_schema_served, ["rtl_sdr", "--json"])
+
+    assert rc == 0
+    _assert_keys(value, ("type", "hash", "module", "override", "source_sha256", "loads"))
+    assert value["type"] == "rtl_sdr" and value["override"] is True
+    assert value["module"] == str(override)
+    assert value["hash"] == schema.get_driver_class("rtl_sdr")().get_idl_hash()
+    assert value["hash"].startswith("sha256:")
+    assert value["source_sha256"] == hashlib.sha256(override.read_bytes()).hexdigest()
+    assert value["loads"][-1] == {"file": "zz_rrfops_rtl_sdr.py", "ok": True, "error": None}
+    assert {"file": "broken.py", "ok": False, "error": "bad driver"} in value["loads"]
+
+
+def test_schema_served_unknown_and_bad_types(drivers_dir, capsys):
+    from remoteRF_server.server import grpc_server
+
+    rc, value = _run(grpc_server.cmd_schema_served, ["no_such_type", "--json"])
+    assert rc == 0
+    assert value == {"type": "no_such_type", "hash": None, "module": None, "override": False,
+                     "source_sha256": None, "loads": []}
+    capsys.readouterr()
+    for argv in (["RTL", "--json"], [], ["a", "b"], ["x" * 65]):
+        assert grpc_server.cmd_schema_served(argv) == 2
+        assert capsys.readouterr().out == "Usage: schema served <type> [--json]\n"
+
+
+def test_status_json_lists_driver_overrides_and_staleness(monkeypatch, drivers_dir):
+    from remoteRF_server.server import grpc_server
+
+    monkeypatch.setattr(grpc_server, "device_inventory_snapshot", lambda: {})
+    (drivers_dir / "zz_rrfops_rtl_sdr.py").write_text(_override("rtl_sdr", _builtin_sha("rtl_sdr")))
+    (drivers_dir / "zz_rrfops_hackrf.py").write_text(_override("hackrf", "0" * 64))
+    _, value = _run(grpc_server.cmd_status, ["--json"])
+
+    assert value["driver_overrides"] == [
+        {"type": "hackrf", "file": "zz_rrfops_hackrf.py", "stale": True},
+        {"type": "rtl_sdr", "file": "zz_rrfops_rtl_sdr.py", "stale": False},
+    ]
 
 
 @pytest.mark.parametrize("argv", (["status", "--json"], ["devices", "list", "--json"]))
