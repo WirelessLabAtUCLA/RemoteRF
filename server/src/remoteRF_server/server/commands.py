@@ -156,7 +156,7 @@ def _table() -> list[Command]:
         Command(("config wipe",), "Forget ports/address [-y]; asked at next start", _shell("cmd_config_wipe"), "Config", after="restart"),
         # ---- global / federation ----
         Command(("global status",), "Participation state", _global("status"), "Global"),
-        Command(("global join",), "Request a public address", _global("join"), "Global"),
+        Command(("global join",), "Request a public address [--yes --name <n> --email <e>]", _global("join"), "Global"),
         Command(("global verify",), "Redeem the emailed code [code]", _global("verify"), "Global"),
         Command(("global leave",), "Stop participating", _global("leave"), "Global"),
         # ---- driver schemas approved on RemoteRF Global (server/schema_registry.py) ----

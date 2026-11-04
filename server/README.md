@@ -175,6 +175,38 @@ Headless and interactive shutdown both stop accepting RPCs, close all Dynamic
 v2 sessions/handles and native devices, stop the certificate provider, and
 terminate the reservation-update worker.
 
+### Joining Global from a service (no terminal)
+
+A server started without a terminal (`serverrf --serve --headless` under
+systemd, for example) cannot ask the RemoteRF Global question. It starts
+outside Global and logs one line saying how to answer. Answer it explicitly,
+either in the environment or in `~/.config/remoterf/server.env`, then restart:
+
+```bash
+REMOTERF_GLOBAL_CONSENT=yes
+REMOTERF_GLOBAL_NAME=westwood
+REMOTERF_GLOBAL_EMAIL=admin@example.org
+REMOTERF_GLOBAL_DISPLAY_NAME="Westwood Radio Lab"
+```
+
+`REMOTERF_GLOBAL_DISPLAY_NAME` is optional (it defaults to the name), and
+`REMOTERF_GLOBAL_CONSENT=no` opts out instead. Or run, from any shell on the
+server:
+
+```bash
+serverrf global join --yes --name westwood --email admin@example.org
+```
+
+The variables are read only while the question is unanswered; an answer
+already given is never changed by them. A missing or invalid value is logged
+by name and nothing is sent. Once the request is in:
+
+1. A RemoteRF admin reviews it and emails a code to the contact address.
+2. Redeem it: `serverrf global verify <code>`.
+
+If the service was already running when you ran `global join`, restart it so
+it starts the relay.
+
 Take note of the Local IP and Local Port, for example, if you see:
 
 ```bash
