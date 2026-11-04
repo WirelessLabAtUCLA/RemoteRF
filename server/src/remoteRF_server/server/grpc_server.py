@@ -69,7 +69,6 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.input import DummyInput
 from prompt_toolkit.output import DummyOutput
 
-from ..tools.gist_status import start_status_publisher
 from .cert_provider import start_cert_provider, stop_cert_provider
 try:
     from . import direct_path
@@ -296,7 +295,6 @@ def start_server_runtime(
     cert_dir: Path | None = None,
     include_host_tunnel: bool = True,
     run_reservation_updates: bool = True,
-    publish_status: bool = True,
     federation_executor: Any = None,
     home_federation_enroller: Any = None,
     home_federation_permissions: Any = None,
@@ -444,8 +442,6 @@ def start_server_runtime(
             )
             update_thread.start()
             start_usergroup_cleanup_loop(interval_sec=60)
-        if publish_status:
-            start_status_publisher()
     except BaseException:  # Ctrl-C during the startup check too: close_local_devices powers Plutos down
         stop_event.set()
         server.stop(0)

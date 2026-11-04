@@ -494,6 +494,7 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["proxies"], 1)
         self.assertEqual(payload["active_reservations"], 1)
         self.assertEqual(payload["reservations"], 5)
+        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})  # not on global
         self.assertEqual(
             sorted(entry["type"] for entry in payload["devices"]),
             ["adalm_pluto", "usrp_2901"],
@@ -511,7 +512,8 @@ class StatusReportTests(TunnelTests):
         # Each deployment field Global's stats.json publishes (vpsrf stats.public) is named.
         text = " ".join(g.CONSENT_TEXT.split())
         for item in ("name, version", "devices", "joined", "last online", "how many reservations",
-                     "time reserved, at https://{domain}/stats.json"):
+                     "time reserved, at https://{domain}/stats.json", "devices you share on Global",
+                     "each hour of the day", "each day of the week", "per device type", "these breakdowns"):
             self.assertIn(item, text)
 
     def test_status_payload_survives_missing_state(self):
@@ -522,7 +524,36 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["proxies"], 0)
         self.assertEqual(payload["reservations"], 0)
         self.assertEqual(payload["devices"], [])
+        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
         self.assertIsNone(payload["cert_sha256"])
+
+    def test_usage_counts_only_the_devices_shared_on_global(self):
+        import sqlite3
+        from remoteRF_server.server.federation import cluster
+
+        self.activate()
+        self.seed()  # devices.yml: 0 adalm_pluto, 1 usrp_2901
+        with sqlite3.connect(g.cfg_dir() / "db" / "reservations.db") as conn:
+            conn.execute("CREATE TABLE ReservationBuckets (device_id INTEGER, bucket TEXT, reservations INTEGER, "
+                         "seconds REAL, PRIMARY KEY (device_id, bucket))")
+            conn.executemany("INSERT INTO ReservationBuckets VALUES (?,?,?,?)", [
+                (0, "all", 3, 5400.4), (0, "h20", 2, 3600.0), (0, "h06", 1, 1800.4), (0, "d6", 3, 5400.4),
+                (1, "all", 9, 99.0), (1, "h20", 9, 99.0), (1, "d0", 9, 99.0),  # not shared on Global
+                (5, "all", 1, 60.0), (5, "h23", 1, 60.0), (5, "d4", 1, 60.0),  # gone from devices.yml
+                (7, "all", 0, 0.0), (7, "h01", 0, 0.0), (7, "d1", 0, 0.0),  # every reservation cancelled
+            ])
+        shared = [{"devices": [0, 5]}, {"devices": [7]}]
+        with mock.patch.object(cluster, "groups", return_value=shared) as groups:
+            usage = g.usage_summary()
+        groups.assert_called_once_with(cluster.GLOBAL)
+
+        self.assertEqual(usage["by_hour"], [0] * 6 + [1] + [0] * 13 + [2, 0, 0, 1])
+        self.assertEqual(usage["by_weekday"], [0, 0, 0, 0, 1, 0, 3])
+        self.assertEqual(usage["by_type"], {"adalm_pluto": {"reservations": 3, "seconds": 5400},
+                                            "unknown": {"reservations": 1, "seconds": 60}})
+
+        with mock.patch.object(cluster, "groups", side_effect=cluster.ClusterError("no cluster named global")):
+            self.assertEqual(g.usage_summary(), {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
 
     def test_status_falls_back_for_a_global_that_predates_proxies(self):
         self.activate()
@@ -537,11 +568,12 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
-            set(g.STATUS_FIELDS) - {"reservations"},
-            set(g.STATUS_FIELDS) - {"reservations", "proxies", "reserved_s"},
+            set(g.STATUS_FIELDS) - {"usage"},
+            set(g.STATUS_FIELDS) - {"usage", "reservations"},
+            set(g.STATUS_FIELDS) - {"usage", "reservations", "proxies", "reserved_s"},
         ])
 
-    def test_status_drops_only_reservations_for_a_global_that_predates_it(self):
+    def test_status_drops_reservations_too_for_a_global_that_predates_it(self):
         self.activate()
         sent = []
 
@@ -552,7 +584,24 @@ class StatusReportTests(TunnelTests):
 
         with mock.patch.object(g, "call", side_effect=global_with_reserved_s):
             g.send_status()
-        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"reservations"}])
+        self.assertEqual(sent, [
+            set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS) - {"usage"},
+            set(g.STATUS_FIELDS) - {"usage", "reservations"},
+        ])
+
+    def test_status_drops_only_usage_for_a_global_that_predates_it(self):
+        self.activate()
+        sent = []
+
+        def global_with_reservations(method, path, body):
+            sent.append(set(body["status"]))
+            if "usage" in body["status"]:
+                raise g.GlobalError("invalid_status")
+
+        with mock.patch.object(g, "call", side_effect=global_with_reservations):
+            g.send_status()
+        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"usage"}])
 
     def test_status_gives_up_when_even_the_oldest_note_is_refused(self):
         self.activate()
@@ -560,7 +609,7 @@ class StatusReportTests(TunnelTests):
         with mock.patch.object(g, "call", side_effect=g.GlobalError("invalid_status")) as call:
             with self.assertRaises(g.GlobalError):
                 g.send_status()
-        self.assertEqual(call.call_count, 3)
+        self.assertEqual(call.call_count, 4)
 
     def test_reports_only_flow_once_active(self):
         self.join()

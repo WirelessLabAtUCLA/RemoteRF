@@ -47,7 +47,7 @@ TIERS = {
     "help": READ, "status": READ, "devices list": READ, "users list": READ, "users perms": READ,
     "reservations list": READ, "groups list": READ, "codes list": READ, "hosts status": READ,
     "hosts tokens": READ, "certs list": READ, "config list": READ, "global status": READ,
-    "cluster list": READ, "cluster info": READ, "gist list": READ, "users prune-proxies": READ,
+    "cluster list": READ, "cluster info": READ, "users prune-proxies": READ,
     "cluster codes list": READ, "schema browse": READ,
     # write
     "devices add": WRITE, "devices remove": WRITE, "devices rename": WRITE, "groups create": WRITE,
@@ -63,7 +63,7 @@ TIERS = {
     "groups remove": DESTRUCTIVE, "devices wipe": DESTRUCTIVE, "reservations purge": DESTRUCTIVE,
     "stats purge": DESTRUCTIVE, "hosts wipe": DESTRUCTIVE, "hosts forget": DESTRUCTIVE,
     "certs reset": DESTRUCTIVE, "certs wipe": DESTRUCTIVE, "config ports": DESTRUCTIVE,
-    "cluster remove": DESTRUCTIVE, "gist set": DESTRUCTIVE, "gist wipe": DESTRUCTIVE,
+    "cluster remove": DESTRUCTIVE,
     # never remote: they cut remote access, nuke everything, or pin admins
     "stop": NEVER, "detach": NEVER, "clear": NEVER, "wipe": NEVER, "users purge": NEVER, "db purge": NEVER,
     "global cluster": NEVER,  # an old alias for every `cluster` verb, remove included: use `cluster …`
@@ -74,7 +74,7 @@ TIERS = {
 }
 DENY_FLAGS = {"--secrets"}
 # Destructive commands whose own confirmation -y answers (the step-up asked already).
-TAKES_YES = {"devices wipe", "stats purge", "hosts wipe", "certs wipe", "gist wipe", "users prune-proxies",
+TAKES_YES = {"devices wipe", "stats purge", "hosts wipe", "certs wipe", "users prune-proxies",
              "hosts tokens", "certs reset"}
 KEEP_BACKUPS = 10
 PAIR_CODE = re.compile(r"[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}")

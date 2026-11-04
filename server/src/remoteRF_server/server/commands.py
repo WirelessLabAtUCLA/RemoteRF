@@ -178,10 +178,6 @@ def _table() -> list[Command]:
         Command(("cluster peers",), "Partner listeners this deployment dials directly: cluster peers [add <id> <host:port> --ca <ca.crt> | remove <id>]", _federation("peers"), "Clusters"),
         Command(("cluster accept",), "", _federation("accept"), "Clusters", hidden=True),
         Command(("global cluster",), "", _federation("cluster"), "Global", hidden=True),
-        # ---- gist ----
-        Command(("gist list",), "Show gist status settings [--secrets]", _shell("cmd_gist_show"), "Gist status"),
-        Command(("gist set",), "gist set <gist_id> <file> [--token-stdin]", _shell("cmd_gist_set"), "Gist status"),
-        Command(("gist wipe",), "Forget the gist settings [-y]", _shell("cmd_gist_wipe"), "Gist status"),
         # ---- database ----
         Command(("db export",), "Archive DBs, devices, keys, certs to ~/Downloads [dir]", _shell("cmd_db_export"), "Database"),
         Command(("stats purge",), "Delete the activity log (reservation stats) [-y]", _daemon("cmd_stats_purge"), "Database", where=D),
@@ -244,7 +240,6 @@ _SECTION_BLURB = {
     "Global": "public address and relay",
     "Clusters": "sharing devices with other deployments",
     "Schemas": "driver schemas approved on RemoteRF Global",
-    "Gist status": "publishing status to a GitHub gist",
     "Database": "export, or wipe everything",
     "Remote admin": "admins who reach this console from anywhere",
 }
