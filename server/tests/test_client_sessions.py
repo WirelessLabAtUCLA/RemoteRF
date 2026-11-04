@@ -204,3 +204,103 @@ class ReservationCountTests(unittest.TestCase):
             self.assertEqual(count(), 1)
             db.execute("DELETE FROM Reservations WHERE device_id > ?", (ALIAS_BASE,))  # cancel before start
             self.assertEqual(count(), 1)
+
+
+class ReservationBucketsTests(unittest.TestCase):
+    """Per device, by UTC hour and weekday of the start: counted like the totals above."""
+
+    def setUp(self):
+        import time
+        from remoteRF_server.server import reservation
+
+        # Local time 5:30 ahead of UTC (no DST): the buckets must convert.
+        self.addCleanup(time.tzset)
+        tz = mock.patch.dict("os.environ", {"TZ": "IST-5:30"})
+        tz.start()
+        self.addCleanup(tz.stop)
+        time.tzset()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name)
+        get_db_dir = mock.patch.object(reservation, "get_db_dir", return_value=self.path)
+        get_db_dir.start()
+        self.addCleanup(get_db_dir.stop)
+        self.handler = reservation.ReservationHandler
+
+    def connect(self):
+        import sqlite3
+
+        db = sqlite3.connect(self.path / "reservations.db", isolation_level=None)
+        self.addCleanup(db.close)
+        return db
+
+    @staticmethod
+    def add(db, device_id, start, end):
+        db.execute("INSERT INTO Reservations (username, device_id, start_time, end_time, salt, hash) "
+                   "VALUES ('u', ?, ?, ?, '', '')", (device_id, start, end))
+
+    @staticmethod
+    def buckets(db, device_id):
+        rows = db.execute("SELECT bucket, reservations, seconds FROM ReservationBuckets WHERE device_id = ?", (device_id,))
+        return {bucket: (n, round(seconds)) for bucket, n, seconds in rows}
+
+    def test_buckets_by_utc_hour_and_weekday_survive_purge_and_skip_partner_devices(self):
+        from datetime import datetime
+        from remoteRF_server.server.federation.home_devices import ALIAS_BASE
+
+        self.handler()
+        db = self.connect()
+        self.add(db, 1, "2026-11-02 02:00:00", "2026-11-02 03:00:00")  # Mon 02:00 here = Sun 20:30 UTC
+        self.add(db, 1, "2026-11-04 12:00:00", "2026-11-04 14:00:00")  # Wed 12:00 here = Wed 06:30 UTC
+        self.add(db, ALIAS_BASE, "2026-11-02 02:00:00", "2026-11-02 03:00:00")
+        expected = {"all": (2, 3 * 3600), "h20": (1, 3600), "d6": (1, 3600), "h06": (1, 2 * 3600), "d2": (1, 2 * 3600)}
+        self.assertEqual(self.buckets(db, 1), expected)
+        self.assertEqual(self.buckets(db, ALIAS_BASE), {})
+        db.execute("DELETE FROM Reservations WHERE end_time < ?", (datetime.now(),))  # purge: no change
+        self.assertEqual(self.buckets(db, 1), expected)
+
+    def test_a_cancel_gives_back_like_the_totals_and_never_below_zero(self):
+        from datetime import datetime, timedelta
+
+        self.handler()
+        db = self.connect()
+        now = datetime.now()
+        self.add(db, 2, now + timedelta(hours=1), now + timedelta(hours=3))
+        self.add(db, 3, now - timedelta(hours=1), now + timedelta(hours=1))
+        self.add(db, 4, now + timedelta(hours=1), now + timedelta(hours=2))
+        values = lambda device_id: sorted(self.buckets(db, device_id).values())  # noqa: E731
+        self.assertEqual(values(2), [(1, 2 * 3600)] * 3)
+        db.execute("DELETE FROM Reservations WHERE device_id = 2")  # cancel before start: all given back
+        self.assertEqual(values(2), [(0, 0)] * 3)
+        db.execute("DELETE FROM Reservations WHERE device_id = 3")  # cancel after start: unused hour back
+        for n, seconds in values(3):
+            self.assertEqual(n, 1)
+            self.assertAlmostEqual(seconds, 3600, delta=2)
+        db.execute("UPDATE ReservationBuckets SET reservations = 0, seconds = 0 WHERE device_id = 4")
+        db.execute("DELETE FROM Reservations WHERE device_id = 4")
+        self.assertEqual(values(4), [(0, 0)] * 3)  # never negative
+
+    def test_buckets_seed_from_old_rows_once(self):
+        import time
+        from remoteRF_server.server.federation.home_devices import ALIAS_BASE
+
+        db = self.connect()
+        db.execute("CREATE TABLE Reservations (res_id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, "
+                   "device_id INTEGER NOT NULL, start_time TIMESTAMP NOT NULL, end_time TIMESTAMP NOT NULL, "
+                   "salt TEXT NOT NULL, hash TEXT NOT NULL)")
+        self.add(db, 1, "2026-11-02 02:00:00", "2026-11-02 03:00:00")
+        self.add(db, 1, "2026-11-02 02:15:00", "2026-11-02 02:45:00")
+        self.add(db, ALIAS_BASE, "2026-11-02 02:00:00", "2026-11-02 03:00:00")
+        expected = {"all": (2, 5400), "h20": (2, 5400), "d6": (2, 5400)}
+        self.handler()
+        self.assertEqual(self.buckets(db, 1), expected)
+        self.assertEqual(self.buckets(db, ALIAS_BASE), {})
+        self.handler()  # a restart does not seed again
+        self.assertEqual(self.buckets(db, 1), expected)
+        with mock.patch.dict("os.environ", {"TZ": "UTC0"}):
+            time.tzset()
+            self.handler()  # nor one under another TZ, where the rows map to h02/d0
+        time.tzset()
+        self.assertEqual(self.buckets(db, 1), expected)
+        self.add(db, 1, "2026-11-02 02:20:00", "2026-11-02 02:50:00")  # 20:50 UTC
+        self.assertEqual(self.buckets(db, 1)["h20"], (3, 7200))

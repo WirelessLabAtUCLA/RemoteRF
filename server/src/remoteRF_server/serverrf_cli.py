@@ -177,13 +177,6 @@ def _gen_certs_path() -> Path:
         return p1
     return (_repo_root() / "tools" / "gen_certs.py").resolve()
 
-def _gist_env_path() -> Path:
-    # Stored alongside server.env/devices.yml under ~/.config/remoterf by default
-    return _cfg_dir() / "gist.env"
-
-def _status_push_env_path() -> Path:
-    return _cfg_dir() / "status_push.env"
-
 def _tos_ack_path() -> Path:
     # Stored alongside server.env/devices.yml under ~/.config/remoterf by default
     return _cfg_dir() / "tos.env"
@@ -472,150 +465,6 @@ def _validate_port(n: int, *, name: str) -> Optional[str]:
     if n <= 0 or n > 65535:
         return f"{name} out of range (1..65535)"
     return None
-
-def _redact(s: str) -> str:
-    s = (s or "").strip()
-    if len(s) <= 8:
-        return "****"
-    return f"{s[:4]}...{s[-4:]}"
-
-
-def _gist_show(*, show_secrets: bool = False) -> int:
-    from remoteRF_server.common.utils.panel import marker, print_panel
-
-    p = _gist_env_path()
-    if not p.exists():
-        print(f"No gist config found (missing {p}).")
-        return 0
-
-    kv = _read_env_kv(p)
-    tok = kv.get("GITHUB_TOKEN", "")
-    rows = [
-        f"{marker()} {p}",
-        "",
-        f"gist id   {kv.get('STATUS_GIST_ID', '')}",
-        f"filename  {kv.get('STATUS_GIST_FILENAME', '')}",
-        f"token     {tok if show_secrets else _redact(tok) + '  (use --secrets to show)'}",
-    ]
-    print()
-    print_panel("Gist status", rows, literal=True)
-    print()
-    return 0
-
-
-def _gist_set(*, gist_id: str, filename: str, token: str) -> int:
-    gist_id = (gist_id or "").strip()
-    filename = (filename or "").strip()
-    token = (token or "").strip()
-
-    if not gist_id:
-        print("ERROR: missing --id <gist_id>", file=sys.stderr)
-        return 2
-    if not filename:
-        print("ERROR: missing --file <filename>", file=sys.stderr)
-        return 2
-    if not token:
-        print("ERROR: missing token (use prompt or --token-stdin or --token)", file=sys.stderr)
-        return 2
-
-    _cfg_dir().mkdir(parents=True, exist_ok=True)
-    p = _gist_env_path()
-
-    kv = _read_env_kv(p)
-    kv["STATUS_GIST_ID"] = gist_id
-    kv["STATUS_GIST_FILENAME"] = filename
-    kv["GITHUB_TOKEN"] = token
-
-    _write_env_kv(p, kv)
-
-    try:
-        os.chmod(p, 0o600)
-    except Exception:
-        pass
-
-    print("Configured gist status env:")
-    print(f"  {p}")
-    print(f"  STATUS_GIST_ID={gist_id}")
-    print(f"  STATUS_GIST_FILENAME={filename}")
-    print(f"  GITHUB_TOKEN={_redact(token)}")
-    return 0
-
-
-def _gist_wipe(*, yes: bool) -> int:
-    p = _gist_env_path()
-    if not p.exists():
-        print(f"No gist config found at: {p}")
-        return 0
-
-    if not yes:
-        try:
-            if input("This will delete gist.env (gist status config). Type 'wipe' to confirm: ").strip().lower() != "wipe":
-                print("Wipe aborted.")
-                return 1
-        except KeyboardInterrupt:
-            print("\nCancelled.")
-            return 1
-
-    p.unlink()
-    print("Wiped gist config (gist.env).")
-    return 0
-
-
-def _status_push_show() -> int:
-    from remoteRF_server.common.utils.panel import marker, print_panel
-
-    p = _status_push_env_path()
-    if not p.exists():
-        print(f"No status push config found (missing {p}).")
-        return 0
-
-    rows = [f"{marker()} {p}", ""] + [f"{k}={v}" for k, v in _read_env_kv(p).items()]
-    print()
-    print_panel("Status push", rows, literal=True)
-    print()
-    return 0
-
-
-def _status_push_set(*, host: str, key: Optional[str], remote: Optional[str]) -> int:
-    host = (host or "").strip()
-    if not host:
-        print("ERROR: missing --vps <host>", file=sys.stderr)
-        return 2
-
-    p = _status_push_env_path()
-    kv = _read_env_kv(p)
-    kv["STATUS_PUSH_HOST"] = host
-    if key:
-        kv["STATUS_PUSH_KEY"] = key
-    if remote:
-        kv["STATUS_PUSH_FILE"] = remote
-    _write_env_kv(p, kv)
-
-    print("Configured status push env:")
-    print(f"  {p}")
-    for k, v in kv.items():
-        print(f"  {k}={v}")
-    return 0
-
-
-def _status_push_wipe(*, yes: bool) -> int:
-    p = _status_push_env_path()
-    if not p.exists():
-        print(f"No status push config found at: {p}")
-        return 0
-
-    if not yes:
-        try:
-            if input("This will delete status_push.env (disables status push). Type 'wipe' to confirm: ").strip().lower() != "wipe":
-                print("Wipe aborted.")
-                return 1
-        except KeyboardInterrupt:
-            print("\nCancelled.")
-            return 1
-
-    p.unlink()
-    print("Wiped status push config (status_push.env).")
-    return 0
 
 # -----------------------------
 # Subprocess utils
@@ -2451,27 +2300,6 @@ def cmd_federation(argv: List[str]) -> int:
     return federation_main(list(argv))
 
 
-def cmd_gist_show(argv: List[str]) -> int:
-    return _gist_show(show_secrets="--secrets" in argv)
-
-
-def cmd_gist_set(argv: List[str]) -> int:
-    import getpass
-
-    pos = _positional(argv)
-    gist_id = pos[0] if pos else _ask("Gist id")
-    filename = pos[1] if len(pos) > 1 else _ask("File name")
-    token = sys.stdin.readline().strip() if "--token-stdin" in argv else getpass.getpass("  GitHub token: ").strip()
-    if not (gist_id and filename and token):
-        print("ERROR: gist id, file name and token are required", file=sys.stderr)
-        return 2
-    return _gist_set(gist_id=gist_id, filename=filename, token=token)
-
-
-def cmd_gist_wipe(argv: List[str]) -> int:
-    return _gist_wipe(yes=_yes(argv))
-
-
 def _status_or_usage() -> int:
     from remoteRF_server.server import control
 
@@ -2574,25 +2402,6 @@ def _legacy_main(argv: List[str]) -> int:
     host_token_length: Optional[int] = None
     host_force = False  # host-only overwrite/rotate
     
-    # gist commands
-    gist_mode = False
-    gist_show = False
-    gist_wipe = False
-    gist_set = False
-    gist_show_secrets = False
-
-    gist_id: Optional[str] = None
-    gist_filename: Optional[str] = None
-    gist_token: Optional[str] = None
-    gist_token_stdin = False
-
-    # status-push commands
-    push_mode = False
-    push_show = False
-    push_wipe = False
-    push_set = False
-    push_opts: Dict[str, str] = {}
-
     i = 0
     while i < len(argv):
         tok = argv[i]
@@ -2731,92 +2540,6 @@ def _legacy_main(argv: List[str]) -> int:
             i += 1
             continue
         
-        # enter gist mode
-        if tok in ("--gist", "-gist"):
-            gist_mode = True
-            i += 1
-            continue
-
-        # gist verbs/options
-        if gist_mode and tok in ("--show", "-show", "-s"):
-            gist_show = True
-            i += 1
-            continue
-
-        if gist_mode and tok in ("--wipe", "-wipe", "-w"):
-            gist_wipe = True
-            i += 1
-            continue
-
-        if gist_mode and tok in ("--set", "-set", "--config", "--configure"):
-            gist_set = True
-            i += 1
-            continue
-
-        if gist_mode and tok in ("--secrets", "-secrets"):
-            gist_show_secrets = True
-            i += 1
-            continue
-
-        if gist_mode and tok == "--id":
-            if i + 1 >= len(argv):
-                print("ERROR: --id expects <gist_id>", file=sys.stderr)
-                return 2
-            gist_id = argv[i + 1].strip()
-            i += 2
-            continue
-
-        if gist_mode and tok in ("--file", "--filename"):
-            if i + 1 >= len(argv):
-                print("ERROR: --file expects <filename>", file=sys.stderr)
-                return 2
-            gist_filename = argv[i + 1].strip()
-            i += 2
-            continue
-
-        # Not recommended (shell history), but provided anyway
-        if gist_mode and tok == "--token":
-            if i + 1 >= len(argv):
-                print("ERROR: --token expects <token>", file=sys.stderr)
-                return 2
-            gist_token = argv[i + 1].strip()
-            i += 2
-            continue
-
-        if gist_mode and tok == "--token-stdin":
-            gist_token_stdin = True
-            i += 1
-            continue
-
-        # enter status-push mode
-        if tok in ("--status-push", "-status-push"):
-            push_mode = True
-            i += 1
-            continue
-
-        if push_mode and tok in ("--show", "-show", "-s"):
-            push_show = True
-            i += 1
-            continue
-
-        if push_mode and tok in ("--wipe", "-wipe", "-w"):
-            push_wipe = True
-            i += 1
-            continue
-
-        if push_mode and tok in ("--set", "-set"):
-            push_set = True
-            i += 1
-            continue
-
-        if push_mode and tok in ("--vps", "--key", "--file"):
-            if i + 1 >= len(argv):
-                print(f"ERROR: {tok} expects a value", file=sys.stderr)
-                return 2
-            push_opts[tok] = argv[i + 1].strip()
-            i += 2
-            continue
-
         # device verbs/options
         if device_mode and tok in ("--show", "-show", "-s"):
             device_show = True
@@ -2991,56 +2714,6 @@ def _legacy_main(argv: List[str]) -> int:
                 print("\nCancelled.")
                 return 1
             
-    if push_mode and (gist_mode or device_mode or config_mode or host_mode or show_certs or wipe_certs or (gen_ip is not None)):
-        print("ERROR: --status-push cannot be combined with other commands. Run them separately.", file=sys.stderr)
-        return 2
-
-    if push_mode:
-        if int(push_show) + int(push_wipe) + int(push_set) != 1:
-            print("ERROR: use exactly one of: --status-push --set | --show | --wipe", file=sys.stderr)
-            return 2
-        if push_show:
-            return int(_status_push_show())
-        if push_wipe:
-            return int(_status_push_wipe(yes=yes))
-        return int(_status_push_set(host=push_opts.get("--vps", ""), key=push_opts.get("--key"), remote=push_opts.get("--file")))
-
-    if gist_mode and (device_mode or config_mode or host_mode or show_certs or wipe_certs or (gen_ip is not None)):
-        print("ERROR: --gist cannot be combined with device/config/host/cert commands. Run them separately.", file=sys.stderr)
-        return 2
-    
-    # ----------------
-    # Gist mode execution
-    # ----------------
-    if gist_mode:
-        actions = int(gist_show) + int(gist_wipe) + int(gist_set)
-        if actions == 0:
-            print_help()
-            return 2
-        if actions > 1:
-            print("ERROR: gist commands are mutually exclusive. Use exactly one of: --set, --show, --wipe", file=sys.stderr)
-            return 2
-
-        if gist_show:
-            return int(_gist_show(show_secrets=gist_show_secrets))
-
-        if gist_wipe:
-            return int(_gist_wipe(yes=yes))
-
-        # gist_set
-        if gist_id is None or gist_filename is None:
-            print("ERROR: --gist --set requires --id <gist_id> and --file <filename>", file=sys.stderr)
-            return 2
-
-        tok = gist_token or ""
-        if gist_token_stdin:
-            tok = sys.stdin.read().strip()
-        if not tok:
-            # secure prompt (no echo)
-            tok = getpass.getpass("GitHub token (won't echo): ").strip()
-
-        return int(_gist_set(gist_id=gist_id, filename=gist_filename, token=tok))
-
     # ----------------
     # Host mode execution
     # ----------------

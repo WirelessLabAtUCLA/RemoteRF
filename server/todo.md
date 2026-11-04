@@ -2,14 +2,6 @@
 
 Debugging needed! (to determine what/why exactly causes the 'slowness') (could also just be the wifi speed, etc.)
 
-# Proper `Gist` Server Information
-
-Pull data from the main database (with some options to set, like whitelist for devices AND user groups + max timestamp/payload size)
-
-Check for if gist isn't setup, no 'warning' or anything. + "Github device status" (grid)
-
-Proper Reservation 'history'
-
 # Interface Description Language `IDL`:
 
 A device API “contract” that hosts/servers can publish, and clients can discover + bind to automatically, so adding a new device does not require shipping a new hard-coded client library for that device.

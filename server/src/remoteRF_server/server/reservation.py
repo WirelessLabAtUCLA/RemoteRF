@@ -252,6 +252,46 @@ class ReservationHandler:
         END;
         ''')
 
+        # The same two counts per own device: overall ('all'), by the UTC hour
+        # of the start ('h00'..'h23') and by its UTC weekday ('d0' = Monday ..
+        # 'd6'). Reservations hold local time, hence the 'utc' modifier.
+        # Reported to Global as `usage`, for the devices shared there. Seeded
+        # only into an empty table: the bucket names follow the process TZ, so a
+        # restart under another TZ must not count the current rows again.
+        hour = lambda r: f"'h' || strftime('%H', {r}.start_time, 'utc')"  # noqa: E731
+        day = lambda r: f"'d' || ((CAST(strftime('%w', {r}.start_time, 'utc') AS INTEGER) + 6) % 7)"  # noqa: E731
+        length = lambda r: f"(julianday({r}.end_time) - julianday({r}.start_time)) * 86400"  # noqa: E731
+        self.cursor.executescript(f'''
+        BEGIN IMMEDIATE;
+        CREATE TABLE IF NOT EXISTS ReservationBuckets (device_id INTEGER NOT NULL, bucket TEXT NOT NULL,
+            reservations INTEGER NOT NULL, seconds REAL NOT NULL, PRIMARY KEY (device_id, bucket));
+        INSERT INTO ReservationBuckets
+            SELECT device_id, bucket, COUNT(*), SUM(seconds) FROM (
+                SELECT device_id, 'all' AS bucket, {length("r")} AS seconds FROM Reservations r
+                UNION ALL SELECT device_id, {hour("r")}, {length("r")} FROM Reservations r
+                UNION ALL SELECT device_id, {day("r")}, {length("r")} FROM Reservations r)
+            WHERE device_id < 1000000 AND NOT EXISTS (SELECT 1 FROM ReservationBuckets)
+            GROUP BY device_id, bucket;
+        CREATE TRIGGER IF NOT EXISTS reservation_buckets_ins AFTER INSERT ON Reservations
+        WHEN NEW.device_id < 1000000 BEGIN
+            INSERT INTO ReservationBuckets VALUES
+                (NEW.device_id, 'all', 1, {length("NEW")}),
+                (NEW.device_id, {hour("NEW")}, 1, {length("NEW")}),
+                (NEW.device_id, {day("NEW")}, 1, {length("NEW")})
+            ON CONFLICT (device_id, bucket) DO UPDATE
+                SET reservations = reservations + 1, seconds = seconds + excluded.seconds;
+        END;
+        CREATE TRIGGER IF NOT EXISTS reservation_buckets_del AFTER DELETE ON Reservations
+        WHEN OLD.device_id < 1000000 BEGIN
+            UPDATE ReservationBuckets SET
+                reservations = MAX(reservations - (OLD.start_time > datetime('now', 'localtime')), 0),
+                seconds = MAX(seconds - MAX(0,
+                    (julianday(OLD.end_time) - julianday(MAX(OLD.start_time, datetime('now', 'localtime')))) * 86400), 0)
+            WHERE device_id = OLD.device_id AND bucket IN ('all', {hour("OLD")}, {day("OLD")});
+        END;
+        COMMIT;
+        ''')
+
         # "Stay logged in" for the deployment protocol: a random token the
         # client keeps instead of the password. Only its hash lives here, so
         # the table reveals nothing; a row is revoked by logout or purge.
@@ -1453,172 +1493,6 @@ class ReservationHandler:
             return {int(acc): json.loads(meta or "{}") for acc, meta in rows}
         except (sqlite3.Error, ValueError):
             return {}
-            
-    @db_connection
-    def get_obfuscated_device_reservations_grouped_past_days(self, days: int) -> dict[str, dict[str, int]]:
-        try:
-            days = int(days)
-        except Exception:
-            return {}
-
-        if days < 0:
-            return {}
-
-        now = datetime.now()
-        cutoff = now - timedelta(days=days)
-
-        def _parse_logged_int(v) -> int:
-            if isinstance(v, int):
-                return v
-            if isinstance(v, float):
-                return int(v)
-
-            s = str(v).strip()
-
-            # Handles strings like:
-            #   "int64_value: 2"
-            #   "int64_value: 1772587800"
-            if ":" in s:
-                s = s.split(":", 1)[1].strip()
-
-            # remove quotes/newlines if present
-            s = s.strip().strip('"').strip("'")
-            return int(float(s))
-
-        # Take a consistent snapshot of the log file under the same lock used by writers.
-        try:
-            with log_lock:
-                activity_log = _load_logs()
-        except Exception:
-            activity_log = []
-
-        out: dict[str, dict[str, int]] = {}
-
-        for entry in activity_log:
-            try:
-                if not isinstance(entry, dict):
-                    continue
-
-                if str(entry.get("action", "")).strip() != "reserve_device":
-                    continue
-
-                details = entry.get("details", {})
-                if not isinstance(details, dict):
-                    continue
-
-                args = details.get("args", {})
-                result = details.get("result", {})
-
-                if not isinstance(args, dict) or not isinstance(result, dict):
-                    continue
-
-                # Only count SUCCESSFUL reservations
-                if "Token" not in result:
-                    continue
-
-                raw_device_id = args.get("dd")
-                raw_start = args.get("st")
-                raw_end = args.get("et")
-
-                if raw_device_id is None or raw_start is None or raw_end is None:
-                    continue
-
-                device_id = _parse_logged_int(raw_device_id)
-                start_ts = _parse_logged_int(raw_start)
-                end_ts = _parse_logged_int(raw_end)
-
-                start_dt = datetime.fromtimestamp(start_ts)
-                end_dt = datetime.fromtimestamp(end_ts)
-
-                # Same overlap semantics as before
-                if end_dt < cutoff or start_dt > now:
-                    continue
-
-                dev_key = str(device_id)
-                day_key = start_dt.date().isoformat()
-
-                if dev_key not in out:
-                    out[dev_key] = {}
-
-                out[dev_key][day_key] = out[dev_key].get(day_key, 0) + 1
-
-            except Exception:
-                continue
-
-        return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
-    
-    @db_connection
-    def get_obfuscated_usage_summary(self) -> dict[str, int | float]:
-
-        int_re = re.compile(r'int64_value:\s*([0-9]+)')
-        str_re = re.compile(r'string_value:\s*"([^"]*)"')
-
-        def _parse_proto_value(v):
-            if isinstance(v, (int, float)):
-                return v
-            if not isinstance(v, str):
-                return v
-
-            m_int = int_re.search(v)
-            if m_int:
-                return int(m_int.group(1))
-
-            m_str = str_re.search(v)
-            if m_str:
-                return m_str.group(1)
-
-            return v
-
-        try:
-            with log_lock:
-                activity_log = _load_logs()
-        except Exception:
-            activity_log = []
-
-        accounts: set[str] = set()
-        total_reservations = 0
-        total_reserved_seconds = 0
-
-        for entry in activity_log:
-            try:
-                if not isinstance(entry, dict):
-                    continue
-
-                action = entry.get("action")
-                username = entry.get("username")
-                details = entry.get("details", {}) or {}
-                args = details.get("args", {}) or {}
-                result = details.get("result", {}) or {}
-
-                if not isinstance(args, dict) or not isinstance(result, dict):
-                    continue
-
-                # Count accounts from successful logins
-                if action == "login" and "UC" in result:
-                    uc_name = _parse_proto_value(result.get("UC"))
-                    if uc_name:
-                        accounts.add(str(uc_name))
-                    elif username:
-                        accounts.add(str(username))
-
-                # Count reservations + reserved time
-                if action == "reserve_device":
-                    total_reservations += 1
-
-                    st = _parse_proto_value(args.get("st"))
-                    et = _parse_proto_value(args.get("et"))
-
-                    if isinstance(st, int) and isinstance(et, int) and et > st:
-                        total_reserved_seconds += (et - st)
-
-            except Exception:
-                continue
-
-        return {
-            "account_count": len(accounts),
-            "total_reservations": int(total_reservations),
-            "total_reserved_hours": round(total_reserved_seconds / 3600.0, 1),
-        }
             
     def get_reservation_count(self, username):
         self.cursor.execute("SELECT COUNT(*) FROM Reservations WHERE username = ?", (username,))

@@ -62,11 +62,14 @@ Once an hour it sends Global a short note: this deployment's name and
 ID, version, uptime, how many accounts (and how many visit from partner
 deployments), what devices it has, how many reservations are active, how many
 reservations have been made and the total time reserved so far (two numbers),
-and your LAN address. Nothing else leaves your server -- no credentials, no
-user or reservation details -- and the connection only goes outward.
-Global publishes the network totals, and each deployment's name, version,
-devices, when it joined and was last online, and how many reservations it
-has had and the time reserved, at https://{domain}/stats.json.
+and your LAN address. For the devices you share on Global it also sends how
+many reservations start in each hour of the day and on each day of the week
+(UTC), and the reservations and time reserved per device type (counts only).
+Nothing else leaves your server -- no credentials, no user or reservation
+details -- and the connection only goes outward. Global publishes the network
+totals, these breakdowns, and each deployment's name, version, devices, when
+it joined and was last online, and how many reservations it has had and the
+time reserved, at https://{domain}/stats.json.
 
 A RemoteRF admin will review your new deployment before its address goes live.
 If you opt out, you cannot opt back in without a full data reset. You may leave
@@ -737,6 +740,7 @@ STATUS_FIELDS = frozenset(
         "active_reservations",
         "reservations",
         "reserved_s",
+        "usage",
         "lan_address",
         "cert_sha256",
     }
@@ -758,23 +762,24 @@ def _db_dir() -> Path:
     return cfg_dir() / "db"
 
 
-def _count(database: Path, sql: str, params=()) -> int:
+def _rows(database: Path, sql: str, params=()) -> list:
     import sqlite3
 
     if not database.exists():
-        return 0
+        return []
     try:
         with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2.0) as db:
-            return int(db.execute(sql, params).fetchone()[0])
+            return db.execute(sql, params).fetchall()
     except sqlite3.Error:
-        return 0
+        return []
 
 
-def device_summary() -> list:
-    """One entry per registered device: its type and whether it is connected.
+def _count(database: Path, sql: str, params=()) -> int:
+    rows = _rows(database, sql, params)
+    return int(rows[0][0]) if rows else 0
 
-    Types and counts only — never a device identifier, serial, or any data.
-    """
+
+def _registered_devices() -> list:
     import yaml
 
     path = cfg_dir() / "devices.yml"
@@ -783,23 +788,74 @@ def device_summary() -> list:
         devices = data.get("devices") or []
     except (OSError, yaml.YAMLError):
         return []
+    return [item for item in devices if type(item) is dict and "device_id" in item]
+
+
+def _device_type(item: dict) -> str:
+    return str(item.get("device_type") or "unknown").lower()
+
+
+def _device_types() -> dict:
+    """Device id -> type: devices.yml entries, then the Host directory `serverrf status` lists.
+
+    Types are bounded the way Global accepts them: a Host names its own kinds.
+    """
+    types = {int(item["device_id"]): _device_type(item) for item in _registered_devices()}
+    try:
+        from ..host import host_tunnel_server as hts
+
+        directory = hts.get_tunnel_registry().device_directory_cached(ttl_ms=0)
+    except Exception:  # noqa: BLE001 - drivers are optional at report time
+        directory = {}
+    for device_id, (_host_id, info, _active) in directory.items():
+        if str(device_id).isdigit():
+            types.setdefault(int(device_id), str(getattr(info, "kind", "") or "").strip().lower() or "unknown")
+    return {gid: re.sub(r"[^a-z0-9_]", "_", kind)[:64] for gid, kind in types.items()}
+
+
+def device_summary() -> list:
+    """One entry per registered device: its type and whether it is connected.
+
+    Types and counts only — never a device identifier, serial, or any data.
+    """
     try:
         from . import device_manager
 
         connected = set(device_manager.get_all_devices())
     except Exception:  # noqa: BLE001 - drivers are optional at report time
         connected = set()
-    summary = []
-    for item in devices:
-        if type(item) is not dict or "device_id" not in item:
+    return [{"type": kind, "online": gid in connected} for gid, kind in _device_types().items()]
+
+
+def usage_summary() -> dict:
+    """Reservations made on the devices shared on Global: by the UTC hour and
+    weekday they start, and reservations and seconds reserved per device type.
+
+    Counts only (ReservationBuckets); all zero when nothing is shared there.
+    """
+    from .federation import cluster
+
+    usage = {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}}
+    try:
+        shared = {int(d) for group in cluster.groups(cluster.GLOBAL) for d in group["devices"]}
+    except Exception:  # noqa: BLE001 - not in the global cluster (yet), or its state is unreadable
+        return usage
+    types = _device_types()
+    by_type = {}
+    for device_id, bucket, n, seconds in _rows(
+            _db_dir() / "reservations.db",
+            "SELECT device_id, bucket, reservations, CAST(ROUND(seconds) AS INTEGER) FROM ReservationBuckets"):
+        if device_id not in shared:
             continue
-        summary.append(
-            {
-                "type": str(item.get("device_type") or "unknown").lower(),
-                "online": int(item["device_id"]) in connected,
-            }
-        )
-    return summary
+        if bucket == "all":
+            totals = by_type.setdefault(types.get(device_id, "unknown"), {"reservations": 0, "seconds": 0})
+            totals["reservations"] += n
+            totals["seconds"] = min(totals["seconds"] + seconds, 2**31)
+        else:
+            usage["by_hour" if bucket[0] == "h" else "by_weekday"][int(bucket[1:])] += n
+    busiest = sorted((kv for kv in by_type.items() if kv[1]["reservations"]), key=lambda kv: -kv[1]["reservations"])
+    usage["by_type"] = dict(busiest[:64])  # Global takes at most 64 types
+    return usage
 
 
 def cert_sha256() -> Optional[str]:
@@ -832,6 +888,7 @@ def status_payload() -> dict:
         ),
         "reservations": _count(reservations, "SELECT n FROM ReservationCount"),
         "reserved_s": _count(reservations, "SELECT CAST(ROUND(seconds) AS INTEGER) FROM ReservedTotal"),
+        "usage": usage_summary(),
         "lan_address": lan_endpoint(),
         "cert_sha256": cert_sha256(),
     }
@@ -851,8 +908,9 @@ def send_status() -> None:
 
     payload = status_payload()
     # A Global older than a field refuses the note: drop the newest first
-    # (`reservations`), then `proxies`/`reserved_s`, as the note was before them.
-    steps = ((), ("reservations",), ("reservations", "proxies", "reserved_s"))
+    # (`usage`, then `reservations`), then `proxies`/`reserved_s`, as the note
+    # was before each of them.
+    steps = ((), ("usage",), ("usage", "reservations"), ("usage", "reservations", "proxies", "reserved_s"))
     for drop in steps:
         try:
             call("POST", REPORT_PATH, {"kind": "status", "status": {k: v for k, v in payload.items() if k not in drop}})

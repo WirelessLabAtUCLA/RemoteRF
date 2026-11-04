@@ -226,6 +226,31 @@
       ]
      ]
     },
+    "reservations.db:ReservationBuckets": {
+     "columns": [
+      "device_id",
+      "bucket",
+      "reservations",
+      "seconds"
+     ],
+     "rows": [
+      [
+       7,
+       2,
+       "<float>"
+      ],
+      [
+       7,
+       2,
+       "<float>"
+      ],
+      [
+       7,
+       2,
+       "<float>"
+      ]
+     ]
+    },
     "reservations.db:ReservationCount": {
      "columns": [
       "id",
@@ -527,7 +552,7 @@
      ]
     }
    },
-   "why": "Additive schema: 17 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
+   "why": "Additive schema: 18 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationBuckets, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
   },
   "files": {
    "kind": "review",
@@ -811,6 +836,31 @@
       ]
      ]
     },
+    "reservations.db:ReservationBuckets": {
+     "columns": [
+      "device_id",
+      "bucket",
+      "reservations",
+      "seconds"
+     ],
+     "rows": [
+      [
+       7,
+       2,
+       "<float>"
+      ],
+      [
+       7,
+       2,
+       "<float>"
+      ],
+      [
+       7,
+       2,
+       "<float>"
+      ]
+     ]
+    },
     "reservations.db:ReservationCount": {
      "columns": [
       "id",
@@ -1112,7 +1162,7 @@
      ]
     }
    },
-   "why": "Additive schema: 17 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
+   "why": "Additive schema: 18 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationBuckets, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
   },
   "files": {
    "kind": "review",
@@ -1266,6 +1316,31 @@
      ],
      "rows": []
     },
+    "reservations.db:ReservationBuckets": {
+     "columns": [
+      "device_id",
+      "bucket",
+      "reservations",
+      "seconds"
+     ],
+     "rows": [
+      [
+       7,
+       1,
+       "<float>"
+      ],
+      [
+       7,
+       1,
+       "<float>"
+      ],
+      [
+       7,
+       1,
+       "<float>"
+      ]
+     ]
+    },
     "reservations.db:ReservationCount": {
      "columns": [
       "id",
@@ -1567,7 +1642,7 @@
      ]
     }
    },
-   "why": "Additive schema: 17 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
+   "why": "Additive schema: 18 new federation/session tables (rows only in ClientSessions, LocalAccountSubjects, ReservationBuckets, ReservationCount, ReservedTotal), Accounts.auth_type, UserGroups lan_only/max_horizon_sec, EnrollmentCodes federation columns; no 'a@b' row."
   },
   "files": {
    "kind": "review",

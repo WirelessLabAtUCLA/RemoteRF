@@ -481,7 +481,7 @@ def captured(fn) -> str:
 
 
 # Secrets and wall-clock values differ on every run; the rest is compared.
-_SECRET_COLUMN = re.compile(r"(?i)(salt|hash|token|secret|_at$|created|expir|last_|^start|_start|^end|_end|seen)")
+_SECRET_COLUMN = re.compile(r"(?i)(salt|hash|token|secret|_at$|created|expir|last_|^start|_start|^end|_end|seen|bucket)")
 
 
 def dump(dbdir: Path) -> dict:
