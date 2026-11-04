@@ -258,9 +258,14 @@ class ReservationHandler:
         # Reported to Global as `usage`, for the devices shared there. Seeded
         # only into an empty table: the bucket names follow the process TZ, so a
         # restart under another TZ must not count the current rows again.
+        # ReservationDays keeps them per UTC date of the start (`usage.by_device`).
         hour = lambda r: f"'h' || strftime('%H', {r}.start_time, 'utc')"  # noqa: E731
         day = lambda r: f"'d' || ((CAST(strftime('%w', {r}.start_time, 'utc') AS INTEGER) + 6) % 7)"  # noqa: E731
+        utc_date = lambda r: f"date({r}.start_time, 'utc')"  # noqa: E731
         length = lambda r: f"(julianday({r}.end_time) - julianday({r}.start_time)) * 86400"  # noqa: E731
+        cancel = '''reservations = MAX(reservations - (OLD.start_time > datetime('now', 'localtime')), 0),
+                seconds = MAX(seconds - MAX(0,
+                    (julianday(OLD.end_time) - julianday(MAX(OLD.start_time, datetime('now', 'localtime')))) * 86400), 0)'''
         self.cursor.executescript(f'''
         BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS ReservationBuckets (device_id INTEGER NOT NULL, bucket TEXT NOT NULL,
@@ -283,11 +288,25 @@ class ReservationHandler:
         END;
         CREATE TRIGGER IF NOT EXISTS reservation_buckets_del AFTER DELETE ON Reservations
         WHEN OLD.device_id < 1000000 BEGIN
-            UPDATE ReservationBuckets SET
-                reservations = MAX(reservations - (OLD.start_time > datetime('now', 'localtime')), 0),
-                seconds = MAX(seconds - MAX(0,
-                    (julianday(OLD.end_time) - julianday(MAX(OLD.start_time, datetime('now', 'localtime')))) * 86400), 0)
+            UPDATE ReservationBuckets SET {cancel}
             WHERE device_id = OLD.device_id AND bucket IN ('all', {hour("OLD")}, {day("OLD")});
+        END;
+        CREATE TABLE IF NOT EXISTS ReservationDays (device_id INTEGER NOT NULL, day TEXT NOT NULL,
+            reservations INTEGER NOT NULL, seconds REAL NOT NULL, PRIMARY KEY (device_id, day));
+        INSERT INTO ReservationDays
+            SELECT device_id, {utc_date("r")} AS day, COUNT(*), SUM({length("r")}) FROM Reservations r
+            WHERE device_id < 1000000 AND NOT EXISTS (SELECT 1 FROM ReservationDays)
+            GROUP BY device_id, day;
+        CREATE TRIGGER IF NOT EXISTS reservation_days_ins AFTER INSERT ON Reservations
+        WHEN NEW.device_id < 1000000 BEGIN
+            INSERT INTO ReservationDays VALUES (NEW.device_id, {utc_date("NEW")}, 1, {length("NEW")})
+            ON CONFLICT (device_id, day) DO UPDATE
+                SET reservations = reservations + 1, seconds = seconds + excluded.seconds;
+        END;
+        CREATE TRIGGER IF NOT EXISTS reservation_days_del AFTER DELETE ON Reservations
+        WHEN OLD.device_id < 1000000 BEGIN
+            UPDATE ReservationDays SET {cancel}
+            WHERE device_id = OLD.device_id AND day = {utc_date("OLD")};
         END;
         COMMIT;
         ''')
