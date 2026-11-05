@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 from ..common.idl import ensure_default_driver_files, get_driver_class, load_drivers
 from ..common.idl.host_drivers import _packaged_schema_path, _seed_default_driver
+from ..common.idl.schema import load_builtin_drivers
 from ..common.utils import get_devices_config_path, get_drivers_dir
 from ..common.utils.host_logging import error, warn
 
@@ -237,6 +238,9 @@ def _seed_default_usrp_phaser_driver() -> None:
     )
 
 
+_NATIVE_TYPES = frozenset({"bluetooth", "gps", "krakensdr", "rfbeam_kmd7", "ti_awr6843", "wifi"})
+
+
 def _load_all_drivers(required_types: set[str]) -> None:
     if "usrp" in required_types:
         _seed_default_usrp_driver()
@@ -290,6 +294,14 @@ def _load_all_drivers(required_types: set[str]) -> None:
             from ..drivers.usrp_phaser import usrp_phaser_schema as _  # noqa: F401
         except Exception as e:
             warn(f"Could not load built-in USRP Phaser driver: {e}", component="hostrf.device_manager")
+
+    # No drivers-dir copy for these: imported only when a device needs one, before the drivers dir
+    # so a file there of the same type still wins. A missing library leaves just that type unserved.
+    native = sorted(_NATIVE_TYPES & required_types)
+    for module, status in load_builtin_drivers(f"remoteRF_host.drivers.{t}.{t}_schema" for t in native).items():
+        if status != "ok":
+            warn(f"Could not load built-in {module.rsplit('.', 2)[1]} driver: {status.removeprefix('error: ')}",
+                 component="hostrf.device_manager")
 
     results = load_drivers()
     for fname, status in results.items():

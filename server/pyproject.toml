@@ -37,6 +37,16 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+# Libraries for the built-in drivers that are not in the base install (see remoterf-device-core).
+bluetooth = ["remoterf-device-core[bluetooth]"]
+gps = ["remoterf-device-core[gps]"]
+krakensdr = ["remoterf-device-core[krakensdr]"]
+rfbeam_kmd7 = ["remoterf-device-core[rfbeam_kmd7]"]
+ti_awr6843 = ["remoterf-device-core[ti_awr6843]"]
+wifi = ["remoterf-device-core[wifi]"]
+drivers = ["remoterf-device-core[drivers]"]
+
 [project.scripts]
 # RRRFserver = "remoteRF_server.server.grpc_server:main"
 serverrf = "remoteRF_server.serverrf_cli:main"

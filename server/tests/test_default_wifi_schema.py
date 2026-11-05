@@ -25,13 +25,21 @@ SOURCE_ROOT = PROJECT_ROOT / "src"
 
 
 class WifiPackagingTests(unittest.TestCase):
-    def _run_fresh_server_import(self, script, *, managed_legacy_driver=None):
+    def _run_fresh_server_import(self, script, *, managed_legacy_driver=None, managed_wifi_driver=None):
         with tempfile.TemporaryDirectory() as raw_temp:
             temp = Path(raw_temp)
             config_root = temp / "xdg"
             drivers_dir = config_root / "remoterf" / "drivers"
-            if managed_legacy_driver is not None:
+            if managed_wifi_driver is not None:
+                # A lab's managed wifi_schema.py copy from an earlier Server: its marker still matches.
                 drivers_dir.mkdir(parents=True)
+                (drivers_dir / "wifi_schema.py").write_text(managed_wifi_driver, encoding="utf-8")
+                (drivers_dir / ".wifi_schema.py.remoterf-managed").write_text(
+                    hashlib.sha256(managed_wifi_driver.encode("utf-8")).hexdigest() + "\n",
+                    encoding="utf-8",
+                )
+            if managed_legacy_driver is not None:
+                drivers_dir.mkdir(parents=True, exist_ok=True)
                 target = drivers_dir / "wifi_dongle_schema.py"
                 target.write_text(managed_legacy_driver, encoding="utf-8")
                 marker = drivers_dir / ".wifi_dongle_schema.py.remoterf-managed"
@@ -64,21 +72,20 @@ class WifiPackagingTests(unittest.TestCase):
 
     def test_schema_module_imports(self):
         module = importlib.import_module("remoteRF_server.drivers.wifi.wifi_schema")
-        self.assertEqual(module.WifiSchema.device_type, "wifi")
-        # No client support module, so any client can import remoterf.drivers.wifi.
-        self.assertEqual(getattr(module.WifiSchema, "client_modules", {}), {})
+        self.assertEqual(module.__name__, "remoterf_device_core.drivers.wifi.wifi_schema")
+        self.assertEqual(module.WifiDongleSchema.device_type, "wifi")
+        self.assertEqual(module.WifiDongleSchema.client_class, "WifiDongle")
+        self.assertEqual(module.WifiDongleSchema.client_modules, {"wifi": "remoteRF.drivers.support.wifi"})
 
-    def test_fresh_server_seeds_wifi_schema(self):
+    def test_fresh_server_serves_wifi_natively(self):
         result = self._run_fresh_server_import(
             """
             from remoteRF_server.common.idl.schema import get_driver_class
             from remoteRF_server.common.utils import get_drivers_dir
             from remoteRF_server.server import device_manager
 
-            seeded = get_drivers_dir() / "wifi_schema.py"
-            assert seeded.is_file(), seeded
-            assert (get_drivers_dir() / ".wifi_schema.py.remoterf-managed").is_file()
-            assert get_driver_class("wifi").device_type == "wifi"
+            assert not (get_drivers_dir() / "wifi_schema.py").exists()
+            assert get_driver_class("wifi").__module__ == "remoterf_device_core.drivers.wifi.wifi_schema"
             print("DEFAULT_WIFI_SCHEMA_OK")
             """
         )
@@ -110,7 +117,7 @@ class WifiPackagingTests(unittest.TestCase):
             drivers_dir = get_drivers_dir()
             assert not (drivers_dir / "wifi_dongle_schema.py").exists()
             assert not (drivers_dir / ".wifi_dongle_schema.py.remoterf-managed").exists()
-            assert (drivers_dir / "wifi_schema.py").is_file()
+            assert not (drivers_dir / "wifi_schema.py").exists()
             assert get_driver_class("wifi").device_type == "wifi"
             try:
                 get_driver_class("wifi_dongle")
@@ -129,6 +136,40 @@ class WifiPackagingTests(unittest.TestCase):
             msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
         self.assertIn("MANAGED_WIFI_SCHEMA_MIGRATED", result.stdout)
+
+    def test_managed_wifi_copy_is_kept_as_is_and_wins(self):
+        lab_copy = textwrap.dedent(
+            """
+            from remoteRF_server.common.idl import DeviceSchema, idl_register
+
+            @idl_register("wifi")
+            class WifiSchema(DeviceSchema):
+                device_type = "wifi"
+                driver_version = "lab-copy"
+            """
+        )
+        result = self._run_fresh_server_import(
+            f"""
+            import hashlib
+            from remoteRF_server.common.idl.schema import get_driver_class
+            from remoteRF_server.common.utils import get_drivers_dir
+            from remoteRF_server.server import device_manager
+
+            copy = get_drivers_dir() / "wifi_schema.py"
+            assert copy.read_text(encoding="utf-8") == {lab_copy!r}
+            cls = get_driver_class("wifi")
+            assert cls.driver_version == "lab-copy", cls
+            print("MANAGED_WIFI_COPY_KEPT")
+            """,
+            managed_wifi_driver=lab_copy,
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("MANAGED_WIFI_COPY_KEPT", result.stdout)
 
     def test_legacy_inventory_type_maps_to_wifi(self):
         result = self._run_fresh_server_import(

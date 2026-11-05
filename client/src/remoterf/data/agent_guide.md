@@ -1,6 +1,6 @@
 # RemoteRF agent guide
 
-RemoteRF gives remote access to real radios (ADALM-Pluto, USRP, RTL-SDR, HackRF and deployment-defined devices) at
+RemoteRF gives remote access to real radios (ADALM-Pluto, USRP, RTL-SDR, HackRF, KrakenSDR, mmWave radars, Wi-Fi, Bluetooth, GPS and deployment-defined devices) at
 RemoteRF deployments, by reservation. Experiments are ordinary Python on the user's machine; the `remoterf` drivers carry each call to the radio.
 This guide ships with the installed `remoterf` package, so it matches that version. `remoterf guide TOPIC` prints one
 section: workflow, tokens, cli, python, mcp, safety, errors.
@@ -35,9 +35,12 @@ sdr = adi.Pluto(token=TOKEN)                            # sdr.rx_lo, sdr.sample_
 from remoterf.drivers.usrp import uhd                   # USRP (UHD Python style)
 usrp = uhd.usrp.MultiUSRP(token=TOKEN)                  # usrp.recv_num_samps(n, freq, rate, [0], gain); usrp.close()
 
+from remoterf.drivers.rtlsdr import RtlSdr              # also shipped: adalm_pluto_mimo (adi.PlutoMIMO), hackrf HackRF,
+                                                        # krakensdr KrakenSDR, ti_awr6843 TiMmWave, rfbeam_kmd7 RFBeamKMD7,
+                                                        # wifi WifiDongle, bluetooth BluetoothModule, gps GpsModule
+
 from remoterf.drivers import ensure_driver              # any other type: install its driver once per machine
-ensure_driver(token=TOKEN)
-from remoterf.drivers.rtl_sdr import RtlSdr             # package = device type, class from `remoterf api`
+ensure_driver(token=TOKEN)                              # package = device type, class from `remoterf api`
 ```
 
 Close the device in `finally`. `adi.Pluto(virtual=True)` simulates a Pluto offline, with no reservation.

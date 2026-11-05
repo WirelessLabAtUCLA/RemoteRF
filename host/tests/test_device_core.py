@@ -24,9 +24,9 @@ class DeviceCoreTests(unittest.TestCase):
     def test_host_builtins_report_the_lab_manifest_hashes(self):
         with tempfile.TemporaryDirectory() as raw:
             result = _run(Path(raw), """
-                import json, sys, types
-                sys.modules.setdefault("adi", types.ModuleType("adi"))  # no libiio needed for the interface
+                import json
                 from remoterf_device_core import manifest
+                manifest.stub_missing_libraries()  # no libiio or driver extras needed for the interface
                 from remoteRF_host.common.idl import get_driver_class
                 from remoteRF_host.server import device_manager
                 for module in manifest.BUILTIN_MODULES:

@@ -1,0 +1,508 @@
+{
+"bluetooth":{
+"calls":{
+"call_get_device":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"address",
+"required":true,
+"type":"str"
+}
+],
+"doc":"Retrieve cached information for a specific MAC address."
+},
+"call_get_devices":{
+"args":[
+{
+"default":false,
+"kind":"keyword_only",
+"name":"named_only",
+"required":false,
+"type":"bool"
+},
+{
+"default":null,
+"kind":"keyword_only",
+"name":"min_rssi",
+"required":false,
+"type":"int"
+},
+{
+"default":null,
+"kind":"keyword_only",
+"name":"limit",
+"required":false,
+"type":"int"
+}
+],
+"doc":"Retrieve all currently cached devices without scanning."
+},
+"call_info":{
+"args":[],
+"doc":"Get full adapter hardware and driver metadata."
+},
+"call_reset":{
+"args":[],
+"doc":"Reset Bluetooth adapter discovery state and clear cache."
+},
+"call_scan":{
+"args":[
+{
+"default":5.0,
+"kind":"positional_or_keyword",
+"name":"timeout",
+"required":false,
+"type":"float"
+},
+{
+"default":false,
+"kind":"keyword_only",
+"name":"named_only",
+"required":false,
+"type":"bool"
+},
+{
+"default":null,
+"kind":"keyword_only",
+"name":"min_rssi",
+"required":false,
+"type":"int"
+},
+{
+"default":null,
+"kind":"keyword_only",
+"name":"limit",
+"required":false,
+"type":"int"
+}
+],
+"doc":"Scan for Bluetooth devices in the vicinity."
+},
+"call_scan_summary":{
+"args":[
+{
+"default":5.0,
+"kind":"positional_or_keyword",
+"name":"timeout",
+"required":false,
+"type":"float"
+}
+],
+"doc":"Perform a scan and return high-level vicinity statistics."
+}
+},
+"client_class":"BluetoothModule",
+"device_type":"bluetooth",
+"driver_version":"0.1.3",
+"getters":{
+"get_adapter":{
+"doc":"HCI adapter name (e.g. 'hci1')."
+},
+"get_address":{
+"doc":"Bluetooth hardware BD_ADDR (MAC address)."
+},
+"get_bd_address":{
+"doc":"Bluetooth hardware BD_ADDR alias."
+},
+"get_chipset":{
+"doc":"Chipset or device model name."
+},
+"get_device_count":{
+"doc":"Number of devices currently cached from recent scans."
+},
+"get_discovering":{
+"doc":"Whether the adapter is actively discovering."
+},
+"get_is_zexmte":{
+"doc":"Whether the adapter is a ZEXMTE CSR8510 module."
+},
+"get_powered":{
+"doc":"RF power state of the Bluetooth controller (True=ON, False=OFF)."
+},
+"get_version":{
+"doc":"Bluetooth Core specification version string."
+}
+},
+"schema_hash":"sha256:44f4c1b72e4d05030a451f2d356253c79c27cb8f0543deacfe06055bf4862647",
+"schema_version":"1.0",
+"setters":{
+"set_powered":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"value",
+"required":true,
+"type":"bool"
+}
+],
+"doc":"Set the RF power state (True=ON, False=OFF)."
+}
+}
+},
+"gps":{
+"calls":{
+"call_get_lat_long":{
+"args":[],
+"doc":"Get current (latitude, longitude) tuple, or None if no fix."
+},
+"call_get_position":{
+"args":[],
+"doc":"Get full position dictionary (lat, lon, altitude, satellites, speed, fix status)."
+},
+"call_read_raw":{
+"args":[
+{
+"default":5,
+"kind":"positional_or_keyword",
+"name":"count",
+"required":false,
+"type":"int"
+}
+],
+"doc":"Read last N raw NMEA sentences from receiver buffer."
+},
+"call_reset":{
+"args":[],
+"doc":"Reset internal GPS coordinate cache."
+},
+"call_wait_for_fix":{
+"args":[
+{
+"default":30.0,
+"kind":"positional_or_keyword",
+"name":"timeout",
+"required":false,
+"type":"float"
+}
+],
+"doc":"Block until satellite fix is achieved or timeout expires."
+}
+},
+"client_class":"GpsModule",
+"device_type":"gps",
+"driver_version":"0.1.3",
+"getters":{
+"get_altitude":{
+"doc":"Altitude in meters above sea level."
+},
+"get_connected":{
+"doc":"True while the receiver is plugged in; False while it is being reopened."
+},
+"get_fix_quality":{
+"doc":"GPS fix quality indicator (0=No fix, 1=GPS fix, 2=DGPS fix)."
+},
+"get_has_fix":{
+"doc":"True if receiver has valid 2D/3D satellite fix."
+},
+"get_lat_long":{
+"doc":"Current (latitude, longitude) tuple, or None if no fix."
+},
+"get_latitude":{
+"doc":"Current latitude in decimal degrees, or None if no fix."
+},
+"get_longitude":{
+"doc":"Current longitude in decimal degrees, or None if no fix."
+},
+"get_port":{
+"doc":"Serial port connected to the GPS receiver."
+},
+"get_satellites":{
+"doc":"Number of satellites currently tracked / in view."
+},
+"get_speed":{
+"doc":"Ground speed in km/h."
+},
+"get_utc_time":{
+"doc":"Latest UTC datetime string (YYYY-MM-DD HH:MM:SS)."
+}
+},
+"schema_hash":"sha256:15288dbf1d724927ce418712d2d9bc7f4a18a7641641ab85e886a54ca7cae485",
+"schema_version":"1.0",
+"setters":{}
+},
+"kraken_sdr":{
+"calls":{
+"call_read_samples":{
+"args":[
+{
+"default":1024,
+"kind":"positional_or_keyword",
+"name":"num_samples",
+"required":false,
+"type":"any"
+}
+],
+"doc":"Read normalized complex64 IQ from all five channels: a list of five arrays."
+}
+},
+"client_class":"KrakenSDR",
+"device_type":"kraken_sdr",
+"driver_version":"0.0.1",
+"getters":{
+"get_center_freq":{
+"doc":"Center frequency in Hz (channel 0; every channel is tuned together)."
+},
+"get_gain":{
+"doc":"Tuner gain in dB per channel."
+},
+"get_num_channels":{},
+"get_sample_rate":{},
+"get_serials":{},
+"get_tuner_type":{},
+"get_valid_gains_db":{}
+},
+"schema_hash":"sha256:aa66da0392ebe4f841735e990ebff6c0c8bb405026dbee3c099c6bca35dd6c61",
+"schema_version":"1.0",
+"setters":{
+"set_center_freq":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"value",
+"required":true,
+"type":"any"
+}
+]
+},
+"set_gain":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"value",
+"required":true,
+"type":"any"
+}
+],
+"doc":"One gain in dB (or \"auto\") for every channel."
+},
+"set_sample_rate":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"value",
+"required":true,
+"type":"any"
+}
+]
+}
+}
+},
+"rfbeam_kmd7":{
+"calls":{
+"call_command":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"header",
+"required":true,
+"type":"any"
+},
+{
+"default":null,
+"kind":"positional_or_keyword",
+"name":"value",
+"required":false,
+"type":"any"
+}
+],
+"doc":"Any other command (parameter set, SRPS, RFSE, ...): value is an int32,\nraw bytes, or None for no payload. Returns the packets after RESP."
+},
+"call_frame":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"flags",
+"required":true,
+"type":"any"
+}
+],
+"doc":"GNFD: the next frame's data packets for the requested flag bits, {header: bytes}."
+}
+},
+"client_class":"KMD7",
+"device_type":"rfbeam_kmd7",
+"driver_version":"0.0.1",
+"getters":{
+"get_parameters":{
+"doc":"The raw RPST parameter structure (GRPS)."
+},
+"get_version":{
+"doc":"Firmware version string, e.g. K-MD7_APP-RFB-0205."
+}
+},
+"schema_hash":"sha256:357b1b395cf052fa80fc001258d8f5f880087715d3e7bdec8f83b4f1f9e7e421",
+"schema_version":"1.0",
+"setters":{}
+},
+"wifi":{
+"calls":{
+"call_get_ap":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"target",
+"required":true,
+"type":"str"
+},
+{
+"default":true,
+"kind":"keyword_only",
+"name":"rescan",
+"required":false,
+"type":"bool"
+}
+],
+"doc":"Get full AccessPoint metadata dictionary for a target."
+},
+"call_get_ap_details":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"target",
+"required":true,
+"type":"str"
+}
+],
+"doc":"Extract deep hardware & WPS telemetry (manufacturer, model, TSF clock)."
+},
+"call_get_channel_distribution":{
+"args":[],
+"doc":"Channel distribution map showing AP density and signal by channel."
+},
+"call_get_history":{
+"args":[
+{
+"default":"",
+"kind":"positional_or_keyword",
+"name":"target",
+"required":false,
+"type":"str"
+}
+],
+"doc":"Get buffered history of RSSI measurements over time."
+},
+"call_get_rssi":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"target",
+"required":true,
+"type":"str"
+},
+{
+"default":true,
+"kind":"keyword_only",
+"name":"rescan",
+"required":false,
+"type":"bool"
+}
+],
+"doc":"Get the RSSI value (in dBm) for a target SSID or BSSID."
+},
+"call_get_rssi_burst":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"target",
+"required":true,
+"type":"str"
+},
+{
+"default":10,
+"kind":"keyword_only",
+"name":"count",
+"required":false,
+"type":"int"
+},
+{
+"default":5.0,
+"kind":"keyword_only",
+"name":"max_time",
+"required":false,
+"type":"float"
+},
+{
+"default":true,
+"kind":"keyword_only",
+"name":"rescan",
+"required":false,
+"type":"bool"
+}
+],
+"doc":"Collect burst of RSSI measurements with linear-power averaging."
+},
+"call_scan":{
+"args":[
+{
+"default":true,
+"kind":"positional_or_keyword",
+"name":"rescan",
+"required":false,
+"type":"bool"
+},
+{
+"default":"",
+"kind":"keyword_only",
+"name":"band",
+"required":false,
+"type":"str"
+},
+{
+"default":-120.0,
+"kind":"keyword_only",
+"name":"min_rssi",
+"required":false,
+"type":"float"
+}
+],
+"doc":"Scan nearby Wi-Fi APs. Returns list of access point dictionaries."
+},
+"call_scan_summary":{
+"args":[],
+"doc":"High-level RF environment summary (AP counts, band stats, strongest AP)."
+}
+},
+"client_class":"WifiDongle",
+"device_type":"wifi",
+"driver_version":"0.1.0",
+"getters":{
+"get_auto_rescan":{
+"doc":"Whether active rescan is automatically triggered on scan calls."
+},
+"get_default_route_safe":{
+"doc":"Verification that default Ethernet gateway routing is intact."
+},
+"get_device_info":{
+"doc":"Hardware vendor ID, product ID, driver, and model."
+},
+"get_interface":{
+"doc":"Wireless interface name used by this dongle."
+},
+"get_is_available":{
+"doc":"Whether the USB dongle interface is present and active."
+},
+"get_last_scan_time":{
+"doc":"UNIX timestamp of the most recent scan."
+},
+"get_scan_count":{
+"doc":"Total number of scans executed since device initialization."
+}
+},
+"schema_hash":"sha256:5963db47ace9a85b714e3c82fd2b39bb56529e405bb1859eda3855263eb74e4a",
+"schema_version":"1.0",
+"setters":{
+"set_auto_rescan":{
+"args":[
+{
+"kind":"positional_or_keyword",
+"name":"value",
+"required":true,
+"type":"bool"
+}
+],
+"doc":"Enable or disable automatic active rescanning."
+}
+}
+}
+}

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import functools
 import importlib
+import importlib.abc
+import importlib.util
 import json
 import sys
 import types
@@ -37,18 +39,69 @@ BUILTIN_MODULES = (
     "remoterf_device_core.drivers.ti_mmwave.ti_mmwave_schema",
     "remoterf_device_core.drivers.usrp.usrp_schema",
     "remoterf_device_core.drivers.usrp_phaser.usrp_phaser_schema",
+    "remoterf_device_core.drivers.bluetooth.bluetooth_schema",
+    "remoterf_device_core.drivers.gps.gps_schema",
+    "remoterf_device_core.drivers.krakensdr.krakensdr_schema",
+    "remoterf_device_core.drivers.rfbeam_kmd7.rfbeam_kmd7_schema",
+    "remoterf_device_core.drivers.ti_awr6843.ti_awr6843_schema",
+    "remoterf_device_core.drivers.wifi.wifi_schema",
 )
+# Hardware libraries a driver imports at module level (pip extras, or native: pyadi/libiio).
+OPTIONAL_LIBRARIES = ("adi", "bleak", "bluetooth_numbers", "dbus_fast", "pynmea2", "rtlsdr", "scipy", "serial")
 MANIFEST_PATH = Path(__file__).with_name("schemas.json")
+
+
+class _Stub(types.ModuleType):
+    """A missing hardware library: any attribute or submodule is a placeholder class."""
+
+    __path__: list = []
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return type(name, (), {})
+
+
+class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def __init__(self, names):
+        self.names = set(names)
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname.partition(".")[0] in self.names:
+            return importlib.util.spec_from_loader(fullname, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        return _Stub(spec.name)
+
+    def exec_module(self, module):
+        pass
+
+
+def stub_missing_libraries() -> list[str]:
+    """
+    Stand in for each OPTIONAL_LIBRARIES entry that does not import here.
+
+    A driver's interface (so its hash) never touches these libraries, so a
+    machine without them still builds the manifest. Never call this in a
+    process that serves devices.
+    """
+    missing = []
+    for name in OPTIONAL_LIBRARIES:
+        if name in sys.modules:
+            continue
+        try:
+            importlib.import_module(name)
+        except Exception:
+            missing.append(name)
+    if missing:
+        sys.meta_path.insert(0, _StubFinder(missing))
+    return missing
 
 
 def build() -> list[dict]:
     """Import every built-in driver and list (type, version, v1 and v2 hashes)."""
-    if "adi" not in sys.modules:
-        try:
-            import adi  # noqa: F401
-        except Exception:
-            # The interface does not touch pyadi; a machine without libiio still builds the manifest.
-            sys.modules["adi"] = types.ModuleType("adi")
+    stub_missing_libraries()
     from .idl.schema import DeviceSchema
 
     rows = []

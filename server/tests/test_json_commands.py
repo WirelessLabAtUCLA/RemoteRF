@@ -269,8 +269,10 @@ def test_schema_served_unknown_and_bad_types(drivers_dir, capsys):
 
     rc, value = _run(grpc_server.cmd_schema_served, ["no_such_type", "--json"])
     assert rc == 0
+    loads = value.pop("loads")
     assert value == {"type": "no_such_type", "hash": None, "module": None, "override": False,
-                     "source_sha256": None, "loads": []}
+                     "source_sha256": None}
+    assert not [row for row in loads if row["file"].endswith(".py")]  # only the built-in modules' rows
     capsys.readouterr()
     for argv in (["RTL", "--json"], [], ["a", "b"], ["x" * 65]):
         assert grpc_server.cmd_schema_served(argv) == 2
