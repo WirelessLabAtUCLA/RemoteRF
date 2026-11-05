@@ -1448,6 +1448,66 @@ def _yes(argv: List[str]) -> bool:
     return "-y" in argv or "--yes" in argv
 
 
+def _parse_create_args(argv, *, value_flags, bool_flags):
+    """Small strict parser for the two forced-command-safe create forms."""
+    positional, values = [], {}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if not token.startswith("--"):
+            positional.append(token)
+            i += 1
+            continue
+        option, equals, inline = token[2:].partition("=")
+        if option in bool_flags:
+            if equals:
+                return None, f"--{option} does not take a value"
+            values[option] = True
+            i += 1
+            continue
+        if option not in value_flags:
+            return None, f"unknown option --{option}"
+        if equals:
+            value = inline
+        elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            i += 1
+            value = argv[i]
+        else:
+            return None, f"--{option} requires a value"
+        values[option] = value
+        i += 1
+    return (positional, values), None
+
+
+def _bounded_int(value, option, *, minimum, maximum=None):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{option} must be an integer") from None
+    if number < minimum:
+        raise ValueError(f"{option} must be >= {minimum}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{option} must be <= {maximum}")
+    return number
+
+
+def _comma_ints(value, *, required=False):
+    if value is None:
+        if required:
+            raise ValueError("--devices is required")
+        return []
+    parts = [part for part in str(value).replace(",", " ").split() if part]
+    if not parts:
+        raise ValueError("--devices requires one or more device ids")
+    try:
+        devices = [int(part) for part in parts]
+    except ValueError:
+        raise ValueError("--devices must be comma-separated integer ids") from None
+    if any(device < 0 for device in devices):
+        raise ValueError("--devices ids must be >= 0")
+    return list(dict.fromkeys(devices))
+
+
 def _ask(prompt: str, default: str = "") -> str:
     try:
         value = input(f"  {prompt}{f' [{default}]' if default else ''}: ").strip()
@@ -2051,9 +2111,96 @@ def cmd_groups_list(argv):
 
 
 def cmd_groups_create(argv):
-    from remoteRF_server.server.user_group_cli import make_user_group_local
+    from remoteRF_server.server import user_group_cli as groups
 
-    make_user_group_local(_prompt_session())
+    if not _positional(argv) or (sys.stdin.isatty() and not any(a.startswith("-") for a in argv)):
+        groups.make_user_group_local(_prompt_session())
+        return 0
+    if not _yes(argv):
+        print("ERROR: non-interactive group creation requires --yes", file=sys.stderr)
+        return 1
+
+    parsed, error = _parse_create_args(
+        argv,
+        value_flags={"devices", "max-reservations", "max-time", "horizon", "lifetime", "share"},
+        bool_flags={"yes", "json", "lan-only", "public"},
+    )
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    pos, flags = parsed
+    if len(pos) != 1:
+        print("ERROR: groups create requires exactly one group name", file=sys.stderr)
+        return 1
+    name = pos[0].strip()
+    existing = groups.user_group_handler.get_all_user_groups(include_users=False) or []
+    if any(g.get("group_name") == name for g in existing):
+        print(f"ERROR: group {name!r} already exists", file=sys.stderr)
+        return 1
+
+    try:
+        devices = _comma_ints(flags.get("devices"), required=True)
+        max_reservations = _bounded_int(flags.get("max-reservations", "3"), "--max-reservations", minimum=1)
+        max_time = _bounded_int(flags.get("max-time", "1800"), "--max-time", minimum=1)
+        horizon = _bounded_int(flags.get("horizon", str(7 * 86400)), "--horizon", minimum=0)
+        lifetime = _bounded_int(flags.get("lifetime", "0"), "--lifetime", minimum=0)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    lan_only = bool(flags.get("lan-only"))
+    public = bool(flags.get("public"))
+    shares = groups._names(str(flags.get("share", "none")))
+    if lan_only and (public or shares):
+        print("ERROR: a LAN-only group cannot be public or shared with partner clusters", file=sys.stderr)
+        return 1
+
+    group_id = groups.user_group_handler.create_user_group(
+        group_name=name,
+        devices_whitelist=devices,
+        max_reservation_time_sec=max_time,
+        max_reservations=max_reservations,
+        lifetime_sec=lifetime,
+        lan_only=lan_only,
+        max_horizon_sec=horizon,
+    )
+    if group_id is None:
+        now = groups.user_group_handler.get_all_user_groups(include_users=False) or []
+        if any(g.get("group_name") == name for g in now):
+            print(f"ERROR: group {name!r} already exists", file=sys.stderr)
+        else:
+            print(f"ERROR: failed to create group {name!r}", file=sys.stderr)
+        return 1
+
+    shared_with = []
+    if public or shares:
+        from remoteRF_server.server.federation import cluster
+
+        for cluster_name in (["global"] if public else []) + shares:
+            try:
+                cluster.attach_group(cluster_name, str(group_id))
+                shared_with.append(cluster_name)
+            except (cluster.ClusterError, RuntimeError, OSError) as exc:
+                print(f"WARNING: group was not shared with {cluster_name}: {exc}", file=sys.stderr)
+
+    if flags.get("json"):
+        created_group = next(
+            (g for g in groups.user_group_handler.get_all_user_groups(include_users=False) or []
+             if int(g.get("group_id", -1)) == int(group_id)),
+            {},
+        )
+        print(json.dumps({
+            "group_id": int(group_id), "group_name": name,
+            "devices_whitelist": created_group.get("devices_whitelist", devices),
+            "max_reservations": created_group.get("max_reservations", max_reservations),
+            "max_reservation_time_sec": created_group.get("max_reservation_time_sec", max_time),
+            "max_horizon_sec": created_group.get("max_horizon_sec", horizon),
+            "lifetime_sec": created_group.get("lifetime_sec", lifetime),
+            "lan_only": created_group.get("lan_only", lan_only),
+            "public": "global" in shared_with, "shared_with": shared_with,
+        }, separators=(",", ":")))
+    else:
+        print(f"Created group {name} (id {group_id})")
+    return 0
 
 
 def cmd_groups_edit(argv):
@@ -2081,9 +2228,80 @@ def cmd_codes_list(argv):
 
 
 def cmd_codes_create(argv):
-    from remoteRF_server.server.user_group_cli import make_enrollment_codes_local
+    from remoteRF_server.server import user_group_cli as groups
 
-    make_enrollment_codes_local(_prompt_session())
+    if not _positional(argv) or (sys.stdin.isatty() and not any(a.startswith("-") for a in argv)):
+        groups.make_enrollment_codes_local(_prompt_session())
+        return 0
+    if not _yes(argv):
+        print("ERROR: non-interactive enrollment-code creation requires --yes", file=sys.stderr)
+        return 1
+
+    parsed, error = _parse_create_args(
+        argv, value_flags={"count", "length", "uses", "duration"},
+        bool_flags={"yes", "json"},
+    )
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    pos, flags = parsed
+    if len(pos) != 1:
+        print("ERROR: codes create requires exactly one group name, group id, or 'none'", file=sys.stderr)
+        return 1
+
+    ref = pos[0].strip()
+    all_groups = groups.user_group_handler.get_all_user_groups(include_users=False) or []
+    by_id = {int(g["group_id"]): g for g in all_groups}
+    by_name = {str(g["group_name"]): g for g in all_groups}
+    if ref.lower() == "none":
+        group_id = -1
+    else:
+        selected = by_id.get(int(ref)) if ref.isdigit() else by_name.get(ref)
+        if selected is None:
+            print(f"ERROR: unknown group {ref!r}", file=sys.stderr)
+            return 1
+        group_id = int(selected["group_id"])
+
+    try:
+        if "count" not in flags:
+            raise ValueError("--count is required")
+        count = _bounded_int(flags["count"], "--count", minimum=1, maximum=500)
+        length = _bounded_int(flags.get("length", "10"), "--length", minimum=4)
+        uses = _bounded_int(flags.get("uses", "1"), "--uses", minimum=1)
+        duration = _bounded_int(flags.get("duration", "3600"), "--duration", minimum=0)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    code_names = groups.user_group_handler.generate_random_enrollment_code_names(
+        count=count, char_count=length,
+    ) or []
+    if len(code_names) != count:
+        print(f"ERROR: generated only {len(code_names)} of {count} enrollment codes", file=sys.stderr)
+        return 1
+    result = groups.user_group_handler.create_enrollment_codes(
+        code_names=code_names, group_id=group_id, uses=uses, duration_sec=duration,
+    )
+    created = [row for row in groups.user_group_handler.get_all_enrollment_codes() or []
+               if row.get("code_name") in code_names]
+    if len(created) != count:
+        print(f"ERROR: created only {len(created)} of {count} enrollment codes{f': {result}' if result else ''}", file=sys.stderr)
+        return 1
+    rows = groups._invites(created)
+    if flags.get("json"):
+        print(json.dumps({
+            "group_id": group_id, "uses": uses, "duration_sec": duration,
+            "invites": [row["invite"] for row in rows],
+        }, separators=(",", ":")))
+        return 0
+
+    print(f"\n{result}")
+    if rows[0]["invite"] == rows[0]["code_name"]:
+        print(f"Hand these out as is; users connect first with: remoterf -c -a {groups.lan_endpoint() or '<lan address>'}")
+    else:
+        print("Hand these out as is; users enter one at: remoterf --register")
+    groups.print_table("Enrollment codes", rows, ["invite"])
+    return 0
 
 
 def cmd_codes_remove(argv):
