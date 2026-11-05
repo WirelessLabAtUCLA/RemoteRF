@@ -61,6 +61,7 @@ from remoterf_device_core.direct import (
     peer_address, quiet_aioice_errors, read_frame, stun_server,
 )
 from .global_onboarding import RELAYED, hostname, is_offsite
+from .transport_counters import transport_counters
 
 logger = logging.getLogger("remoteRF_server.direct")
 
@@ -247,13 +248,18 @@ class _Path:
 async def _serve_call(path, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """One stream = one device call, on an ICE path or a fixed-port connection."""
     bad_frame = refused = None
+    request = None
+    request_frame = response_frame = b""
     try:
         try:
             request = grpc_pb2.GenericRPCRequest()
-            request.ParseFromString(await read_frame(reader))
+            request_frame = await read_frame(reader)
+            request.ParseFromString(request_frame)
         except asyncio.IncompleteReadError:
+            request = None
             return  # the client went away mid-frame
         except Exception as exc:  # noqa: BLE001 - not our framing: say so, then drop the path
+            request = None
             bad_frame = f"bad frame: {type(exc).__name__}: {exc}"
             results = {"a": map_arg(bad_frame)}
         else:
@@ -264,12 +270,17 @@ async def _serve_call(path, reader: asyncio.StreamReader, writer: asyncio.Stream
             except PathRefused as exc:
                 refused = str(exc)
                 results = {"a": map_arg(refused)}
-        writer.write(frame(grpc_pb2.GenericRPCResponse(results=results).SerializeToString()))
+        response_frame = grpc_pb2.GenericRPCResponse(results=results).SerializeToString()
+        writer.write(frame(response_frame))
         writer.write_eof()
         path.calls += 1
     except Exception as exc:  # noqa: BLE001 - one lost stream must not take the path down
         logger.debug("direct path stream: %s", exc)
     finally:
+        if request is not None:
+            transport_counters.record(
+                "direct", request.function_name, len(request_frame), len(response_frame)
+            )
         # Ends our side of the stream on every path; Python < 3.12 does not
         # close an abandoned StreamWriter, and the half-open stream lingers.
         writer.close()

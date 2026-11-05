@@ -66,7 +66,8 @@ and your LAN address. For the devices you share on Global it also sends how
 many reservations start in each hour of the day and on each day of the week
 (UTC), the reservations and time reserved per device type, and for each
 device shared on Global its name and its daily reservation counts and time
-reserved over the last 31 days (counts only).
+reserved over the last 31 days. It also sends daily per-path, per-device-type,
+per-function device call and byte counts (counts only, no users).
 Nothing else leaves your server -- no credentials, no user or reservation
 details -- and the connection only goes outward. Global publishes the network
 totals, these breakdowns, and each deployment's name, version, devices, when
@@ -815,6 +816,7 @@ STATUS_FIELDS = frozenset(
         "reservations",
         "reserved_s",
         "usage",
+        "transport",
         "lan_address",
         "cert_sha256",
     }
@@ -969,6 +971,44 @@ def usage_summary() -> dict:
     return usage
 
 
+def transport_summary() -> dict:
+    """Daily device RPC calls and application bytes, without user or device identity."""
+    from datetime import datetime, timedelta, timezone
+
+    from .transport_counters import _FN_RE, _MAX_INTEGER, _PATHS, _TYPE_RE, transport_counters
+
+    transport_counters.flush()
+    today = datetime.now(timezone.utc).date()
+    days = []
+    for day, path, device_type, fn, calls, bytes_in, bytes_out in _rows(
+        _db_dir() / "reservations.db",
+        "SELECT day, path, type, fn, calls, bytes_in, bytes_out FROM TransportDays "
+        "WHERE day BETWEEN ? AND ? AND (calls > 0 OR bytes_in > 0 OR bytes_out > 0) "
+        "ORDER BY day DESC, path, type, fn LIMIT 500",
+        # Global keeps every day it was sent; only today and yesterday still change.
+        (str(today - timedelta(days=1)), str(today)),
+    ):
+        if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)) or path not in _PATHS
+                or not _TYPE_RE.fullmatch(str(device_type)) or not _FN_RE.fullmatch(str(fn))):
+            continue
+        try:
+            values = [min(max(int(value), 0), _MAX_INTEGER) for value in (calls, bytes_in, bytes_out)]
+        except (TypeError, ValueError):
+            continue
+        if not any(values):
+            continue
+        days.append({
+            "day": day,
+            "path": path,
+            "type": device_type,
+            "fn": fn,
+            "calls": values[0],
+            "bytes_in": values[1],
+            "bytes_out": values[2],
+        })
+    return {"days": days}
+
+
 def cert_sha256() -> Optional[str]:
     import hashlib
 
@@ -1000,6 +1040,7 @@ def status_payload() -> dict:
         "reservations": _count(reservations, "SELECT n FROM ReservationCount"),
         "reserved_s": _count(reservations, "SELECT CAST(ROUND(seconds) AS INTEGER) FROM ReservedTotal"),
         "usage": usage_summary(),
+        "transport": transport_summary(),
         "lan_address": lan_endpoint(),
         "cert_sha256": cert_sha256(),
     }
@@ -1019,11 +1060,16 @@ def send_status() -> None:
 
     payload = status_payload()
     # A Global older than a field refuses the note: drop the newest first
-    # (`usage.by_device`, `usage`, then `reservations`), then
+    # (`transport`, `usage.by_device`, `usage`, then `reservations`), then
     # `proxies`/`reserved_s`, as the note was before each of them.
-    steps = [payload, dict(payload, usage={k: v for k, v in payload["usage"].items() if k != "by_device"})]
+    without_transport = {k: v for k, v in payload.items() if k != "transport"}
+    steps = [
+        payload,
+        without_transport,
+        dict(without_transport, usage={k: v for k, v in payload["usage"].items() if k != "by_device"}),
+    ]
     for drop in (("usage",), ("usage", "reservations"), ("usage", "reservations", "proxies", "reserved_s")):
-        steps.append({k: v for k, v in payload.items() if k not in drop})
+        steps.append({k: v for k, v in without_transport.items() if k not in drop})
     for status in steps:
         try:
             call("POST", REPORT_PATH, {"kind": "status", "status": status})
