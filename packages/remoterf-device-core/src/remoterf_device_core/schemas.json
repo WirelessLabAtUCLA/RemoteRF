@@ -12,15 +12,45 @@
   "v2": null
  },
  {
+  "device_type": "bluetooth",
+  "driver_version": "0.1.0",
+  "v1": "sha256:72644c2af2d5e202f76fd07b9a30554f4deca2fdceffddaa21e2c3eaca9056d9",
+  "v2": null
+ },
+ {
+  "device_type": "gps",
+  "driver_version": "0.1.0",
+  "v1": "sha256:62d475b8c087bd2af633e53f85f1c4da811f6a9b7822580536019c6495cc9515",
+  "v2": null
+ },
+ {
   "device_type": "hackrf",
   "driver_version": "0.1.2",
   "v1": "sha256:8140489d7ca985b8aed3a5c3be96622dffd9210517be73625fc9a61834735d4f",
   "v2": null
  },
  {
+  "device_type": "krakensdr",
+  "driver_version": "0.1.0",
+  "v1": "sha256:5ddfde1322658a3d0cea2941554300198b3a226c0702cf17b8e3fc109652747d",
+  "v2": null
+ },
+ {
+  "device_type": "rfbeam_kmd7",
+  "driver_version": "0.1.0",
+  "v1": "sha256:af9f79ac65f78f524b1c28fdd6226988f8dc69b1c99df8df8eeeb69f15ce52d3",
+  "v2": null
+ },
+ {
   "device_type": "rtl_sdr",
   "driver_version": "0.1.1",
   "v1": "sha256:6603ec8e642c87073c35202980de9a3d9e4bb6eb88967686d3810c389fb4fb97",
+  "v2": null
+ },
+ {
+  "device_type": "ti_awr6843",
+  "driver_version": "0.1.0",
+  "v1": "sha256:a052b7e435ea138af9e8b2467a79fb0fcd47094b9cd01d8afe385a7c3b3db0e8",
   "v2": null
  },
  {
@@ -40,5 +70,11 @@
   "driver_version": "0.1.0",
   "v1": "sha256:a9f6771afe0421c2339c26440e63282dd85f9997f8f777fc56b1b6cf6dda65f0",
   "v2": "sha256:95ef16ed451ac9c97182f79d4a0c0b4fc7d97605c8e065dba6639ac7265d2b26"
+ },
+ {
+  "device_type": "wifi",
+  "driver_version": "0.1.0",
+  "v1": "sha256:64e8e3ddbdb214abbade83769a87dd9a3ec730d6d924e339388dcc245cff5d09",
+  "v2": null
  }
 ]

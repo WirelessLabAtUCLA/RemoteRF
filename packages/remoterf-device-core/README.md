@@ -4,7 +4,8 @@ The parts of RemoteRF that a lab Server (`remoteRF-server`) and a Host (`remoter
 
 - the gRPC protocol (`grpc.proto`, `grpc_host.proto`) and the Dynamic v2 codec;
 - the device IDL (`DeviceSchema`, `idl_expose`, `idl_register`) and the schema v2 builder;
-- the built-in driver schemas: ADALM-Pluto (incl. PoE), Pluto MIMO, HackRF, RTL-SDR, TI mmWave, USRP and USRP Phaser;
+- the built-in driver schemas: ADALM-Pluto (incl. PoE), Pluto MIMO, HackRF, RTL-SDR, TI mmWave, USRP, USRP Phaser,
+  Bluetooth, GPS, KrakenSDR, RFbeam K-MD7, TI AWR6843 and Wi-Fi (their libraries: one extra per driver, or `drivers` for all);
 - `schemas.json`, the built-in drivers' schema hashes, and `schema_digest()`, the one hash rule;
 - the ICE/QUIC helpers for direct device paths (install with the `direct` extra).
 

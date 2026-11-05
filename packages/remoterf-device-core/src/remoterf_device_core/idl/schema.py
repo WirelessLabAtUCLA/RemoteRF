@@ -557,9 +557,43 @@ def override_stale(path) -> bool:
         return True
 
 
+_BUILTIN_RESULTS: list = []
+
+
+def _load_row(name: str, status: str) -> dict:
+    return {"file": name, "ok": status == "ok",
+            "error": None if status == "ok" else " ".join(status.removeprefix("error: ").split())}
+
+
 def last_load_results() -> list:
-    """How each drivers file loaded on the last load_drivers(): [{file, ok, error}]."""
-    return [dict(row) for row in _LOAD_RESULTS]
+    """How each built-in module (load_builtin_drivers) and drivers file (load_drivers) last loaded: [{file, ok, error}]."""
+    return [dict(row) for row in _BUILTIN_RESULTS + _LOAD_RESULTS]
+
+
+def load_builtin_drivers(modules) -> Dict[str, str]:
+    """
+    Import built-in driver modules (dotted names), each on its own: one whose
+    library is missing fails alone, leaves the registry as it was, and is
+    reported in last_load_results(). Call it before load_drivers(), so a
+    drivers-dir file of the same type registers last and wins.
+
+    Returns {module: status} like load_drivers().
+    """
+    results: Dict[str, str] = {}
+    _BUILTIN_RESULTS.clear()
+    for name in modules:
+        registry = dict(_DRIVER_REGISTRY)
+        try:
+            importlib.import_module(name)
+            results[name] = "ok"
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:
+            _DRIVER_REGISTRY.clear()
+            _DRIVER_REGISTRY.update(registry)
+            results[name] = f"error: {e}" if isinstance(e, Exception) else f"error: {type(e).__name__}: {e}"
+    _BUILTIN_RESULTS.extend(_load_row(name, status) for name, status in results.items())
+    return results
 
 
 def load_drivers(drivers_dir: Optional[Path] = None) -> Dict[str, str]:
@@ -613,11 +647,7 @@ def load_drivers(drivers_dir: Optional[Path] = None) -> Dict[str, str]:
                 sys.modules[f.stem] = previous
             results[f.name] = f"error: {e}" if isinstance(e, Exception) else f"error: {type(e).__name__}: {e}"
 
-    _LOAD_RESULTS.extend(
-        {"file": name, "ok": status == "ok",
-         "error": None if status == "ok" else " ".join(status.removeprefix("error: ").split())}
-        for name, status in results.items()
-    )
+    _LOAD_RESULTS.extend(_load_row(name, status) for name, status in results.items())
     return results
 
 

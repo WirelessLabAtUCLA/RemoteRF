@@ -29,6 +29,29 @@ pip install remoterf        # Install remoterf
 
 The package was named `remoteRF` before 2.2.0. Old code that does `import remoteRF` or `from remoteRF.drivers... import ...` still runs, with a one-time warning; change it to `remoterf`.
 
+## Devices
+
+These drivers ship with `remoterf`; no `ensure_driver` call is needed. Pass the
+reservation token or a `Name@lab` handle:
+
+```python
+from remoterf.drivers.adalm_pluto import adi;       sdr = adi.Pluto(token)
+from remoterf.drivers.adalm_pluto_mimo import adi;  sdr = adi.PlutoMIMO(token)
+from remoterf.drivers.usrp import uhd;              usrp = uhd.usrp.MultiUSRP(token=token)
+from remoterf.drivers.rtlsdr import RtlSdr;         sdr = RtlSdr(token)
+from remoterf.drivers.hackrf import HackRF;         sdr = HackRF(token)
+from remoterf.drivers.krakensdr import KrakenSDR;   sdr = KrakenSDR(token)
+from remoterf.drivers.ti_awr6843 import TiMmWave;   radar = TiMmWave(token)
+from remoterf.drivers.rfbeam_kmd7 import RFBeamKMD7; radar = RFBeamKMD7(token)
+from remoterf.drivers.wifi import WifiDongle;       radio = WifiDongle(token)
+from remoterf.drivers.bluetooth import BluetoothModule; bt = BluetoothModule(token)
+from remoterf.drivers.gps import GpsModule;         gps = GpsModule(token)
+```
+
+If the lab serves another version of a device's driver, the object you get is
+the lab's own (its methods are the lab's), and its package is updated on disk.
+`remoterf api Name@lab` lists a device's methods.
+
 ## NI USRP-2901, Ettus B205-mini, B200-family, and USRP N210
 
 The packaged client natively includes the shared USRP schema for the qualified

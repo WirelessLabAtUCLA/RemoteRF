@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "remoterf-device-core"
-version = "0.1.3"
+version = "0.1.4"
 description = "RemoteRF device protocol, IDL and built-in driver schemas shared by the lab Server and Host"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,9 +21,17 @@ direct = [
   "aioice>=0.10,<0.11",
   "aioquic>=1.2,<2.0",
 ]
+# One per built-in driver whose libraries are not in the base install.
+bluetooth = ["dbus-fast", "bleak", "bluetooth-numbers"]
+gps = ["pynmea2", "pyserial>=3.5,<4.0"]
+krakensdr = ["pyrtlsdr>=0.5,<0.6", "scipy"]
+rfbeam_kmd7 = ["pyserial>=3.5,<4.0"]
+ti_awr6843 = ["pyserial>=3.5,<4.0"]
+wifi = ["numpy"]
+drivers = ["remoterf-device-core[bluetooth,gps,krakensdr,rfbeam_kmd7,ti_awr6843,wifi]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-remoterf_device_core = ["schemas.json", "grpc/*.proto"]
+remoterf_device_core = ["schemas.json", "grpc/*.proto", "drivers/ti_awr6843/configs/*.cfg"]

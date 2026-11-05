@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import inspect
 import logging
 import os
@@ -36,8 +37,8 @@ from contextlib import contextmanager
 from remoterf_federation_core import is_device_handle
 
 from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, device_name_key
-from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_drivers,
-                                 override_stale)
+from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_builtin_drivers,
+                                 load_drivers, override_stale)
 from ..host import host_tunnel_server as hts
 
 logger = logging.getLogger(__name__)
@@ -694,12 +695,14 @@ def _seed_default_wifi_driver() -> None:
     legacy = drivers_dir / "wifi_dongle_schema.py"
     if not _remove_managed_driver(legacy) and legacy.is_file():
         print(f"[drivers] Kept {legacy}: not a managed copy. Remove it, or two Wi-Fi drivers register.")
-    _seed_default_driver("wifi_schema.py", "wifi")
+    # No wifi_schema.py copy any more: the built-in serves natively, and an existing copy (managed
+    # or not) is left exactly as it is, so it keeps winning over the built-in.
 
 
 # Only the C library from conda: pip already installed pyadi-iio, and conda's
 # pulls a cryptography that breaks the pip-installed pyOpenSSL aioquic needs.
 _LIBIIO_FIX = "conda install -c conda-forge libiio  (in the server's conda env; not pyadi-iio, pip already has it)"
+_OPTIONAL_NATIVE_TYPES = frozenset({"bluetooth", "gps", "krakensdr", "rfbeam_kmd7", "ti_awr6843"})
 
 
 def _load_all_drivers() -> None:
@@ -725,7 +728,8 @@ def _load_all_drivers() -> None:
             return
         print(line)
 
-    for label, module in (
+    # Built-ins first, the drivers dir after: a file there of the same type registers last and wins.
+    builtins = {importlib.util.resolve_name(module, __package__): label for label, module in (
         ("built-in pluto driver", "..common.idl.pluto_schema"),
         ("built-in pluto mimo driver", "..common.idl.pluto_mimo_schema"),
         ("built-in usrp driver", "..drivers.usrp.usrp_schema"),
@@ -734,11 +738,25 @@ def _load_all_drivers() -> None:
         ("built-in TI mmWave driver", "..drivers.ti_mmwave.ti_mmwave_schema"),
         ("built-in USRP Phaser driver", "..drivers.usrp_phaser.usrp_phaser_schema"),
         ("built-in Wi-Fi driver", "..drivers.wifi.wifi_schema"),
-    ):
-        try:
-            importlib.import_module(module, __package__)
-        except Exception as e:
-            _warn(f"Warning: could not load {label}: {e}", str(e))
+        ("built-in Bluetooth driver", "..drivers.bluetooth.bluetooth_schema"),
+        ("built-in GPS driver", "..drivers.gps.gps_schema"),
+        ("built-in KrakenSDR driver", "..drivers.krakensdr.krakensdr_schema"),
+        ("built-in RFbeam K-MD7 driver", "..drivers.rfbeam_kmd7.rfbeam_kmd7_schema"),
+        ("built-in TI AWR6843 driver", "..drivers.ti_awr6843.ti_awr6843_schema"),
+    )}
+    configured = None
+    for module, status in load_builtin_drivers(builtins).items():
+        if status == "ok":
+            continue
+        dtype = module.rsplit(".", 1)[1].removesuffix("_schema")
+        if dtype in _OPTIONAL_NATIVE_TYPES:
+            # Their libraries are optional extras: a line only when devices.yml has one (`schema served` lists all).
+            if configured is None:
+                configured = {(r.get("TYPE") or "").strip().lower() for r in _load_device_records().values()}
+            if dtype not in configured:
+                continue
+        error = status.removeprefix("error: ")
+        _warn(f"Warning: could not load {builtins[module]}: {error}", error)
 
     for fname, status in load_drivers().items():
         if status != "ok":

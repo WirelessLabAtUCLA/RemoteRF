@@ -149,7 +149,8 @@ class SimSDR:
             raise ValueError("A reservation token is required; pass token= or set REMOTERF_TOKEN")
         self.token = token
         from ..dynamic_device import install_driver_if_stale
-        install_driver_if_stale(token=token, current_hash=_SCHEMA_HASH)
+        if install_driver_if_stale(token=token, current_hash=_SCHEMA_HASH, instance=self):
+            return  # now the lab's own class, set up by its __init__
         _try_call("ip", token)
 
     def batch(self):

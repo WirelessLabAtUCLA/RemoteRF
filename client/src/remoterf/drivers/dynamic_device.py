@@ -1321,7 +1321,8 @@ def _codegen(schema: dict) -> str:
         '            raise ValueError("A reservation token is required; pass token= or set REMOTERF_TOKEN")',
         "        self.token = token",
         "        from ..dynamic_device import install_driver_if_stale",
-        "        install_driver_if_stale(token=token, current_hash=_SCHEMA_HASH)",
+        "        if install_driver_if_stale(token=token, current_hash=_SCHEMA_HASH, instance=self):",
+        "            return  # now the lab's own class, set up by its __init__",
     ]
     if "ip" in call_map:
         lines.append('        _try_call("ip", token)')
@@ -1470,6 +1471,22 @@ def _codegen(schema: dict) -> str:
 # drivers/ lives next to this file.
 _DRIVERS_DIR = Path(__file__).parent
 
+# Class names a shipped driver package keeps exporting whatever class the lab's
+# schema names (ucla's rfbeam_kmd7 says KMD7), so documented imports survive a reinstall.
+_NATIVE_CLASSES = {
+    "adalm_pluto": ("Pluto",),
+    "adalm_pluto_mimo": ("PlutoMIMO",),
+    "rtl_sdr": ("RtlSdr",),
+    "hackrf": ("HackRF",),
+    "krakensdr": ("KrakenSDR",),
+    "ti_mmwave": ("TiMmWave",),
+    "ti_awr6843": ("TiMmWave",),
+    "rfbeam_kmd7": ("RFBeamKMD7", "KMD7"),
+    "wifi": ("WifiDongle",),
+    "bluetooth": ("BluetoothModule",),
+    "gps": ("GpsModule",),
+}
+
 
 def _write_driver_files(schema: dict, *, token=None, device_id=None) -> Path:
     if _needs_review(token, device_id):
@@ -1535,6 +1552,9 @@ def _write_v1_driver_files(schema: dict) -> Path:
         "",
         f'__all__ = ["adi", "{class_name}"]',
     ]
+    for name in _NATIVE_CLASSES.get(device_type, ()):
+        if name != class_name:
+            init_lines += [f"{name} = {class_name}", f'__all__.append("{name}")']
 
     for alias, module_path in sorted(client_modules.items()):
         init_lines.extend([
@@ -1665,16 +1685,8 @@ def install_driver(*, token: str = None, device_id: int = None, device_name: str
         prefer_v2=True,
     )
     device_type = _schema_device_type(schema)
-    remote_path = _DRIVERS_DIR / device_type / f"{device_type}_remote.py"
-    init_path = remote_path.with_name("__init__.py")
-    if (
-        schema.get("schema_hash")
-        and remote_path.exists()
-        and init_path.exists()
-        and f"from .{device_type}_remote import" in init_path.read_text(encoding="utf-8")
-        and _read_schema_hash(remote_path) == schema.get("schema_hash")
-    ):
-        return remote_path.parent
+    if _installed(device_type, schema.get("schema_hash")):
+        return _DRIVERS_DIR / device_type
     pkg_dir = _write_driver_files(schema, token=token, device_id=device_id)
     _print_driver_cached(pkg_dir)
     return pkg_dir
@@ -1747,6 +1759,39 @@ def _is_v2_driver(path: Path) -> bool:
         return False
 
 
+def _installed(device_type: str, schema_hash) -> bool:
+    remote_path = _DRIVERS_DIR / device_type / f"{device_type}_remote.py"
+    init_path = remote_path.with_name("__init__.py")
+    return bool(
+        schema_hash
+        and remote_path.exists()
+        and init_path.exists()
+        and f"from .{device_type}_remote import" in init_path.read_text(encoding="utf-8")
+        and _read_schema_hash(remote_path) == schema_hash
+    )
+
+
+def _adopt(instance, schema: dict, token: str) -> bool:
+    """Turn a shipped driver's instance into the lab's own class (another schema
+    hash, or another device type: krakensdr's KrakenSDR on a kraken_sdr lab), so
+    its methods are the ones that lab serves. A user subclass is left as it is."""
+    from ..core.grpc_client import wire_token
+
+    if str(schema.get("schema_version")) == "2.0" or not type(instance).__module__.startswith("remoterf.drivers."):
+        return False
+    device_type = _schema_device_type(schema)
+    try:
+        cls = getattr(importlib.import_module(f"remoterf.drivers.{device_type}"), _client_class_name(schema))
+    except (ImportError, AttributeError):
+        return False
+    if getattr(sys.modules.get(cls.__module__), "_SCHEMA_HASH", None) != schema.get("schema_hash"):
+        return False  # this process still holds the old package: a reimport is needed
+    _verified.add((wire_token(token), schema.get("schema_hash")))
+    instance.__class__ = cls
+    cls.__init__(instance, token)
+    return True
+
+
 def _read_schema_hash(path: Path) -> str | None:
     """Extract _SCHEMA_HASH value from a generated driver file without importing it."""
     try:
@@ -1764,7 +1809,7 @@ def _read_schema_hash(path: Path) -> str | None:
 _verified: set = set()
 
 
-def install_driver_if_stale(*, token: str, current_hash: str) -> bool:
+def install_driver_if_stale(*, token: str, current_hash: str, instance=None) -> bool:
     """
     Fetch the server schema hash via the reservation token and reinstall the
     driver only if it has changed since the file on disk was generated.
@@ -1778,6 +1823,9 @@ def install_driver_if_stale(*, token: str, current_hash: str) -> bool:
     new class:
 
         from remoterf.drivers.pluto import *
+
+    Given the constructing ``instance``, a stale one becomes the lab's own
+    class instead (already initialised by it) and True is returned.
     """
     from ..core.grpc_client import wire_token
 
@@ -1795,18 +1843,24 @@ def install_driver_if_stale(*, token: str, current_hash: str) -> bool:
         return False
 
     device_type = _schema_device_type(schema)
-    try:
-        pkg_dir = _write_driver_files(schema, token=token)
-    except OSError as exc:
-        # A read-only install (system site-packages): the installed driver keeps working.
-        _verified.add(key)
-        print(f"Driver for '{device_type}' is out of date and could not be updated ({exc}).")
-        return False
-    if _read_schema_hash(pkg_dir / f"{device_type}_remote.py") == current_hash:
-        return False
+    wrote = not _installed(device_type, schema.get("schema_hash"))
+    if wrote:
+        try:
+            pkg_dir = _write_driver_files(schema, token=token)
+        except OSError as exc:
+            # A read-only install (system site-packages): the installed driver keeps working.
+            _verified.add(key)
+            print(f"Driver for '{device_type}' is out of date and could not be updated ({exc}).")
+            return False
+        if _read_schema_hash(pkg_dir / f"{device_type}_remote.py") == current_hash:
+            return False
+    change = f"(was {current_hash[:16]}…, now {schema.get('schema_hash','?')[:16]}…)"
+    if instance is not None and _adopt(instance, schema, token):
+        if wrote:
+            print(f"Driver for '{device_type}' updated to this lab's version {change}.")
+        return True
     print(
-        f"Driver for '{device_type}' updated "
-        f"(was {current_hash[:16]}…, now {schema.get('schema_hash','?')[:16]}…).\n"
+        f"Driver for '{device_type}' updated {change}.\n"
         f"Reimport before continuing: from remoterf.drivers.{device_type} import *"
     )
     return True

@@ -21,14 +21,19 @@ SCHEMAS = {
     "hackrf": "remoteRF_server.drivers.hackrf.hackrf_schema:HackRFSchema",
     "rtl_sdr": "remoteRF_server.drivers.rtl_sdr.rtl_sdr_schema:RtlSdrSchema",
     "ti_mmwave": "remoteRF_server.drivers.ti_mmwave.ti_mmwave_schema:TiMmWaveSchema",
+    "adalm_pluto_mimo": "remoterf_device_core.drivers.adalm_pluto.pluto_mimo_schema:PlutoMIMOSchema",
+    "bluetooth": "remoterf_device_core.drivers.bluetooth.bluetooth_schema:BluetoothSchema",
+    "gps": "remoterf_device_core.drivers.gps.gps_schema:GpsSchema",
+    "krakensdr": "remoterf_device_core.drivers.krakensdr.krakensdr_schema:KrakenSDRSchema",
+    "rfbeam_kmd7": "remoterf_device_core.drivers.rfbeam_kmd7.rfbeam_kmd7_schema:RFBeamKMD7Schema",
+    "ti_awr6843": "remoterf_device_core.drivers.ti_awr6843.ti_awr6843_schema:TiMmWaveSchema",
+    "wifi": "remoterf_device_core.drivers.wifi.wifi_schema:WifiDongleSchema",
 }
 # A subprocess: the Server package stays out of this process's imports.
 DUMP = """
-import importlib, json, sys, types
-try:
-    import adi
-except (ImportError, AttributeError, OSError):  # pyadi without a matching libiio
-    sys.modules["adi"] = types.ModuleType("adi")  # the Pluto schema imports pyadi at load
+import importlib, json, sys
+from remoterf_device_core.manifest import stub_missing_libraries
+stub_missing_libraries()  # hardware libraries (pyadi, bleak, scipy...) never touch a driver's IDL
 out = {}
 for device_type, spec in json.loads(sys.argv[1]).items():
     module, cls = spec.split(":")
