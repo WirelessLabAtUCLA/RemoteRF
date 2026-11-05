@@ -601,7 +601,6 @@ def commands():
         ("'enroll'", "Enroll with an enrollment code"),
         ("'logout'", "Log out and forget the stored login"),
         ("'status'", "Show connection and device transport status"),
-        ("'direct on|off'", "Enable or disable direct device transport"),
         ("'exit' or 'quit'", "Exit"),
     ]
     width = max(len(name) for name, _ in rows)
@@ -1720,7 +1719,7 @@ def run(backend=None, *, register=False, enrollment_code=None, server_label=None
         where = homes.GLOBAL_ACCOUNTS if account.is_https_home else (home_name or 'remoterf')
         command_words = [
             "help", "clear", "getdev", "resdev", "cancelres", "getres", "myres", "perms",
-            "enroll", "status", "direct on", "direct off", "logout", "exit", "quit",
+            "enroll", "status", "logout", "exit", "quit",  # `direct on|off` works but stays unlisted
             *(["refresh"] if account.is_https_home else []),
             *(["admin"] if account.is_admin else []),
         ]
