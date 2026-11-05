@@ -509,6 +509,7 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["proxies"], 1)
         self.assertEqual(payload["active_reservations"], 1)
         self.assertEqual(payload["reservations"], 5)
+        self.assertEqual(payload["transport"], {"days": []})
         self.assertEqual(payload["usage"],  # not on global
                          {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
         self.assertEqual(
@@ -530,7 +531,9 @@ class StatusReportTests(TunnelTests):
         for item in ("name, version", "devices", "joined", "last online", "how many reservations",
                      "time reserved, at https://{domain}/stats.json", "devices you share on Global",
                      "each hour of the day", "each day of the week", "per device type", "these breakdowns",
-                     "for each device shared on Global its name and its daily reservation counts and time reserved"):
+                     "for each device shared on Global its name and its daily reservation counts and time reserved",
+                     "daily per-path, per-device-type, per-function device call and byte counts",
+                     "counts only, no users"):
             self.assertIn(item, text)
 
     def test_status_payload_survives_missing_state(self):
@@ -542,7 +545,41 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["reservations"], 0)
         self.assertEqual(payload["devices"], [])
         self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
+        self.assertEqual(payload["transport"], {"days": []})
         self.assertIsNone(payload["cert_sha256"])
+
+    def test_transport_is_sparse_newest_first_and_bounded(self):
+        from datetime import datetime, timedelta, timezone
+        import sqlite3
+
+        self.seed()
+        today = datetime.now(timezone.utc).date()
+        rows = []
+        for age in (0, 1):
+            day = str(today - timedelta(days=age))
+            rows.extend(
+                (day, "lan", "adalm_pluto", f"Adalm_pluto:fn{i:04d}:CALL0", 1, i + 1, i + 2)
+                for i in range(301)
+            )
+        rows.extend([
+            (str(today - timedelta(days=2)), "direct", "usrp", "Usrp:rx:CALL0", 1, 2, 3),
+            (str(today - timedelta(days=31)), "relay", "usrp", "Usrp:old:CALL0", 1, 2, 3),
+            (str(today + timedelta(days=1)), "relay", "usrp", "Usrp:future:CALL0", 1, 2, 3),
+            (str(today), "relay", "usrp", "Usrp:zero:CALL0", 0, 0, 0),
+        ])
+        with sqlite3.connect(g.cfg_dir() / "db" / "reservations.db") as conn:
+            conn.execute(
+                "CREATE TABLE TransportDays (day TEXT, path TEXT, type TEXT, fn TEXT, calls INTEGER, "
+                "bytes_in INTEGER, bytes_out INTEGER, PRIMARY KEY(day,path,type,fn))"
+            )
+            conn.executemany("INSERT INTO TransportDays VALUES (?,?,?,?,?,?,?)", rows)
+
+        days = g.transport_summary()["days"]
+        self.assertEqual(len(days), 500)  # today and yesterday only; Global keeps older days
+        self.assertEqual([row["day"] for row in days[:301]], [str(today)] * 301)
+        self.assertEqual([row["day"] for row in days[301:]], [str(today - timedelta(days=1))] * 199)
+        self.assertTrue(all(set(row) == {"day", "path", "type", "fn", "calls", "bytes_in", "bytes_out"}
+                            for row in days))
 
     def test_usage_counts_only_the_devices_shared_on_global(self):
         import sqlite3
@@ -719,10 +756,11 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
-            set(g.STATUS_FIELDS),
-            set(g.STATUS_FIELDS) - {"usage"},
-            set(g.STATUS_FIELDS) - {"usage", "reservations"},
-            set(g.STATUS_FIELDS) - {"usage", "reservations", "proxies", "reserved_s"},
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport", "usage"},
+            set(g.STATUS_FIELDS) - {"transport", "usage", "reservations"},
+            set(g.STATUS_FIELDS) - {"transport", "usage", "reservations", "proxies", "reserved_s"},
         ])
 
     def test_status_drops_reservations_too_for_a_global_that_predates_it(self):
@@ -738,9 +776,10 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
-            set(g.STATUS_FIELDS),
-            set(g.STATUS_FIELDS) - {"usage"},
-            set(g.STATUS_FIELDS) - {"usage", "reservations"},
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport", "usage"},
+            set(g.STATUS_FIELDS) - {"transport", "usage", "reservations"},
         ])
 
     def test_status_drops_only_usage_for_a_global_that_predates_it(self):
@@ -754,7 +793,12 @@ class StatusReportTests(TunnelTests):
 
         with mock.patch.object(g, "call", side_effect=global_with_reservations):
             g.send_status()
-        self.assertEqual(sent, [set(g.STATUS_FIELDS), set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"usage"}])
+        self.assertEqual(sent, [
+            set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport", "usage"},
+        ])
 
     def test_status_drops_only_by_device_for_a_global_that_predates_it(self):
         self.activate()
@@ -767,8 +811,28 @@ class StatusReportTests(TunnelTests):
 
         with mock.patch.object(g, "call", side_effect=global_with_usage):
             g.send_status()
-        self.assertEqual([set(status) for status in sent], [set(g.STATUS_FIELDS)] * 2)
-        self.assertEqual(sent[1]["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
+        self.assertEqual([set(status) for status in sent], [
+            set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS) - {"transport"},
+            set(g.STATUS_FIELDS) - {"transport"},
+        ])
+        self.assertEqual(sent[2]["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
+
+    def test_status_drops_transport_first_for_an_older_global(self):
+        self.activate()
+        sent = []
+
+        def old_global(method, path, body):
+            sent.append(body["status"])
+            if "transport" in body["status"]:
+                raise g.GlobalError("invalid_status")
+
+        with mock.patch.object(g, "call", side_effect=old_global):
+            g.send_status()
+        self.assertEqual([set(status) for status in sent], [
+            set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"transport"}
+        ])
+        self.assertIn("by_device", sent[1]["usage"])
 
     def test_status_gives_up_when_even_the_oldest_note_is_refused(self):
         self.activate()
@@ -776,7 +840,7 @@ class StatusReportTests(TunnelTests):
         with mock.patch.object(g, "call", side_effect=g.GlobalError("invalid_status")) as call:
             with self.assertRaises(g.GlobalError):
                 g.send_status()
-        self.assertEqual(call.call_count, 5)
+        self.assertEqual(call.call_count, 6)
 
     def test_reports_only_flow_once_active(self):
         self.join()

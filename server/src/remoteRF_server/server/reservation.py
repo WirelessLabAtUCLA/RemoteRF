@@ -73,6 +73,7 @@ def _fanout(call, empty):
 _LAN_SECRET = re.compile(r"[0-9a-f]{64}")
 from .user_group_handler import user_group_handler
 from . import global_onboarding
+from .transport_counters import create_table as create_transport_days
 from .global_onboarding import CLIENT_VERSION, MIN_CLIENT_VERSION, RELAYED, client_is_current, lan_only_hint
 from .federation.migrations import (
     FEDERATED_PASSWORD_HASH,
@@ -310,6 +311,7 @@ class ReservationHandler:
         END;
         COMMIT;
         ''')
+        create_transport_days(self.db)
 
         # "Stay logged in" for the deployment protocol: a random token the
         # client keeps instead of the password. Only its hash lives here, so

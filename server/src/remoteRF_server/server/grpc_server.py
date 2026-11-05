@@ -60,6 +60,7 @@ from .device_manager import (close_local_devices, reload_devices, get_registered
 from .user_group_cli import make_user_group_local, edit_user_group_local, list_user_groups_local, remove_user_group_local, make_enrollment_codes_local, remove_enrollment_code_local, list_enrollment_codes_local, export_user_groups_csv_local, export_enrollment_codes_csv_local
 from .user_group_handler import start_usergroup_cleanup_loop
 from .global_onboarding import start_agent
+from .transport_counters import transport_counters
 
 from ..host import host_tunnel_server as hts
 from ..host.host_tunnel_server import HostTunnelServicer
@@ -190,14 +191,23 @@ class GenericRPCServicer(grpc_pb2_grpc.GenericRPCServicer):
         # LAN-only groups do not exist to a call that came through the relay.
         from .global_onboarding import CLIENT_VERSION, RELAYED, client_metadata_version, is_relayed
 
-        token = RELAYED.set(is_relayed(context.peer()))
+        relayed = is_relayed(context.peer())
+        token = RELAYED.set(relayed)
         version = CLIENT_VERSION.set(client_metadata_version(context.invocation_metadata()))
+        reply = None
         try:
             response = rpc_manager.run_rpc(function_name=request.function_name, args=request.args)
+            reply = grpc_pb2.GenericRPCResponse(results=response)
+            return reply
         finally:
             CLIENT_VERSION.reset(version)
             RELAYED.reset(token)
-        return grpc_pb2.GenericRPCResponse(results=response)
+            transport_counters.record_protobuf(
+                "relay" if relayed else "lan",
+                request.function_name,
+                request,
+                reply,
+            )
 
 
 @dataclass
@@ -231,6 +241,7 @@ class ServerRuntime:
         try:
             termination.wait(timeout=max(1.0, float(grace_sec) + 2.0))
         finally:
+            transport_counters.flush(force=True)
             if direct_path is not None:
                 direct_path.shutdown()
             session_manager.close_all()
