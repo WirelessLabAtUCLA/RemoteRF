@@ -2,10 +2,12 @@
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import yaml
@@ -158,3 +160,109 @@ class TwoDoorsTests(unittest.TestCase):
             self.assertEqual(dispatch(["global", "clusters"], in_daemon=True), 1)
         self.assertIn("Not configured", out.getvalue())
         self.assertIn("not enabled", out.getvalue())
+
+
+class NonInteractiveGroupCommandsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg = Path(self.tmp.name) / "remoterf"
+        db = self.cfg / "db"
+        db.mkdir(parents=True)
+        env = mock.patch.dict(os.environ, {
+            "REMOTERF_CONFIG_DIR": str(self.cfg),
+            "XDG_CONFIG_HOME": self.tmp.name,
+            "XDG_DATA_HOME": str(Path(self.tmp.name) / "data"),
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+        from remoteRF_server.server import user_group_cli
+        from remoteRF_server.server import user_group_handler as handler_module
+
+        with mock.patch.object(handler_module, "get_db_dir", return_value=db):
+            self.handler = handler_module.UserGroupHandler()
+        handler = mock.patch.object(user_group_cli, "user_group_handler", self.handler)
+        handler.start()
+        self.addCleanup(handler.stop)
+
+    def run_shell(self, argv):
+        out = io.StringIO()
+        from remoteRF_server import serverrf_cli
+
+        stdin = SimpleNamespace(isatty=lambda: False)
+        with mock.patch.object(serverrf_cli.sys, "stdin", stdin), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = dispatch(argv, in_daemon=False)
+        return rc, out.getvalue()
+
+    def create_group(self):
+        return self.run_shell([
+            "groups", "create", "ee123", "--devices", "7,3,7",
+            "--max-reservations", "4", "--max-time", "900",
+            "--horizon", "172800", "--lifetime", "86400",
+            "--lan-only", "--yes", "--json",
+        ])
+
+    def test_group_create_from_flags_and_duplicate_is_refused(self):
+        rc, output = self.create_group()
+        self.assertEqual(rc, 0, output)
+        value = json.loads(output)
+        self.assertEqual(value["group_name"], "ee123")
+        self.assertEqual(value["devices_whitelist"], [3, 7])
+        group = self.handler.get_all_user_groups(include_users=False)[0]
+        self.assertEqual(group["devices_whitelist"], [3, 7])
+        self.assertEqual((group["max_reservations"], group["max_reservation_time_sec"]), (4, 900))
+        self.assertEqual((group["max_horizon_sec"], group["lifetime_sec"], group["lan_only"]),
+                         (172800, 86400, True))
+
+        rc, output = self.run_shell([
+            "groups", "create", "ee123", "--devices", "3", "--yes",
+        ])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: group 'ee123' already exists\n")
+
+    def test_codes_create_json_honours_group_uses_and_duration(self):
+        rc, output = self.create_group()
+        self.assertEqual(rc, 0, output)
+        group_id = json.loads(output)["group_id"]
+
+        rc, output = self.run_shell([
+            "codes", "create", "ee123", "--count", "3", "--uses", "5",
+            "--duration", "7200", "--yes", "--json",
+        ])
+        self.assertEqual(rc, 0, output)
+        value = json.loads(output)
+        self.assertEqual(value["group_id"], group_id)
+        self.assertEqual((value["uses"], value["duration_sec"]), (5, 7200))
+        self.assertEqual(len(value["invites"]), 3)
+        rows = self.handler.get_all_enrollment_codes()
+        self.assertEqual({row["group_id"] for row in rows}, {group_id})
+        self.assertEqual({row["uses"] for row in rows}, {5})
+        self.assertEqual({row["duration_sec"] for row in rows}, {7200})
+        self.assertEqual(set(value["invites"]), {row["code_name"] for row in rows})
+
+    def test_unknown_group_and_missing_yes_are_refused(self):
+        rc, output = self.run_shell([
+            "codes", "create", "missing", "--count", "3", "--yes",
+        ])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: unknown group 'missing'\n")
+
+        rc, output = self.run_shell([
+            "groups", "create", "ee123", "--devices", "3",
+        ])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: non-interactive group creation requires --yes\n")
+
+        rc, output = self.run_shell([
+            "codes", "create", "none", "--count", "1",
+        ])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: non-interactive enrollment-code creation requires --yes\n")
+
+    def test_help_lists_flag_forms(self):
+        groups_help = "\n".join(commands.help_text(in_daemon=False, section="Groups"))
+        codes_help = "\n".join(commands.help_text(in_daemon=False, section="Enrollment codes"))
+        self.assertIn("groups create <name> --devices <ids>", groups_help)
+        self.assertIn("codes create <group name|id|none> --count N", codes_help)

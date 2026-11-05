@@ -130,7 +130,7 @@ def _table() -> list[Command]:
         Command(("reservations purge",), "Remove ALL reservations", _daemon("cmd_reservations_purge"), "Reservations", where=D),
         # ---- groups ----
         Command(("groups list",), "List user groups", _shell("cmd_groups_list"), "Groups"),
-        Command(("groups create",), "Create a user group (interactive)", _shell("cmd_groups_create"), "Groups"),
+        Command(("groups create",), "Create a group: groups create <name> --devices <ids> [--max-reservations 3 --max-time 1800 --horizon 604800 --lifetime 0 --lan-only --public --share <clusters>] --yes [--json]; no name is interactive", _shell("cmd_groups_create"), "Groups"),
         Command(("groups edit",), "Edit a user group (interactive)", _shell("cmd_groups_edit"), "Groups"),
         Command(("groups remove",), "Delete a user group (interactive)", _shell("cmd_groups_remove"), "Groups"),
         Command(("groups public",), "Share a group with anyone on RemoteRF Global, or stop: groups public <group> on|off", _federation("public"), "Groups"),
@@ -138,7 +138,7 @@ def _table() -> list[Command]:
         Command(("groups csv",), "Export ALL user groups as CSV to Downloads", _shell("cmd_groups_csv"), "Groups"),
         # ---- enrollment codes ----
         Command(("codes list",), "List enrollment codes", _shell("cmd_codes_list"), "Enrollment codes"),
-        Command(("codes create",), "Create enrollment codes for a group or a cluster (interactive)", _shell("cmd_codes_create"), "Enrollment codes"),
+        Command(("codes create",), "Create codes: codes create <group name|id|none> --count N [--length 10 --uses 1 --duration 3600] --yes [--json]; no group is interactive", _shell("cmd_codes_create"), "Enrollment codes"),
         Command(("codes remove",), "Delete an enrollment code (interactive)", _shell("cmd_codes_remove"), "Enrollment codes"),
         Command(("codes csv",), "Export ALL enrollment codes as CSV to Downloads", _shell("cmd_codes_csv"), "Enrollment codes"),
         # ---- hosts ----
