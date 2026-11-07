@@ -226,7 +226,8 @@ class ReservationHandler:
         DROP TRIGGER IF EXISTS reserved_total_del;
         CREATE TRIGGER reserved_total_ins AFTER INSERT ON Reservations
         WHEN NEW.device_id < 1000000 BEGIN
-            UPDATE ReservedTotal SET seconds = seconds + (julianday(NEW.end_time) - julianday(NEW.start_time)) * 86400;
+            UPDATE ReservedTotal SET seconds = seconds + MAX(0,
+                (julianday(NEW.end_time) - julianday(MAX(NEW.start_time, datetime('now', 'localtime')))) * 86400);
         END;
         CREATE TRIGGER reserved_total_del AFTER DELETE ON Reservations
         WHEN OLD.device_id < 1000000 BEGIN
@@ -264,6 +265,8 @@ class ReservationHandler:
         day = lambda r: f"'d' || ((CAST(strftime('%w', {r}.start_time, 'utc') AS INTEGER) + 6) % 7)"  # noqa: E731
         utc_date = lambda r: f"date({r}.start_time, 'utc')"  # noqa: E731
         length = lambda r: f"(julianday({r}.end_time) - julianday({r}.start_time)) * 86400"  # noqa: E731
+        # A booking made after its start counts only from now on.
+        held = '''MAX(0, (julianday(NEW.end_time) - julianday(MAX(NEW.start_time, datetime('now', 'localtime')))) * 86400)'''
         cancel = '''reservations = MAX(reservations - (OLD.start_time > datetime('now', 'localtime')), 0),
                 seconds = MAX(seconds - MAX(0,
                     (julianday(OLD.end_time) - julianday(MAX(OLD.start_time, datetime('now', 'localtime')))) * 86400), 0)'''
@@ -278,12 +281,13 @@ class ReservationHandler:
                 UNION ALL SELECT device_id, {day("r")}, {length("r")} FROM Reservations r)
             WHERE device_id < 1000000 AND NOT EXISTS (SELECT 1 FROM ReservationBuckets)
             GROUP BY device_id, bucket;
-        CREATE TRIGGER IF NOT EXISTS reservation_buckets_ins AFTER INSERT ON Reservations
+        DROP TRIGGER IF EXISTS reservation_buckets_ins;
+        CREATE TRIGGER reservation_buckets_ins AFTER INSERT ON Reservations
         WHEN NEW.device_id < 1000000 BEGIN
             INSERT INTO ReservationBuckets VALUES
-                (NEW.device_id, 'all', 1, {length("NEW")}),
-                (NEW.device_id, {hour("NEW")}, 1, {length("NEW")}),
-                (NEW.device_id, {day("NEW")}, 1, {length("NEW")})
+                (NEW.device_id, 'all', 1, {held}),
+                (NEW.device_id, {hour("NEW")}, 1, {held}),
+                (NEW.device_id, {day("NEW")}, 1, {held})
             ON CONFLICT (device_id, bucket) DO UPDATE
                 SET reservations = reservations + 1, seconds = seconds + excluded.seconds;
         END;
@@ -298,9 +302,10 @@ class ReservationHandler:
             SELECT device_id, {utc_date("r")} AS day, COUNT(*), SUM({length("r")}) FROM Reservations r
             WHERE device_id < 1000000 AND NOT EXISTS (SELECT 1 FROM ReservationDays)
             GROUP BY device_id, day;
-        CREATE TRIGGER IF NOT EXISTS reservation_days_ins AFTER INSERT ON Reservations
+        DROP TRIGGER IF EXISTS reservation_days_ins;
+        CREATE TRIGGER reservation_days_ins AFTER INSERT ON Reservations
         WHEN NEW.device_id < 1000000 BEGIN
-            INSERT INTO ReservationDays VALUES (NEW.device_id, {utc_date("NEW")}, 1, {length("NEW")})
+            INSERT INTO ReservationDays VALUES (NEW.device_id, {utc_date("NEW")}, 1, {held})
             ON CONFLICT (device_id, day) DO UPDATE
                 SET reservations = reservations + 1, seconds = seconds + excluded.seconds;
         END;
