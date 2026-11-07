@@ -267,6 +267,13 @@ class ProcessArgTests(unittest.TestCase):
                 self.assertEqual(restored, [])
         self.assertIsInstance(unmap_arg(map_arg([1.0, 2.0])), np.ndarray)
 
+    def test_bytes_and_str_lists_keep_trailing_nuls(self):
+        self.assertEqual(unmap_arg(map_arg([b"\x01\x00", b"\x02"])), [b"\x01\x00", b"\x02"])
+        self.assertEqual(unmap_arg(map_arg((b"ab\x00",))), [b"ab\x00"])
+        self.assertEqual(unmap_arg(map_arg(["a\x00"])), ["a\x00"])
+        self.assertEqual(map_arg([1.0, 2.0]).WhichOneof("value"), "ndarray_value")
+        self.assertIsInstance(unmap_arg(map_arg([1.0, 2.0])), np.ndarray)
+
 
 if __name__ == "__main__":
     unittest.main()

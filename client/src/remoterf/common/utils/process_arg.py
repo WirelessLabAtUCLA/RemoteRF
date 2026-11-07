@@ -219,7 +219,8 @@ def map_arg(value: Any) -> grpc_pb2.Argument:
                 array = np.stack(value)
             except Exception:
                 pass
-        if array.dtype == object:
+        # bytes/str lists become S/U arrays, which drop trailing NULs.
+        if array.dtype == object or array.dtype.kind not in _SUPPORTED_NDARRAY_KINDS:
             arg.json_value = json.dumps(_json_safe(value), separators=(",", ":"))
             return arg
         return map_arg(array)

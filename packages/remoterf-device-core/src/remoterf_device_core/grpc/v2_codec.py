@@ -16,6 +16,7 @@
 """Wire codec for Dynamic protocol v2 control values."""
 from __future__ import annotations
 
+import base64
 import json
 import math
 from typing import Any
@@ -61,6 +62,11 @@ def _json_safe(value: Any):
             _JSON_TYPE_KEY: "integer",
             "value": str(value),
         }
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {
+            _JSON_TYPE_KEY: "bytes",
+            "b64": base64.b64encode(bytes(value)).decode("ascii"),
+        }
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -74,6 +80,8 @@ def _json_restore(value: Any):
             return complex(value.get("real", 0.0), value.get("imag", 0.0))
         if value.get(_JSON_TYPE_KEY) == "integer":
             return int(value["value"])
+        if value.get(_JSON_TYPE_KEY) == "bytes":
+            return base64.b64decode(value.get("b64", ""))
         return {key: _json_restore(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_json_restore(item) for item in value]

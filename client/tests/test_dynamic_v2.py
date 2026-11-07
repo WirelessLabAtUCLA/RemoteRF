@@ -561,6 +561,11 @@ class DynamicV2Tests(unittest.TestCase):
         )
         OverloadBinder(phases).bind((np.linspace(0, 315, 8),), {})   # numpy arrays are sequences
         self.assertEqual(decode_value(encode_value(np.complex64(1 + 2j))), 1 + 2j)
+        # Nested bytes go through JSON; top-level bytes stay bytes_value.
+        self.assertEqual(decode_value(encode_value({"x": b"\x01\x00"})), {"x": b"\x01\x00"})
+        self.assertEqual(decode_value(encode_value([b"\x00"])), [b"\x00"])
+        self.assertEqual(encode_value(b"\x00").WhichOneof("value"), "bytes_value")
+        self.assertEqual(decode_value(encode_value(b"\x00")), b"\x00")
 
     def test_a_stale_v2_driver_refreshes_itself_and_says_so(self):
         from unittest.mock import patch
