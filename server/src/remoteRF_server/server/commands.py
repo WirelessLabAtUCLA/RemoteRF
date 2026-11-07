@@ -106,7 +106,7 @@ def _table() -> list[Command]:
         # ---- server ----
         Command(("help", "h", "?"), "This list", _lazy(".commands", "cmd_help"), "Server"),
         Command(("status",), "What the server is doing", _daemon("cmd_status"), "Server", where=D),
-        Command(("restart",), "Restart the server", _daemon("cmd_restart"), "Server", where=D),
+        Command(("restart",), "Restart the server; refused (exit 4) with live reservations unless --force", _daemon("cmd_restart"), "Server", where=D),
         Command(("stop", "quit", "exit", "q", "kill"), "Stop the server", _daemon("cmd_stop"), "Server", where=D),
         Command(("detach",), "Leave the console; the server keeps running", _daemon("cmd_detach"), "Server", where=D, console_only=True),
         Command(("clear", "cls"), "Clear the screen", _daemon("cmd_clear"), "Server", where=D, console_only=True),
@@ -394,4 +394,7 @@ def _after(what: str, *, in_daemon: bool) -> None:
         print("Devices reloaded on the running server." if reply and reply[0] == 0 else "Reload failed; restart the server.")
     elif what == "restart":
         reply = control.call(["restart"])
+        if reply and reply[0] == 4:
+            print(f"{reply[1].strip()}\nThe change is saved; apply it later with: serverrf restart")
+            return
         print("Server restarting." if reply and reply[0] == 0 else "Could not restart the server; do it with: serverrf restart")

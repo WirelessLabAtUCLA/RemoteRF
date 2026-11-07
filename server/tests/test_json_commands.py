@@ -188,6 +188,7 @@ def test_reservations_json_exact_keys_types_and_local_offsets(tmp_path, monkeypa
 
     _, values = _run(handler.print_all_reservations, json_output=True)
     assert len(values) == 1
+    assert handler.reservation_rows() == values
     value = values[0]
     _assert_keys(value, ("res_id", "username", "device_id", "start_time", "end_time",
                          "federated", "issuer_deployment_id"))

@@ -1524,6 +1524,19 @@ def cmd_stop(argv):
 def cmd_restart(argv):
     from .commands import RestartRequested
 
+    if "--force" not in argv:
+        from .reservation import reservations_in_freeze
+
+        try:
+            live = reservations_in_freeze(reservation_handler.reservation_rows())
+        except Exception as exc:
+            print(f"warning: could not read reservations ({exc}); restarting")
+            live = []
+        if live:
+            free = datetime.fromisoformat(min(r["end_time"] for r in live)).strftime("%H:%M")
+            print(f"error: {len(live)} reservation(s) live or starting within 15 min (next free {free});"
+                  " restart refused (re-run later, or restart --force)")
+            return 4
     raise RestartRequested()
 
 

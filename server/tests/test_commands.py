@@ -419,3 +419,52 @@ class NonInteractiveUsersManageTests(unittest.TestCase):
             rc = dispatch(["users", "manage"], in_daemon=False)
         self.assertEqual(rc, 1)
         console.assert_not_called()
+
+
+class RestartFreezeGuardTests(unittest.TestCase):
+    NOW = 1_800_000_000
+
+    @classmethod
+    def row(cls, start_off, end_off):
+        from datetime import datetime, timezone
+
+        iso = lambda off: datetime.fromtimestamp(cls.NOW + off, timezone.utc).isoformat()
+        return {"res_id": 1, "start_time": iso(start_off), "end_time": iso(end_off)}
+
+    def restart(self, rows, argv=(), error=None):
+        from remoteRF_server.server import grpc_server
+
+        handler = mock.Mock()
+        handler.reservation_rows.side_effect = error
+        handler.reservation_rows.return_value = rows
+        out = io.StringIO()
+        with mock.patch.object(grpc_server, "reservation_handler", handler), \
+                mock.patch("time.time", return_value=self.NOW), contextlib.redirect_stdout(out):
+            try:
+                rc = grpc_server.cmd_restart(list(argv))
+            except RestartRequested:
+                rc = "restart"
+        return rc, out.getvalue()
+
+    def test_live_reservation_refuses_with_exit_4(self):
+        rc, out = self.restart([self.row(-60, 600)])
+        self.assertEqual(rc, 4)
+        self.assertIn("1 reservation(s) live or starting within 15 min", out)
+
+    def test_reservation_starting_within_15_min_refuses(self):
+        self.assertEqual(self.restart([self.row(840, 2640)])[0], 4)
+
+    def test_far_future_and_finished_reservations_do_not_block(self):
+        rows = [self.row(960, 2760), self.row(-3600, -1)]
+        self.assertEqual(self.restart(rows)[0], "restart")
+
+    def test_no_reservations_restarts(self):
+        self.assertEqual(self.restart([])[0], "restart")
+
+    def test_force_overrides(self):
+        self.assertEqual(self.restart([self.row(-60, 600)], ["--force"])[0], "restart")
+
+    def test_unreadable_reservations_warn_and_restart(self):
+        rc, out = self.restart([], error=RuntimeError("db locked"))
+        self.assertEqual(rc, "restart")
+        self.assertIn("could not read reservations", out)
