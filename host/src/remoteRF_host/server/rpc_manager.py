@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+from remoterf_device_core.tx_limits import (POLICY_KEY, check_legacy, device_lock, host_rule, install_host_rule)
 
 from ..common.utils import map_arg, unmap_arg
 from .device_manager import find_device_id_by_name, get_device, get_device_schema
@@ -79,6 +80,23 @@ class RpcManager:
         return a
 
     def run_rpc(self, *, function_name, args) -> dict:
+        if function_name == "TXLimits:capabilities":
+            return {"tx_limits_version": map_arg(1)}
+        gid = self._resolve_gid(args)
+        if gid is None:
+            return self._run_rpc(function_name=function_name, args=args)
+        with device_lock(gid):
+            try:
+                if POLICY_KEY in args:
+                    install_host_rule(gid, unmap_arg(args[POLICY_KEY]))
+                args = {k: v for k, v in args.items() if k != POLICY_KEY}
+                if function_name == "TXLimits:configure":
+                    return {"tx_limits_version": map_arg(1)}
+                return self._run_rpc(function_name=function_name, args=args)
+            except Exception as exc:
+                return {"Error": map_arg(str(exc))}
+
+    def _run_rpc(self, *, function_name, args) -> dict:
         if function_name == "echo":
             return args
 
@@ -132,6 +150,13 @@ class RpcManager:
             session_manager.close_gid(gid)
 
         try:
+            decoded = {str(k): unmap_arg(v) for k, v in args.items()
+                       if k not in {"a", "g", "gid", "token", "device_id", "device_name", "wire"}}
+            if verb == "SET":
+                decoded = {"value": decoded[prop]}
+            elif verb == "CALL1":
+                decoded = {"value": decoded["arg1"]}
+            decoded = check_legacy(host_rule(gid), schema, prop, verb, decoded)
             if verb == "GET":
                 result = schema.dispatch(f"get_{prop}", {})
                 return {prop: self._safe_map(result)}
@@ -139,7 +164,7 @@ class RpcManager:
             if verb == "SET":
                 if prop not in args:
                     raise ValueError(f"SET requires args['{prop}']")
-                value = unmap_arg(args[prop])
+                value = decoded["value"]
                 schema.dispatch(f"set_{prop}", {"value": value})
                 return {prop: map_arg("None")}
 
@@ -150,17 +175,12 @@ class RpcManager:
             if verb == "CALL1":
                 if "arg1" not in args:
                     raise ValueError("CALL1 requires 'arg1' in args")
-                value = unmap_arg(args["arg1"])
+                value = decoded["value"]
                 result = schema.dispatch(f"call_{prop}", {"value": value})
                 return {prop: self._safe_map(result)}
 
             if verb == "CALLN":
-                reserved = {"a", "g", "token", "device_id", "device_name", "wire"}
-                call_args = {
-                    str(key): unmap_arg(value)
-                    for key, value in dict(args).items()
-                    if str(key) not in reserved
-                }
+                call_args = decoded
                 result = schema.dispatch(f"call_{prop}", call_args)
                 return {prop: self._safe_map(result)}
 

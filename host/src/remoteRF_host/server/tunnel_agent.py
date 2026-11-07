@@ -654,6 +654,8 @@ class HostTunnelAgent:
             hello.host_token = self._host_token
 
         direct = getattr(self, "_direct_host", None)
+        if hasattr(hello, "capabilities"):
+            hello.capabilities.append("tx_limits_v1")
         if direct is not None and hasattr(hello, "capabilities") and hasattr(hello, "tls_public_key"):
             try:
                 hello.capabilities.append("direct")
@@ -1149,7 +1151,10 @@ class HostTunnelAgent:
             self._consume_cancel(req_id)
 
     def _run_direct_call(self, gid: int, greq) -> Dict[str, Any]:
-        excluded = {"a", "token", "device_name", "g", "gid", "device_id"}
+        from remoterf_device_core.tx_limits import POLICY_KEY
+        if greq.function_name.startswith("TXLimits:"):
+            raise ValueError("Host TX limits are configured only by the server tunnel")
+        excluded = {"a", "token", "device_name", "g", "gid", "device_id", POLICY_KEY}
         args_map = {
             str(key): value
             for key, value in greq.args.items()

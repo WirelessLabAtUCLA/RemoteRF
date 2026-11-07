@@ -81,7 +81,7 @@ class RxNTests(unittest.TestCase):
                 patch.object(rpc_module.hts, "get_tunnel_registry", lambda create=False: None):
             out = unmap_arg(rx_n(dev, 4, gid=5, wire="c64")["rx_n"])
             self.assertEqual(out.shape, (2, 4))
-            self.assertEqual(sent[0], ("Fake:rx:CALL0", ["g", "wire"]))
+            self.assertEqual(sent[0], ("Fake:rx:CALL0", ["__server_tx_limits", "g", "wire"]))
             sent.clear()
             sent.append(None)
             sent.append(None)  # the next host rx answers with an Error first

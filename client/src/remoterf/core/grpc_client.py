@@ -974,9 +974,6 @@ def _finish(response, function_name=""):
         if "Error" in results or ("Ok" in results and not unmap_arg(results["Ok"])):
             raise RuntimeError(("Error" in results and unmap_arg(results["Error"])) or NO_ANSWER)
         
-    if verb in _DEVICE_VERBS and "warning" in response.results:
-        printf(str(unmap_arg(response.results["warning"])), Sty.WARNING)
-
     for key, text in (('UE', explain), ('Message', str)):
         if key in response.results:
             text = text(unmap_arg(response.results[key]))

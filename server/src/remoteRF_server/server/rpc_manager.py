@@ -43,7 +43,8 @@ from ..common.utils import *
 #             with acquire_device(api_token) as (gid, dev):
 #                 # Build payload for the *next stage* (local driver OR host agent)
 #                 fwd_args = dict(args)
-#                 fwd_args.pop('a', None)                 # remove external API token
+#                 fwd_args.pop('a', None)
+
 #                 fwd_args['g'] = map_arg(int(gid))       # or map_arg(str(gid)) if your map_arg expects str
 
 #                 if isinstance(dev, VirtualDevice):
@@ -75,7 +76,7 @@ from .reservation import reservation_handler
 from ..common.utils import *
 from ..common.grpc import grpc_pb2 as generic_pb2
 from .device_manager import acquire_device, acquire_device_by_gid, VirtualDevice, get_device_schema, find_device_id_by_name, get_device_by_id, resolve_gid_for_token, get_tx_freq_limit
-from .tx_limits import tx_freq_prop
+from .tx_limits import check_legacy, device_lock, POLICY_KEY
 from ..host import host_tunnel_server as hts
 
 
@@ -228,6 +229,10 @@ class RpcManager:
     def _dispatch_acquired(
         self, *, function_name: str, args: dict, gid: int, dev: object
     ) -> dict:
+        with device_lock(gid):
+            return self._dispatch_locked(function_name=function_name, args=args, gid=gid, dev=dev)
+
+    def _dispatch_locked(self, *, function_name, args, gid, dev):
         self._validate_device_rpc_type(function_name=function_name, gid=gid, dev=dev)
 
         # Both live in the RPC layer, not in schemas, so no schema hash moves.
@@ -249,19 +254,15 @@ class RpcManager:
         if self._should_use_builtin_ip_fallback(function_name=function_name, gid=gid, dev=dev):
             return {"ip": map_arg(self._builtin_ip_fallback(gid=gid, dev=dev))}
 
-        args, warning = self._apply_tx_limits(function_name=function_name, args=args, gid=gid, dev=dev)
-        if warning is not None:
-            results = self._dispatch_acquired(function_name=function_name, args=args, gid=gid, dev=dev)
-            if not any(key in results for key in ("a", "Error")):
-                results["warning"] = map_arg(warning)
-            return results
-
         if isinstance(dev, VirtualDevice):
             fwd_args = dict(args)
             fwd_args.pop('a', None)
+            fwd_args.pop(POLICY_KEY, None)
             fwd_args['g'] = map_arg(int(gid))
-            results = hts.handle_host_device(
+            from .host_tx_limits import forward
+            results = forward(
                 hts.get_tunnel_registry(create=False),
+                gid=gid,
                 host_id=dev.host_id,
                 device_id=dev.device_id,
                 function_name=function_name,
@@ -279,39 +280,6 @@ class RpcManager:
             return results
 
         return self._dispatch_local_schema(function_name=function_name, args=args, gid=gid, dev=dev)
-
-    def _apply_tx_limits(self, *, function_name: str, args: dict, gid: int, dev: object):
-        """(args to dispatch, warning); raises when limits.tx_freq refuses the call."""
-        rule = get_tx_freq_limit(gid)
-        if rule is None:
-            return args, None
-        _, prop, verb = function_name.split(':', 2)
-        dtype = self._resolve_device_type(gid=gid, dev=dev).strip().lower()
-
-        if dtype == "hackrf":
-            # One shared center_freq: it is a TX frequency only while TX runs.
-            # HackRF never retunes to the default.
-            if isinstance(dev, VirtualDevice):
-                return args, None
-            if prop == "start_tx" and verb == "CALL0":
-                rule.check(dev.dispatch("get_center_freq", {}), allow_default=False)
-            elif (prop, verb) in (("center_freq", "SET"), ("set_freq", "CALL1")) and getattr(
-                getattr(dev, "device", None), "_remoterf_tx_active", False
-            ):
-                key = prop if verb == "SET" else "arg1"
-                if key in args:
-                    rule.check(unmap_arg(args[key]), allow_default=False)
-            return args, None
-
-        if verb != "SET" or prop != tx_freq_prop(dtype) or prop not in args:
-            return args, None
-        value = unmap_arg(args[prop])
-        freq, warning = rule.check(value)
-        if warning is None:
-            return args, None
-        args = dict(args)
-        args[prop] = map_arg(int(freq) if isinstance(value, int) else freq)
-        return args, warning
 
     def _run_batch(self, *, function_name: str, args: dict, gid: int, dev: object) -> dict:
         """Every op is checked before any runs; the first failing op (raised,
@@ -445,12 +413,20 @@ class RpcManager:
 
             session_manager.close_gid(gid)
 
+        decoded = {str(k): unmap_arg(v) for k, v in args.items()
+                   if k not in {"a", "g", "gid", "token", "device_id", "device_name", "wire", POLICY_KEY}}
+        if verb == "SET":
+            decoded = {"value": decoded[prop]}
+        elif verb == "CALL1":
+            decoded = {"value": decoded["arg1"]}
+        decoded = check_legacy(get_tx_freq_limit(gid) if gid is not None else None, dev, prop, verb, decoded)
+
         if verb == "GET":
             result = dev.dispatch(f"get_{prop}", {})
             return {prop: map_arg(result)}
 
         if verb == "SET":
-            value = unmap_arg(args[prop])
+            value = decoded["value"]
             dev.dispatch(f"set_{prop}", {"value": value})
             return {}
 
@@ -461,17 +437,12 @@ class RpcManager:
         if verb == "CALL1":
             if 'arg1' not in args:
                 raise ValueError("CALL1 requires 'arg1' in args")
-            value = unmap_arg(args['arg1'])
+            value = decoded["value"]
             result = dev.dispatch(f"call_{prop}", {"value": value})
             return {prop: map_arg(result)} if result is not None else {prop: map_arg('None')}
 
         if verb == "CALLN":
-            reserved = {"a", "g", "token", "device_id", "device_name", "wire"}
-            call_args = {
-                str(key): unmap_arg(value)
-                for key, value in dict(args).items()
-                if str(key) not in reserved
-            }
+            call_args = decoded
             result = dev.dispatch(f"call_{prop}", call_args)
             return {prop: map_arg(result)} if result is not None else {prop: map_arg('None')}
 

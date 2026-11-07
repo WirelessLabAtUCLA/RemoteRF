@@ -536,10 +536,10 @@ class TunnelDirectControlTests(unittest.TestCase):
                 return "public key"
 
         hello = self._agent(Direct())._hello_frame().hello
-        self.assertEqual(list(hello.capabilities), ["direct"])
+        self.assertEqual(list(hello.capabilities), ["tx_limits_v1", "direct"])
         self.assertEqual(hello.tls_public_key, "public key")
         hello = self._agent(None)._hello_frame().hello
-        self.assertEqual(list(hello.capabilities), [])
+        self.assertEqual(list(hello.capabilities), ["tx_limits_v1"])
         self.assertEqual(hello.tls_public_key, "")
 
     def test_direct_offer_answers_and_reservation_end_closes(self):
@@ -757,13 +757,13 @@ class TunnelDirectControlTests(unittest.TestCase):
             agent._setup_relay()
             self.assertEqual(stat.S_IMODE((Path(directory) / "relay_ed25519").stat().st_mode), 0o600)
             hello = agent._hello_frame().hello
-            self.assertEqual(hello.capabilities, ["direct", "relay"])
+            self.assertEqual(hello.capabilities, ["tx_limits_v1", "direct", "relay"])
             self.assertEqual(hello.relay_ssh_public_key, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest")
 
             unavailable = make_agent()
             with mock.patch("remoteRF_host.server.tunnel_agent.shutil.which", return_value=None):
                 unavailable._setup_relay()
-            self.assertEqual(unavailable._hello_frame().hello.capabilities, ["direct"])
+            self.assertEqual(unavailable._hello_frame().hello.capabilities, ["tx_limits_v1", "direct"])
 
             disabled = make_agent()
             with mock.patch.dict(os.environ, {"HOSTRF_RELAY": "0"}), mock.patch(
@@ -771,7 +771,7 @@ class TunnelDirectControlTests(unittest.TestCase):
             ) as which:
                 disabled._setup_relay()
             which.assert_not_called()
-            self.assertEqual(disabled._hello_frame().hello.capabilities, ["direct"])
+            self.assertEqual(disabled._hello_frame().hello.capabilities, ["tx_limits_v1", "direct"])
 
     def test_connected_is_reported_only_after_the_first_lab_frame(self):
         import grpc

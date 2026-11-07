@@ -79,14 +79,9 @@ class RangeCheckTests(unittest.TestCase):
             "Transmitting at 1.00 GHz is not allowed by this device's limits. Whitelist: 902–928 MHz.",
         )
 
-    def test_default_mode_returns_default_and_warning(self):
-        rule = parse_tx_freq({"whitelist": ISM, "blacklist": BLOCK, "on_violation": "default", "default": 2.42e9})
-        self.assertEqual(rule.check(2.41e9), (2.41e9, None))
-        freq, warning = rule.check(2.455e9)
-        self.assertEqual(freq, 2.42e9)
-        self.assertEqual(warning, MESSAGE + " Tuned to 2.42 GHz instead.")
+    def test_default_mode_is_refused(self):
         with self.assertRaises(ValueError):
-            rule.check(2.455e9, allow_default=False)
+            parse_tx_freq({"whitelist": ISM, "on_violation": "default"})
 
 
 class ConfigParsingTests(unittest.TestCase):
@@ -96,7 +91,7 @@ class ConfigParsingTests(unittest.TestCase):
             limits = parse_limits({"tx_freq": tx_freq}, gid=3)
         return limits.get("tx_freq"), out.getvalue()
 
-    def test_invalid_rules_are_logged_and_skipped(self):
+    def test_invalid_rules_disable_tx(self):
         for bad in (
             "nope",
             {"whitelist": [[2.48e9, 2.40e9]]},
@@ -109,13 +104,14 @@ class ConfigParsingTests(unittest.TestCase):
             {"blacklist": BLOCK, "on_violation": "default", "default": 2.455e9},
         ):
             rule, log = self.parse(bad)
-            self.assertIsNone(rule, bad)
-            self.assertIn("Skipping limits.tx_freq for device gid=3", log)
+            with self.assertRaises(ValueError):
+                rule.check(2.42e9)
+            self.assertIn("TX disabled for device gid=3", log)
 
     def test_limits_not_a_mapping_is_skipped(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(parse_limits([1], gid=3), {})
+            self.assertTrue(parse_limits([1], gid=3)["tx_freq"].error)
         self.assertIn("gid=3", out.getvalue())
 
     def test_devices_yaml_limits_reach_the_record(self):
@@ -187,12 +183,6 @@ class RpcManagerLimitTests(unittest.TestCase):
         self.assertEqual(unmap_arg(out["a"]), MESSAGE)
         self.assertEqual(dev.calls, [])
 
-    def test_default_mode_dispatches_default_and_warns(self):
-        rule = parse_tx_freq({"whitelist": ISM, "blacklist": BLOCK, "on_violation": "default", "default": 2.42e9})
-        out, dev = self.run_set(rule, int(2.455e9))
-        self.assertEqual(dev.calls, [("set_tx_lo", {"value": 2420000000})])
-        self.assertEqual(unmap_arg(out["warning"]), MESSAGE + " Tuned to 2.42 GHz instead.")
-
     def test_other_properties_and_unlimited_devices_are_untouched(self):
         rule = parse_tx_freq({"whitelist": ISM})
         out, dev = self.run_set(rule, 1e9, function_name="adalm_pluto:rx_lo:SET", key="rx_lo")
@@ -206,7 +196,7 @@ class RpcManagerLimitTests(unittest.TestCase):
         dev = FakeSchema()
         dev.device_type = "hackrf"
         dev.device._remoterf_tx_active = active
-        rule = parse_tx_freq({"whitelist": ISM, "blacklist": BLOCK, "on_violation": "default", "default": 2.42e9})
+        rule = parse_tx_freq({"whitelist": ISM, "blacklist": BLOCK})
         with mock.patch.object(rm, "get_tx_freq_limit", return_value=rule):
             RpcManager()._dispatch_acquired(function_name=function_name, args=args, gid=1, dev=dev)
         return dev

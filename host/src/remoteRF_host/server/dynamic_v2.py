@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from remoterf_device_core.tx_limits import (host_rule, check_usrp_control, check_current_usrp, device_lock)
 
 from ..common.grpc import grpc_pb2, grpc_pb2_grpc
 from ..common.grpc.v2_codec import decode_value, encode_value
@@ -55,6 +56,7 @@ from .v2_errors import (
     RemoteRFNativeUHDError,
     RemoteRFOverloadError,
     RemoteRFProtocolError,
+    RemoteRFPolicyError,
     RemoteRFReservationError,
     RemoteRFServerOverloadedError,
     RemoteRFSessionExpiredError,
@@ -1016,15 +1018,20 @@ class SessionManager:
                 args,
                 positional_args,
             )
-            native_args = {
-                key: self._resolve_handle_argument(session, value)
-                for key, value in args.items()
-            }
-            native_positional = [
-                self._resolve_handle_argument(session, value)
-                for value in positional_args
-            ]
-            with session.control_lock:
+            with device_lock(session.gid), session.control_lock:
+                try:
+                    native_args, native_positional = check_usrp_control(
+                        host_rule(session.gid), session.schema.device, method_name,
+                        args, positional_args,
+                    )
+                    if method_name == "get_tx_stream":
+                        check_current_usrp(host_rule(session.gid), session.schema.device)
+                except ValueError as exc:
+                    raise RemoteRFPolicyError(str(exc), method=method_name) from None
+                native_args = {key: self._resolve_handle_argument(session, value)
+                               for key, value in native_args.items()}
+                native_positional = [self._resolve_handle_argument(session, value)
+                                     for value in native_positional]
                 try:
                     result = session.schema.invoke_native(
                         method_name,
@@ -1060,6 +1067,9 @@ class SessionManager:
                     "generation": child.generation,
                 }, mutations
             return snapshot_native(result), mutations
+
+        if host_rule(session.gid) is not None and not entry.type_id.endswith(("RXStreamer", "TXStreamer")):
+            raise RemoteRFPolicyError("Peripheral UHD handles are unavailable with TX frequency limits")
 
         descriptor = next(
             (
@@ -1676,7 +1686,11 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             session.schema, "TXMetadata", request.metadata_json
                         )
                         timeout = _sample_timeout(request.timeout_sec)
-                        with entry.lock:
+                        with device_lock(session.gid), session.control_lock, entry.lock:
+                            try:
+                                check_current_usrp(host_rule(session.gid), session.schema.device, entry.stream_channels)
+                            except ValueError as exc:
+                                raise RemoteRFPolicyError(str(exc)) from None
                             count = int(
                                 entry.value.send(
                                     samples,

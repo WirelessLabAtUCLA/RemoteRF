@@ -172,7 +172,7 @@ def _start_refresher(host_id: str, gid: int, rid: str, reservation_end: float, s
                 return
         registry = hts.get_tunnel_registry(create=False)
         try:
-            live = still_live()
+            live = still_live() and _configure_tx_limits(registry, host_id, gid)
         except Exception as exc:
             logger.warning("host direct liveness check failed for %s: %s", host_id, exc)
             schedule()
@@ -260,12 +260,30 @@ def _valid_answer(answer: object) -> bool:
         return False
 
 
+def _configure_tx_limits(registry, host_id, gid):
+    from .host_tx_limits import forward
+    from ..common.utils import unmap_arg
+    from .device_manager import get_tx_freq_limit
+    session = registry.session_for_host(host_id) if hasattr(registry, "session_for_host") else None
+    if get_tx_freq_limit(gid) is None and (session is None or "tx_limits_v1" not in session.capabilities):
+        return True
+    result = forward(registry, gid=gid, host_id=host_id, device_id=str(gid),
+                     function_name="TXLimits:configure", args={})
+    return get_tx_freq_limit(gid) is None or (
+        "tx_limits_version" in result and unmap_arg(result["tx_limits_version"]) == 1)
+
+
 def offer(device, ice: str, *, rid: str, reservation_end: float, still_live) -> dict | None:
     """Ask the owning Host to answer ICE, leaving callers to use lab fallback."""
     host_id = str(getattr(device, "host_id", "") or "")
     gid = int(getattr(device, "gid"))
     registry = hts.get_tunnel_registry(create=False)
     if registry is None:
+        return None
+    try:
+        if not _configure_tx_limits(registry, host_id, gid):
+            return None
+    except Exception:
         return None
     session = registry.session_for_host(host_id)
     if session is None or not session.alive or "direct" not in session.capabilities or not session.tls_public_key:

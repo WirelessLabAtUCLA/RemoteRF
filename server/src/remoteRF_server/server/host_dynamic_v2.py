@@ -124,8 +124,10 @@ class HostDynamicV2Proxy:
             stripped.CopyFrom(request)
             stripped.ClearField("token")
             request = stripped
-        results = hts.handle_host_device(
+        from .host_tx_limits import forward
+        results = forward(
             registry,
+            gid=route.gid,
             host_id=host_id,
             device_id=device_id,
             function_name=f"DynamicV2:{operation}",

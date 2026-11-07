@@ -40,7 +40,7 @@ from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, d
 from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_builtin_drivers,
                                  load_drivers, override_stale)
 from ..host import host_tunnel_server as hts
-from .tx_limits import parse_limits
+from .tx_limits import parse_limits, TxFreqRule
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class _DeviceState:
     reset_pending: bool = False
     # _name_handle(name); _handle_owners() decides who keeps a duplicate.
     handle: str = ""
-    # devices.yaml limits (tx_limits.parse_limits); host devices have none.
+    # Server-owned devices.yaml limits, including host inventory overlays.
     limits: Dict[str, Any] = field(default_factory=dict)
 
 # gid -> state
@@ -130,6 +130,7 @@ def _sync_host_devices(*, force: bool = False) -> None:
     gen = _host_forget_gen
     snap = reg.device_directory_cached(ttl_ms=0)  # device_id -> (host_id, info_obj, is_active)
 
+    host_limits = _load_host_limits()
     updates: Dict[int, Dict[str, object]] = {}
     for device_id, (host_id, info_obj, is_active) in snap.items():
         # You said device_id is assumed to be the GID
@@ -195,6 +196,7 @@ def _sync_host_devices(*, force: bool = False) -> None:
                 dtype=dtype,
                 io_lock=lock,
                 handle=_name_handle(name),
+                limits=host_limits.get((host_id, gid), {}),
             )
 
             # Keep legacy maps coherent for host devices too (best-effort)
@@ -335,6 +337,33 @@ def _devices_yaml_path() -> Path:
     except OSError as e:
         print(f"Warning: could not create empty devices config {p1}: {e}")
     return p1
+
+_host_limits_cache = None
+
+
+def _load_host_limits():
+    """Host policy overlays keyed by the owning host and its stable device GID."""
+    global _host_limits_cache
+    path = _devices_yaml_path()
+    stat = path.stat()
+    version = (str(path), stat.st_mtime_ns, stat.st_size)
+    if _host_limits_cache is not None and _host_limits_cache[0] == version:
+        return _host_limits_cache[1]
+    data = yaml.safe_load(path.read_text()) or {}
+    entries = data.get("host_devices", [])
+    if not isinstance(entries, list):
+        raise ValueError("host_devices must be a list")
+    result = {}
+    for item in entries:
+        host_id, gid = str(item["host_id"]).strip(), int(item["device_id"])
+        if set(item) - {"host_id", "device_id", "limits"} or "limits" not in item:
+            raise ValueError("host_devices entries require host_id, device_id and limits only")
+        if not host_id or any(existing_gid == gid for _, existing_gid in result):
+            raise ValueError("host_devices requires unique device IDs and nonempty host IDs")
+        result[host_id, gid] = parse_limits(item.get("limits"), gid=gid)
+    _host_limits_cache = (version, result)
+    return result
+
 
 def _load_device_records() -> Dict[int, Dict[str, str]]:
     path = _devices_yaml_path()
@@ -1097,6 +1126,12 @@ def get_tx_freq_limit(device_id: int):
     """The device's limits.tx_freq rule (tx_limits.TxFreqRule), or None."""
     with _state_lock:
         st = _devices.get(int(device_id))
+        if st is not None and st.origin == "host":
+            policies = _load_host_limits()
+            key = (st.dev.host_id, int(device_id))
+            if key not in policies and any(gid == int(device_id) for _, gid in policies):
+                return TxFreqRule(error="TX disabled: host identity does not match the configured limits")
+            return policies.get(key, {}).get("tx_freq")
         return st.limits.get("tx_freq") if st else None
 
 def get_device_by_id(device_id: int):

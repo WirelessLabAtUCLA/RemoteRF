@@ -54,7 +54,7 @@ from .device_manager import (
     resolve_gid_for_token,
     token_matches_device,
 )
-from .tx_limits import tune_request_freq, tx_freq_method
+from remoterf_device_core.tx_limits import check_usrp_control, check_current_usrp, device_lock
 from .v2_errors import (
     RemoteRFNativeUHDError,
     RemoteRFOverloadError,
@@ -1050,32 +1050,20 @@ class SessionManager:
                 args,
                 positional_args,
             )
-            rule = get_tx_freq_limit(session.gid)
-            if rule is not None and method_name == tx_freq_method(
-                getattr(session.schema, "device_type", "")
-            ):
-                in_args = "tune_request" in args or not positional_args
-                request = args.get("tune_request") if in_args else positional_args[0]
+            with device_lock(session.gid), session.control_lock:
                 try:
-                    freq, warning = rule.check(tune_request_freq(request))
+                    native_args, native_positional = check_usrp_control(
+                        get_tx_freq_limit(session.gid), session.schema.device, method_name,
+                        args, positional_args,
+                    )
+                    if method_name == "get_tx_stream":
+                        check_current_usrp(get_tx_freq_limit(session.gid), session.schema.device)
                 except ValueError as exc:
                     raise RemoteRFPolicyError(str(exc), method=method_name) from None
-                if warning is not None:
-                    # No reply field on this path: the lab log keeps it.
-                    print(f"Device gid={session.gid}: {warning}")
-                    if in_args:
-                        args = {**args, "tune_request": freq}
-                    else:
-                        positional_args[0] = freq
-            native_args = {
-                key: self._resolve_handle_argument(session, value)
-                for key, value in args.items()
-            }
-            native_positional = [
-                self._resolve_handle_argument(session, value)
-                for value in positional_args
-            ]
-            with session.control_lock:
+                native_args = {key: self._resolve_handle_argument(session, value)
+                               for key, value in native_args.items()}
+                native_positional = [self._resolve_handle_argument(session, value)
+                                     for value in native_positional]
                 try:
                     result = session.schema.invoke_native(
                         method_name,
@@ -1111,6 +1099,9 @@ class SessionManager:
                     "generation": child.generation,
                 }, mutations
             return snapshot_native(result), mutations
+
+        if get_tx_freq_limit(session.gid) is not None and not entry.type_id.endswith(("RXStreamer", "TXStreamer")):
+            raise RemoteRFPolicyError("Peripheral UHD handles are unavailable with TX frequency limits")
 
         descriptor = next(
             (
@@ -1754,7 +1745,11 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             session.schema, "TXMetadata", request.metadata_json
                         )
                         timeout = _sample_timeout(request.timeout_sec)
-                        with entry.lock:
+                        with device_lock(session.gid), session.control_lock, entry.lock:
+                            try:
+                                check_current_usrp(get_tx_freq_limit(session.gid), session.schema.device, entry.stream_channels)
+                            except ValueError as exc:
+                                raise RemoteRFPolicyError(str(exc)) from None
                             count = int(
                                 entry.value.send(
                                     samples,

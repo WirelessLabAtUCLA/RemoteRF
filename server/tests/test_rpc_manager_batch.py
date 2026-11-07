@@ -119,7 +119,7 @@ class BatchTests(unittest.TestCase):
                 patch.object(rpc_module.hts, "get_tunnel_registry", lambda create=False: None):
             out = batch(RpcManager(), dev, op("Fake:freq:SET", freq=1.0), op("Fake:gain:SET", gain=99),
                         op("Fake:bw:SET", bw=1.0), gid=5)
-        self.assertEqual(sent, [("Fake:freq:SET", ["freq", "g"]), ("Fake:gain:SET", ["g", "gain"])])
+        self.assertEqual(sent, [("Fake:freq:SET", ["__server_tx_limits", "freq", "g"]), ("Fake:gain:SET", ["__server_tx_limits", "g", "gain"])])
         self.assertEqual(unmap_arg(out["batch_failed"]), 1)
         self.assertEqual(unmap_arg(out["batch_error"]), "gain out of range")
 
