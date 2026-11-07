@@ -73,6 +73,16 @@ class ProcessArgTests(unittest.TestCase):
                 self.assertTrue(decoded.flags.owndata)
                 np.testing.assert_array_equal(decoded, original)
 
+    def test_nested_bytes_and_empty_sequences_round_trip(self):
+        self.assertEqual(unmap_arg(map_arg({"a": b"\x01\x02"})), {"a": b"\x01\x02"})
+        self.assertEqual(unmap_arg(map_arg({"a": [bytearray(b"\xff")]})), {"a": [b"\xff"]})
+        for value in ([], ()):
+            with self.subTest(value=value):
+                restored = unmap_arg(map_arg(value))
+                self.assertIsInstance(restored, list)
+                self.assertEqual(restored, [])
+        self.assertIsInstance(unmap_arg(map_arg([1.0, 2.0])), np.ndarray)
+
     def test_iq16_wire_encoding_round_trips_integer_iq(self):
         from remoterf.common.utils.process_arg import IQ16, fits_iq16, map_iq16
 

@@ -16,6 +16,7 @@
 """Serialization helpers for the legacy GenericRPC protocol."""
 from __future__ import annotations
 
+import base64
 import json
 import math
 from typing import Any
@@ -128,6 +129,11 @@ def _json_safe(value: Any):
             "real": float(value.real),
             "imag": float(value.imag),
         }
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {
+            _JSON_TYPE_KEY: "bytes",
+            "b64": base64.b64encode(bytes(value)).decode("ascii"),
+        }
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -147,6 +153,8 @@ def _json_restore(value: Any):
             return np.array(value.get("data", []), dtype=dtype).reshape(shape)
         if kind == "complex":
             return complex(value.get("real", 0.0), value.get("imag", 0.0))
+        if kind == "bytes":
+            return base64.b64decode(value.get("b64", ""))
         return {key: _json_restore(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_json_restore(item) for item in value]
@@ -197,6 +205,10 @@ def map_arg(value: Any) -> grpc_pb2.Argument:
     elif isinstance(value, (bytes, bytearray, memoryview)):
         arg.bytes_value = bytes(value)
     elif isinstance(value, (list, tuple)):
+        # numpy makes an empty float array of []; keep it a list.
+        if not value:
+            arg.json_value = "[]"
+            return arg
         try:
             array = np.asarray(value)
         except Exception:

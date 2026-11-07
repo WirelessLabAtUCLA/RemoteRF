@@ -286,6 +286,34 @@ class PlutoCompatTests(unittest.TestCase):
         ctor.assert_called_once_with("usb:1.42.5")
         self.assertIsNone(missing)
 
+    def test_pluto_mimo_fpga_filter_getters_work_on_ad9361(self) -> None:
+        from remoteRF_server.drivers.adalm_pluto import pluto_mimo_schema
+
+        class FakeAd9361:
+            _rxadc, _txdac = "rxadc", "txdac"
+
+            def __init__(self):
+                self.rates = {"rxadc": 520833, "txdac": 4166666}
+
+            def _get_iio_attr_str(self, channel, attr, output, dev):
+                return "4166666 520833"
+
+            def _get_iio_attr(self, channel, attr, output, dev):
+                return self.rates[dev]
+
+            def _set_iio_attr(self, channel, attr, output, value, dev):
+                self.rates[dev] = value
+
+        device = FakeAd9361()
+        schema = pluto_mimo_schema.PlutoMIMOSchema()
+        schema.device = device
+
+        self.assertEqual(schema.get_rates(), [4166666, 520833])
+        self.assertTrue(schema.get_rx_dec8_filter_en())
+        self.assertFalse(schema.get_tx_int8_filter_en())
+        schema.set_tx_int8_filter_en(True)
+        self.assertEqual(device.rates["txdac"], 520833)
+
     def test_pluto_mimo_schema_forwards_usb_inventory_selector(self) -> None:
         from remoteRF_server.drivers.adalm_pluto import pluto_mimo_schema
 
