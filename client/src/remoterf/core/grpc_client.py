@@ -833,7 +833,66 @@ def _tx_wire(arg):
     return map_iq16(samples) if fits_iq16(samples) else arg
 
 
+# A lab restart takes about 35 s. A call that only reads, or sets a value again,
+# waits it out (REMOTERF_RESTART_WAIT seconds, 0 = fail at once); a TX does not.
+RESTART_WAIT_SECONDS = 90.0
+_REPEATABLE = (":GET", ":SET", ":rx:CALL0", ":rx_n:CALL1")
+
+
+def _restart_wait():
+    try:
+        return float(os.getenv("REMOTERF_RESTART_WAIT", RESTART_WAIT_SECONDS))
+    except ValueError:
+        return RESTART_WAIT_SECONDS
+
+
+def _repeatable(function_name, args):
+    if function_name.endswith(":batch:CALLN"):
+        ops = []
+        for key, arg in args.items():
+            if key.startswith("op"):
+                op = grpc_pb2.GenericRPCRequest()
+                op.ParseFromString(arg.bytes_value)
+                ops.append(op.function_name)
+        return all(_repeatable(name, {}) for name in ops)
+    return function_name.startswith("IDL:") or function_name.endswith(_REPEATABLE)
+
+
+def _lab_down(exc):
+    if isinstance(exc, grpc.RpcError) and callable(getattr(exc, "code", None)):
+        return exc.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED)
+    return (getattr(exc, "provenance", None) == "transport"
+            or getattr(exc, "code", None) in ("route_unavailable", "transport")
+            or str(exc).startswith("Partner unreachable"))
+
+
+def _lab_starting(exc):
+    """Up again but its devices (or their host tunnels) are not back yet."""
+    return "device_unavailable" in str(exc) or str(exc) == NO_ANSWER
+
+
 def _dispatch(function_name, args, connection):
+    deadline, down, attempt = None, False, 0
+    while True:
+        try:
+            return _dispatch_once(function_name, args, connection)
+        except (RuntimeError, grpc.RpcError) as exc:
+            down = down or _lab_down(exc)
+            if not (_lab_down(exc) or (down and _lab_starting(exc))) or not _repeatable(function_name, args):
+                raise
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + _restart_wait()
+                if deadline > now:
+                    log.warning("the lab isn't responding; waiting up to %d s for it to come back "
+                                "(a restart takes about 35 s)", deadline - now)
+            if now >= deadline:
+                raise
+            attempt += 1
+            time.sleep(min(2.0 * attempt, 10.0, deadline - now))
+
+
+def _dispatch_once(function_name, args, connection):
     ref = _federated_ref(function_name, args) if connection is None else None
     if ref is not None:
         return _finish(_federated_call(ref, function_name, args), function_name)
