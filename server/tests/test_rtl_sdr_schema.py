@@ -192,6 +192,17 @@ class RtlSdrSchemaTests(unittest.TestCase):
         schema.dispatch("call_reset_buffer", {})
         self.assertEqual(native.reset_count, 1)
 
+    def test_reset_buffer_without_native_support_discards_one_usb_packet(self):
+        class NoResetFake(PyRtlSdrLikeFake):
+            reset_buffer = None
+
+        native = NoResetFake()
+        schema, _adapter, _native = _bound_schema(native)
+
+        schema.dispatch("call_reset_buffer", {})
+        self.assertEqual(native.reads, [512])
+        self.assertEqual(native.reset_count, 0)
+
     def test_unaligned_reads_and_a_self_closed_device_never_reach_the_freed_handle(self):
         # 2026-10-13 E2E B1: read_samples(98000) closed the device, the next read crashed rrf2.
         native = PyRtlSdrLikeFake()

@@ -257,6 +257,16 @@ class ProcessArgTests(unittest.TestCase):
         # Numeric lists and tuples stay compact ndarrays.
         self.assertEqual(map_arg((34.07, -118.44)).WhichOneof("value"), "ndarray_value")
 
+    def test_nested_bytes_and_empty_sequences_round_trip(self):
+        self.assertEqual(unmap_arg(map_arg({"a": b"\x01\x02"})), {"a": b"\x01\x02"})
+        self.assertEqual(unmap_arg(map_arg({"a": [bytearray(b"\xff")]})), {"a": [b"\xff"]})
+        for value in ([], ()):
+            with self.subTest(value=value):
+                restored = unmap_arg(map_arg(value))
+                self.assertIsInstance(restored, list)
+                self.assertEqual(restored, [])
+        self.assertIsInstance(unmap_arg(map_arg([1.0, 2.0])), np.ndarray)
+
 
 if __name__ == "__main__":
     unittest.main()

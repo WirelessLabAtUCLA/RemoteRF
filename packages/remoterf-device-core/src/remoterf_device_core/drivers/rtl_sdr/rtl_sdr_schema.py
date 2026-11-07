@@ -317,7 +317,12 @@ class RtlSdrSchema(DeviceSchema):
     @idl_expose(kind="call")
     def call_reset_buffer(self):
         """Discard pending USB samples before a new capture."""
-        self._require_native_method("reset_buffer")()
+        reset = getattr(self._native, "reset_buffer", None)
+        if callable(reset):
+            reset()
+        else:
+            # Older PyRtlSdr/librtlsdr: drain one USB packet instead.
+            self._native.read_bytes(_USB_PACKET_BYTES)
 
     @idl_expose(kind="call")
     def call_read_samples(self, num_samples=1024):

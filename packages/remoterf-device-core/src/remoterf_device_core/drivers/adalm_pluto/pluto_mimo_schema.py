@@ -51,6 +51,31 @@ def _set_attr(device, value, *names):
     raise AttributeError(f"{device!r} has none of: {', '.join(names)}")
 
 
+def _fpga_rates(device, output):
+    """The FPGA filter block's sampling_frequency_available, as pyadi-iio's
+    Pluto._get_rates reads it; adi.ad9361 lacks that mixin."""
+    dev = device._txdac if output else device._rxadc
+    getter = getattr(device, "_get_rates", None)
+    if callable(getter):
+        return getter(dev, output)
+    if not callable(getattr(device, "_get_iio_attr_str", None)):
+        raise NotImplementedError(f"{device!r} does not expose the FPGA filter rates")
+    sfa = device._get_iio_attr_str("voltage0", "sampling_frequency_available", output, dev)
+    return [int(rate) for rate in sfa.strip().replace("[", "").replace("]", "").split()]
+
+
+def _fpga_filter_enabled(device, output):
+    dev = device._txdac if output else device._rxadc
+    rates = _fpga_rates(device, output)
+    return device._get_iio_attr("voltage0", "sampling_frequency", output, dev) == min(rates)
+
+
+def _set_fpga_filter(device, output, value):
+    dev = device._txdac if output else device._rxadc
+    rates = _fpga_rates(device, output)
+    device._set_iio_attr("voltage0", "sampling_frequency", output, rates[1] if value else rates[0], dev)
+
+
 def _apply_initial_settings(device, settings):
     int_attrs = (
         "sample_rate",
@@ -227,5 +252,34 @@ class PlutoMIMOSchema(PlutoSchema):
     def set_rx_hardwaregain_chan0(self, value):
         """RX channel 0 hardware gain (dB)."""
         _set_attr(self.device, value, "rx_hardwaregain_chan0", "hardwaregain_chan0")
+
+    # endregion
+
+    # region FPGA filter (Pluto-only properties, absent on adi.ad9361)
+
+    @idl_expose(kind="get")
+    def get_rx_dec8_filter_en(self):
+        """rx_dec8_filter_en: Enable decimate-by-8 filter in FPGA"""
+        return bool(_fpga_filter_enabled(self.device, False))
+
+    @idl_expose(kind="set")
+    def set_rx_dec8_filter_en(self, value):
+        """rx_dec8_filter_en: Enable decimate-by-8 filter in FPGA"""
+        _set_fpga_filter(self.device, False, value)
+
+    @idl_expose(kind="get")
+    def get_tx_int8_filter_en(self):
+        """tx_int8_filter_en: Enable interpolate-by-8 filter in FPGA"""
+        return bool(_fpga_filter_enabled(self.device, True))
+
+    @idl_expose(kind="set")
+    def set_tx_int8_filter_en(self, value):
+        """tx_int8_filter_en: Enable interpolate-by-8 filter in FPGA"""
+        _set_fpga_filter(self.device, True, value)
+
+    @idl_expose(kind="get")
+    def get_rates(self):
+        """Get decimation/interpolation rates from the FPGA filter block."""
+        return _fpga_rates(self.device, False)
 
     # endregion
