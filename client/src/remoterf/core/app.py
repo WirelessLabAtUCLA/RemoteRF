@@ -739,14 +739,13 @@ def _federated_reservation_rows(*, mine_only):
     offline = _render_destinations(data["destinations"])
     names = {d["deployment_id"]: d["display_name"] for d in data["destinations"] if d["display_name"] != d["deployment_id"]}
     rows = [r for r in data["reservations"] if r["mine"] or not mine_only]
-    labels = {
-        r["device_id"]: _device_label(r["display_name"], r.get("handle"), names.get(r["deployment_id"]))
-        for r in rows if r.get("display_name")
-    }
-    if any(r["device_id"] not in labels for r in rows):
+    # A reservation's display_name is the lab's owner label ("you"/"reserved"),
+    # not the device; name devices from getdev instead.
+    labels = {}
+    if rows:
         try:
-            labels.update({d["device_id"]: _device_label(d["display_name"], d.get("handle"), d["deployment_name"])
-                           for d in account.get_devices()["devices"]})
+            labels = {d["device_id"]: _device_label(d["display_name"], d.get("handle"), d["deployment_name"])
+                      for d in account.get_devices()["devices"]}
         except AccountBackendError:
             pass
     for r in rows:

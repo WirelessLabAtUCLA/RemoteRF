@@ -190,6 +190,33 @@ def test_reservation_rows_name_the_device_and_offline_deployments(monkeypatch):
     assert lines == ["No reservations found; @mit is offline."]
 
 
+def test_reservation_rows_name_the_device_not_the_owner_label(monkeypatch):
+    # The lab's display_name on a reservation is "you"/"reserved", not a device.
+    start = datetime.datetime(2026, 11, 7, 10).timestamp()
+    res = lambda device, owner, mine: {"device_id": f"{DEST}:{device}", "deployment_id": DEST, "display_name": owner,
+                                       "mine": mine, "start_time": start, "end_time": start + 3600}
+    account = Mock(is_https_home=True)
+    account.get_reservations.return_value = {"destinations": DESTS[:1], "reservations": [
+        res("Pluto SDR", "you", True), res("Bluetooth Dongle", "reserved", False)]}
+    account.get_devices.return_value = {"destinations": [], "devices": [
+        _dev("Pluto SDR", handle="Pluto_A"), _dev("Bluetooth Dongle")]}
+    client_app, lines = _app(monkeypatch, account)
+    when = ("2026-11-07", "from", "10:00", "AM", "to", "11:00", "AM")
+    client_app._federated_reservations(mine_only=False)
+    assert _row(lines, "Pluto_A@ucla", "(you)", *when)
+    assert _row(lines, "Bluetooth_Dongle@ucla", *when)
+    shown = lines[:]
+    lines.clear()
+    client_app._federated_reservations(mine_only=True)
+    assert _row(lines, "Pluto_A@ucla", *when)
+    shown += lines
+    lines.clear()
+    monkeypatch.setattr(client_app, "session", SimpleNamespace(prompt=lambda text: ""))
+    client_app._federated_cancel()
+    assert _row(lines, "0.", "Pluto_A@ucla", *when)
+    assert not any(label in line for line in shown + lines for label in ("you@ucla", "reserved@ucla"))
+
+
 def test_native_reservation_rows_name_the_device(monkeypatch):
     rows = {"r1": "jdoe,3,2026-10-14 09:00:00,2026-10-14 09:30:00", "r2": "jdoe,1001,2026-10-15 13:00:00,2026-10-15 14:00:00",
             "r3": "jdoe,77,2026-10-15 13:00:00,2026-10-15 14:00:00", "r4": "admin,3,2026-10-16 13:00:00,2026-10-16 14:00:00"}
