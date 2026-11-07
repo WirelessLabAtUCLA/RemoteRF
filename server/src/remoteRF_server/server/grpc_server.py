@@ -1371,7 +1371,13 @@ def cmd_clear(argv): clear()
 def cmd_hosts_status(argv): _cmd_hosts_status(json_output="--json" in argv)
 def cmd_hosts_wipe(argv): _cmd_hosts_wipe(yes=("-y" in argv or "--yes" in argv))
 def cmd_users_list(argv): reservation_handler.print_all_accounts()
-def cmd_users_manage(argv): set_acc()
+def cmd_users_manage(argv):
+    if not argv:
+        set_acc()
+        return 0
+    from remoteRF_server.serverrf_cli import _cmd_users_manage_noninteractive
+
+    return _cmd_users_manage_noninteractive(argv, perms)
 def cmd_users_perms(argv): perms.print_perms()
 def cmd_users_purge(argv): reservation_handler.remove_all_users()
 def cmd_reservations_list(argv): reservation_handler.print_all_reservations(json_output="--json" in argv)

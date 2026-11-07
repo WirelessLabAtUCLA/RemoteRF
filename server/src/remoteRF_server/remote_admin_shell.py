@@ -75,7 +75,7 @@ TIERS = {
 DENY_FLAGS = {"--secrets"}
 # Destructive commands whose own confirmation -y answers (the step-up asked already).
 TAKES_YES = {"devices wipe", "stats purge", "hosts wipe", "certs wipe", "users prune-proxies",
-             "hosts tokens", "certs reset"}
+             "hosts tokens", "certs reset", "groups remove"}
 KEEP_BACKUPS = 10
 PAIR_CODE = re.compile(r"[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}")
 BUILTINS = ("help", "me", "revoke", "passwd", "log", "clear", "exit")
