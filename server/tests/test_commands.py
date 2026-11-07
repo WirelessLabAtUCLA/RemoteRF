@@ -264,5 +264,158 @@ class NonInteractiveGroupCommandsTests(unittest.TestCase):
     def test_help_lists_flag_forms(self):
         groups_help = "\n".join(commands.help_text(in_daemon=False, section="Groups"))
         codes_help = "\n".join(commands.help_text(in_daemon=False, section="Enrollment codes"))
+        users_help = "\n".join(commands.help_text(in_daemon=False, section="Users"))
         self.assertIn("groups create <name> --devices <ids>", groups_help)
+        self.assertIn("groups edit <id|name>", groups_help)
+        self.assertIn("groups remove <id|name> --yes", groups_help)
         self.assertIn("codes create <group name|id|none> --count N", codes_help)
+        self.assertIn("codes remove <code-or-invite> --yes", codes_help)
+        self.assertIn("users manage <user> --role", users_help)
+
+    def test_group_edit_by_name_and_json(self):
+        rc, output = self.create_group()
+        self.assertEqual(rc, 0, output)
+        group_id = json.loads(output)["group_id"]
+        with mock.patch("remoteRF_server.server.federation.cluster.share_group",
+                        return_value=(["lab-b"], [])) as share:
+            rc, output = self.run_shell([
+                "groups", "edit", "ee123", "--name", "ee124", "--devices", "2,1,2",
+                "--max-reservations", "6", "--max-time", "1200", "--lifetime", "0",
+                "--horizon", "86400", "--no-lan-only", "--share", "lab-b", "--yes", "--json",
+            ])
+        self.assertEqual(rc, 0, output)
+        value = json.loads(output)
+        self.assertEqual(value["group_id"], group_id)
+        self.assertEqual(value["group_name"], "ee124")
+        self.assertEqual(value["devices_whitelist"], [1, 2])
+        self.assertEqual(value["shared_with"], ["lab-b"])
+        share.assert_called_once_with(str(group_id), ["lab-b"])
+        row = self.handler.get_all_user_groups(include_users=False)[0]
+        self.assertEqual((row["max_reservations"], row["max_reservation_time_sec"]), (6, 1200))
+        self.assertEqual((row["max_horizon_sec"], row["lifetime_sec"], row["lan_only"]),
+                         (86400, 0, False))
+
+    def test_group_edit_errors_and_no_tty_fail_fast(self):
+        rc, output = self.run_shell(["groups", "edit"])
+        self.assertEqual(rc, 1)
+        self.assertIn("requires a group and change flags", output)
+        rc, output = self.run_shell(["groups", "edit", "missing", "--name", "new", "--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("unknown group", output)
+        rc, output = self.run_shell(["groups", "edit", "missing", "--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("at least one change flag", output)
+        rc, output = self.run_shell(["groups", "edit", "missing", "--name", "new"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: non-interactive groups edit requires --yes\n")
+
+    def test_group_remove_by_id_requires_yes(self):
+        rc, output = self.create_group()
+        group_id = json.loads(output)["group_id"]
+        rc, output = self.run_shell(["groups", "remove", str(group_id)])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: non-interactive groups remove requires --yes\n")
+        rc, output = self.run_shell(["groups", "remove", str(group_id), "--yes", "--json"])
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(json.loads(output)["group_id"], group_id)
+        self.assertEqual(self.handler.get_all_user_groups(include_users=False), [])
+        rc, output = self.run_shell(["groups", "remove"])
+        self.assertEqual(rc, 1)
+        self.assertIn("requires a group and --yes", output)
+
+    def test_codes_remove_one_invite_and_all_for_group(self):
+        rc, output = self.create_group()
+        group_id = json.loads(output)["group_id"]
+        for count in (1, 2):
+            rc, output = self.run_shell([
+                "codes", "create", str(group_id), "--count", str(count), "--yes", "--json",
+            ])
+            self.assertEqual(rc, 0, output)
+            invites = json.loads(output)["invites"]
+            if count == 1:
+                first = invites[0]
+        rc, output = self.run_shell(["codes", "remove", first])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: non-interactive codes remove requires --yes\n")
+        rc, output = self.run_shell(["codes", "remove", first, "--yes", "--json"])
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(json.loads(output)["code_name"], first.rpartition("/")[2])
+        rc, output = self.run_shell(["codes", "remove", "--group", str(group_id), "--yes", "--json"])
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(len(json.loads(output)["removed"]), 2)
+        self.assertEqual(self.handler.get_all_enrollment_codes(), [])
+
+    def test_codes_remove_errors_and_no_tty_fail_fast(self):
+        rc, output = self.run_shell(["codes", "remove"])
+        self.assertEqual(rc, 1)
+        self.assertIn("requires a code or --group", output)
+        rc, output = self.run_shell(["codes", "remove", "missing", "--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("not found", output)
+        rc, output = self.run_shell(["codes", "remove", "--group", "-1", "--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("must be >= 0", output)
+
+
+class NonInteractiveUsersManageTests(unittest.TestCase):
+    def run_daemon(self, argv, perms):
+        out = io.StringIO()
+        from remoteRF_server.serverrf_cli import _cmd_users_manage_noninteractive
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = _cmd_users_manage_noninteractive(argv[2:], perms)
+        return rc, out.getvalue()
+
+    def test_users_manage_admin_json_and_user_role(self):
+        perms = mock.Mock()
+        perms.get_perms.return_value = [["Normal User"]]
+        rc, output = self.run_daemon(
+            ["users", "manage", "alice", "--role", "admin", "--yes", "--json"], perms)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(json.loads(output.splitlines()[-1]), {"user": "alice", "role": "Admin"})
+        perms.set_admin.assert_called_once_with("alice", confirm=False, quiet=True)
+
+        rc, output = self.run_daemon(
+            ["users", "manage", "alice", "--role", "user", "--yes"], perms)
+        self.assertEqual(rc, 0, output)
+        perms.set_user.assert_called_once_with("alice")
+
+    def test_users_manage_requires_yes_and_valid_existing_user_and_role(self):
+        perms = mock.Mock()
+        perms.get_perms.return_value = [["Normal User"]]
+        rc, output = self.run_daemon(["users", "manage", "alice", "--role", "admin"], perms)
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "ERROR: non-interactive users manage requires --yes\n")
+        rc, output = self.run_daemon(
+            ["users", "manage", "alice", "--role", "owner", "--yes"], perms)
+        self.assertEqual(rc, 1)
+        self.assertIn("must be user, power-user, or admin", output)
+        perms.get_perms.return_value = []
+        rc, output = self.run_daemon(
+            ["users", "manage", "missing", "--role", "user", "--yes"], perms)
+        self.assertEqual(rc, 1)
+        self.assertIn("does not exist", output)
+
+    def test_users_manage_power_user_is_valid_but_needs_existing_quota_details(self):
+        perms = mock.Mock()
+        perms.get_perms.return_value = [["Power User"]]
+        rc, output = self.run_daemon(
+            ["users", "manage", "alice", "--role", "power-user", "--yes", "--json"], perms)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(json.loads(output), {"user": "alice", "role": "Power User"})
+
+        perms.get_perms.return_value = [["Normal User"]]
+        rc, output = self.run_daemon(
+            ["users", "manage", "alice", "--role", "power-user", "--yes"], perms)
+        self.assertEqual(rc, 1)
+        self.assertIn("requires its device and quota details", output)
+
+    def test_users_manage_no_tty_without_args_fails_before_console(self):
+        stdin = SimpleNamespace(isatty=lambda: False)
+        with mock.patch.object(commands.control, "running", return_value=True), \
+                mock.patch.object(commands.sys, "stdin", stdin), \
+                mock.patch("remoteRF_server.server.console.run_in_console") as console, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = dispatch(["users", "manage"], in_daemon=False)
+        self.assertEqual(rc, 1)
+        console.assert_not_called()

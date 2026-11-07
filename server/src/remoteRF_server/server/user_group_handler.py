@@ -395,7 +395,7 @@ class UserGroupHandler:
                     v = int(lifetime_sec)
                 except Exception:
                     return False
-                if v <= 0:
+                if v < 0:
                     return False
                 sets.append("lifetime_sec = ?")
                 params.append(v)

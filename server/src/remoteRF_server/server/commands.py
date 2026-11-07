@@ -120,7 +120,7 @@ def _table() -> list[Command]:
         Command(("devices wipe",), "Remove ALL devices [-y]", _shell("cmd_devices_wipe"), "Devices", after="reload_devices"),
         # ---- users ----
         Command(("users list",), "List accounts", _daemon("cmd_users_list"), "Users", where=D),
-        Command(("users manage",), "Change a user's role (interactive)", _daemon("cmd_users_manage"), "Users", where=D, interactive=True),
+        Command(("users manage",), "Change a user's role: users manage <user> --role <user|power-user|admin> --yes [--json]; no arguments is interactive", _daemon("cmd_users_manage"), "Users", where=D, interactive=True),
         Command(("users perms",), "Show permissions", _daemon("cmd_users_perms"), "Users", where=D),
         Command(("users purge",), "Remove ALL accounts", _daemon("cmd_users_purge"), "Users", where=D),
         Command(("users prune-proxies",), "Partner-deployment visitors whose home is gone: list them, -y removes [--stale DAYS]", _daemon("cmd_users_prune_proxies"), "Users", where=D),
@@ -131,15 +131,15 @@ def _table() -> list[Command]:
         # ---- groups ----
         Command(("groups list",), "List user groups", _shell("cmd_groups_list"), "Groups"),
         Command(("groups create",), "Create a group: groups create <name> --devices <ids> [--max-reservations 3 --max-time 1800 --horizon 604800 --lifetime 0 --lan-only --public --share <clusters>] --yes [--json]; no name is interactive", _shell("cmd_groups_create"), "Groups"),
-        Command(("groups edit",), "Edit a user group (interactive)", _shell("cmd_groups_edit"), "Groups"),
-        Command(("groups remove",), "Delete a user group (interactive)", _shell("cmd_groups_remove"), "Groups"),
+        Command(("groups edit",), "Edit a group: groups edit <id|name> [--name N --devices 0,1 --max-reservations N --max-time SEC --lifetime SEC --horizon SEC --lan-only|--no-lan-only --share a,b|none] --yes [--json]; no arguments is interactive", _shell("cmd_groups_edit"), "Groups"),
+        Command(("groups remove",), "Delete a group: groups remove <id|name> --yes [--json]; no arguments is interactive", _shell("cmd_groups_remove"), "Groups"),
         Command(("groups public",), "Share a group with anyone on RemoteRF Global, or stop: groups public <group> on|off", _federation("public"), "Groups"),
         Command(("groups share",), "Where a group is shared, or change it: groups share <group> [<cluster> on|off]", _federation("share"), "Groups"),
         Command(("groups csv",), "Export ALL user groups as CSV to Downloads", _shell("cmd_groups_csv"), "Groups"),
         # ---- enrollment codes ----
         Command(("codes list",), "List enrollment codes", _shell("cmd_codes_list"), "Enrollment codes"),
         Command(("codes create",), "Create codes: codes create <group name|id|none> --count N [--length 10 --uses 1 --duration 3600] --yes [--json]; no group is interactive", _shell("cmd_codes_create"), "Enrollment codes"),
-        Command(("codes remove",), "Delete an enrollment code (interactive)", _shell("cmd_codes_remove"), "Enrollment codes"),
+        Command(("codes remove",), "Delete codes: codes remove <code-or-invite> --yes [--json] | codes remove --group <id> --yes [--json]; no arguments is interactive", _shell("cmd_codes_remove"), "Enrollment codes"),
         Command(("codes csv",), "Export ALL enrollment codes as CSV to Downloads", _shell("cmd_codes_csv"), "Enrollment codes"),
         # ---- hosts ----
         Command(("hosts status",), "Live host online/last_seen/devices", _daemon("cmd_hosts_status"), "Hosts", where=D),
@@ -353,7 +353,11 @@ def _run_in_daemon(command: Command, rest: list[str]) -> int:
     if command.console_only and remote:
         print(f"`{command.names[0]}` works only at the lab console.", file=sys.stderr)
         return 1
-    if command.console_only or (command.interactive and not remote):
+    users_manage_flags = command.names[0] == "users manage" and bool(rest)
+    if command.names[0] == "users manage" and not rest and not remote and not sys.stdin.isatty():
+        print("ERROR: non-interactive users manage requires a user, --role, and --yes", file=sys.stderr)
+        return 1
+    if command.console_only or (command.interactive and not remote and not users_manage_flags):
         # Prompts need the console's terminal: type it there and attach. Never
         # for a remote admin: that would hand them the live console, past the policy.
         return console.run_in_console([*command.names[0].split(), *rest])

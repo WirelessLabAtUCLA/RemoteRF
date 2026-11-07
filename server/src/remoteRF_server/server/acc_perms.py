@@ -243,14 +243,16 @@ class perms_db:
             )
 
     @db_connection
-    def set_admin(self, username:str):
-        print(f"Setting {username} as an admin")
-        from .control import prompt
+    def set_admin(self, username:str, *, confirm: bool = True, quiet: bool = False):
+        if not quiet:
+            print(f"Setting {username} as an admin")
+        if confirm:
+            from .control import prompt
 
-        inpu = prompt(f"Are you sure you want to set {username} as an admin? \nThis gives them unrestricted access. (Y/N): ") 
-        if inpu != 'Y' and inpu != 'y':
-            print(f"Admin set is canceled for user: {username}.")
-            return
+            inpu = prompt(f"Are you sure you want to set {username} as an admin? \nThis gives them unrestricted access. (Y/N): ")
+            if inpu != 'Y' and inpu != 'y':
+                print(f"Admin set is canceled for user: {username}.")
+                return
         
         
         # SQL command to insert a new user
@@ -260,7 +262,8 @@ class perms_db:
             # Execute the SQL command
             self.remove_user(username)
             self.cursor.execute(insert_query, (username,))
-            print("Admin added successfully")
+            if not quiet:
+                print("Admin added successfully")
             
         except sqlite3.Error as e:
             print("An error occurred:", e)

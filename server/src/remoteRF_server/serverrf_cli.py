@@ -1449,11 +1449,15 @@ def _yes(argv: List[str]) -> bool:
 
 
 def _parse_create_args(argv, *, value_flags, bool_flags):
-    """Small strict parser for the two forced-command-safe create forms."""
+    """Small strict parser for forced-command-safe flag forms."""
     positional, values = [], {}
     i = 0
     while i < len(argv):
         token = argv[i]
+        if token == "-y" and "yes" in bool_flags:
+            values["yes"] = True
+            i += 1
+            continue
         if not token.startswith("--"):
             positional.append(token)
             i += 1
@@ -2204,15 +2208,141 @@ def cmd_groups_create(argv):
 
 
 def cmd_groups_edit(argv):
-    from remoteRF_server.server.user_group_cli import edit_user_group_local
+    from remoteRF_server.server import user_group_cli as groups
 
-    edit_user_group_local(_prompt_session())
+    if not argv:
+        if sys.stdin.isatty():
+            groups.edit_user_group_local(_prompt_session())
+            return 0
+        print("ERROR: non-interactive groups edit requires a group and change flags", file=sys.stderr)
+        return 1
+    if not _yes(argv):
+        print("ERROR: non-interactive groups edit requires --yes", file=sys.stderr)
+        return 1
+    parsed, error = _parse_create_args(
+        argv,
+        value_flags={"name", "devices", "max-reservations", "max-time", "lifetime", "horizon", "share"},
+        bool_flags={"yes", "json", "lan-only", "no-lan-only"},
+    )
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    pos, flags = parsed
+    if len(pos) != 1:
+        print("ERROR: groups edit requires exactly one group id or name", file=sys.stderr)
+        return 1
+    if "lan-only" in flags and "no-lan-only" in flags:
+        print("ERROR: --lan-only and --no-lan-only are mutually exclusive", file=sys.stderr)
+        return 1
+    change_flags = set(flags) - {"yes", "json"}
+    if not change_flags:
+        print("ERROR: groups edit requires at least one change flag", file=sys.stderr)
+        return 1
+
+    all_groups = groups.user_group_handler.get_all_user_groups(include_users=False) or []
+    ref = pos[0].strip()
+    selected = next((g for g in all_groups if str(g.get("group_id")) == ref), None)
+    if selected is None:
+        selected = next((g for g in all_groups if str(g.get("group_name")) == ref), None)
+    if selected is None:
+        print(f"ERROR: unknown group {ref!r}", file=sys.stderr)
+        return 1
+    group_id = int(selected["group_id"])
+
+    try:
+        devices = _comma_ints(flags["devices"]) if "devices" in flags else None
+        max_reservations = (_bounded_int(flags["max-reservations"], "--max-reservations", minimum=1)
+                            if "max-reservations" in flags else None)
+        max_time = (_bounded_int(flags["max-time"], "--max-time", minimum=1)
+                    if "max-time" in flags else None)
+        lifetime = (_bounded_int(flags["lifetime"], "--lifetime", minimum=0)
+                    if "lifetime" in flags else None)
+        horizon = (_bounded_int(flags["horizon"], "--horizon", minimum=0)
+                   if "horizon" in flags else None)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    name = flags.get("name")
+    if name is not None and not str(name).strip():
+        print("ERROR: --name must not be empty", file=sys.stderr)
+        return 1
+    lan_only = True if flags.get("lan-only") else False if flags.get("no-lan-only") else None
+
+    sharing = None
+    if "share" in flags:
+        from remoteRF_server.server.federation import cluster
+
+        sharing = groups._names(str(flags["share"]))
+        try:
+            cluster.share_group(str(group_id), sharing)
+        except cluster.ClusterError as exc:
+            print(f"ERROR: sharing unchanged: {exc}", file=sys.stderr)
+            return 1
+
+    fields = (name, devices, max_time, max_reservations, lifetime, horizon, lan_only)
+    if any(value is not None for value in fields):
+        ok = groups.user_group_handler.edit_user_group(
+            group_id=group_id,
+            group_name=name,
+            devices_whitelist=devices,
+            max_reservation_time_sec=max_time,
+            max_reservations=max_reservations,
+            lifetime_sec=lifetime,
+            lan_only=lan_only,
+            max_horizon_sec=horizon,
+        )
+        if not ok:
+            print(f"ERROR: failed to update group {ref!r}", file=sys.stderr)
+            return 1
+
+    updated = next((g for g in groups.user_group_handler.get_all_user_groups(include_users=False) or []
+                    if int(g.get("group_id", -1)) == group_id), selected)
+    if flags.get("json"):
+        result = dict(updated)
+        if sharing is not None:
+            result["shared_with"] = sharing
+        print(json.dumps(result, separators=(",", ":"), default=str))
+    else:
+        print(f"Updated group {updated.get('group_name', ref)} (id {group_id})")
+    return 0
 
 
 def cmd_groups_remove(argv):
-    from remoteRF_server.server.user_group_cli import remove_user_group_local
+    from remoteRF_server.server import user_group_cli as groups
 
-    remove_user_group_local(_prompt_session())
+    if not argv:
+        if sys.stdin.isatty():
+            groups.remove_user_group_local(_prompt_session())
+            return 0
+        print("ERROR: non-interactive groups remove requires a group and --yes", file=sys.stderr)
+        return 1
+    if not _yes(argv):
+        print("ERROR: non-interactive groups remove requires --yes", file=sys.stderr)
+        return 1
+    parsed, error = _parse_create_args(argv, value_flags=set(), bool_flags={"yes", "json"})
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    pos, flags = parsed
+    if len(pos) != 1:
+        print("ERROR: groups remove requires exactly one group id or name", file=sys.stderr)
+        return 1
+    ref = pos[0].strip()
+    all_groups = groups.user_group_handler.get_all_user_groups(include_users=False) or []
+    selected = next((g for g in all_groups if str(g.get("group_id")) == ref), None)
+    if selected is None:
+        selected = next((g for g in all_groups if str(g.get("group_name")) == ref), None)
+    if selected is None:
+        print(f"ERROR: unknown group {ref!r}", file=sys.stderr)
+        return 1
+    if not groups.user_group_handler.delete_user_group(group_id=int(selected["group_id"])):
+        print(f"ERROR: failed to delete group {ref!r}", file=sys.stderr)
+        return 1
+    if flags.get("json"):
+        print(json.dumps(selected, separators=(",", ":"), default=str))
+    else:
+        print(f"Deleted group {selected['group_name']} (id {selected['group_id']})")
+    return 0
 
 
 def cmd_groups_csv(argv):
@@ -2305,15 +2435,101 @@ def cmd_codes_create(argv):
 
 
 def cmd_codes_remove(argv):
-    from remoteRF_server.server.user_group_cli import remove_enrollment_code_local
+    from remoteRF_server.server import user_group_cli as groups
 
-    remove_enrollment_code_local(_prompt_session())
+    if not argv:
+        if sys.stdin.isatty():
+            groups.remove_enrollment_code_local(_prompt_session())
+            return 0
+        print("ERROR: non-interactive codes remove requires a code or --group and --yes", file=sys.stderr)
+        return 1
+    if not _yes(argv):
+        print("ERROR: non-interactive codes remove requires --yes", file=sys.stderr)
+        return 1
+    parsed, error = _parse_create_args(argv, value_flags={"group"}, bool_flags={"yes", "json"})
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    pos, flags = parsed
+    if (len(pos) != 1) == ("group" not in flags):
+        print("ERROR: codes remove requires exactly one code/invite or --group <id>", file=sys.stderr)
+        return 1
+    rows = groups.user_group_handler.get_all_enrollment_codes() or []
+    if "group" in flags:
+        try:
+            group_id = _bounded_int(flags["group"], "--group", minimum=0)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        removed = [row for row in rows if int(row.get("group_id", -1)) == group_id]
+        if not removed or not groups.user_group_handler.delete_enrollment_code_id(group_id=group_id):
+            print(f"ERROR: no enrollment codes found for group {group_id}", file=sys.stderr)
+            return 1
+        result = {"group_id": group_id, "removed": removed}
+        message = f"Deleted {len(removed)} enrollment code(s) for group {group_id}"
+    else:
+        code_name = pos[0].rpartition("/")[2].strip()
+        selected = next((row for row in rows if row.get("code_name") == code_name), None)
+        if selected is None or not groups.user_group_handler.delete_enrollment_code_name(code_name=code_name):
+            print(f"ERROR: enrollment code {code_name!r} not found", file=sys.stderr)
+            return 1
+        result = selected
+        message = f"Deleted enrollment code {code_name}"
+    print(json.dumps(result, separators=(",", ":"), default=str) if flags.get("json") else message)
+    return 0
 
 
 def cmd_codes_csv(argv):
     from remoteRF_server.server.user_group_cli import export_enrollment_codes_csv_local
 
     export_enrollment_codes_csv_local()
+
+
+def _cmd_users_manage_noninteractive(argv, perms) -> int:
+    """Flag-only half of the daemon's users-manage command."""
+    if "-y" not in argv and "--yes" not in argv:
+        print("ERROR: non-interactive users manage requires --yes", file=sys.stderr)
+        return 1
+    parsed, error = _parse_create_args(
+        argv, value_flags={"role"}, bool_flags={"yes", "json"},
+    )
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    positional, flags = parsed
+    if len(positional) != 1 or "role" not in flags:
+        print("ERROR: users manage requires exactly one user and --role <user|power-user|admin>", file=sys.stderr)
+        return 1
+
+    username = positional[0]
+    current = perms.get_perms(username)
+    if not current:
+        print(f"ERROR: user {username!r} does not exist", file=sys.stderr)
+        return 1
+    raw_role = str(flags["role"]).strip().lower().replace("_", "-")
+    roles = {
+        "u": "Normal User", "user": "Normal User", "normal-user": "Normal User", "normal user": "Normal User",
+        "p": "Power User", "power": "Power User", "power-user": "Power User", "power user": "Power User",
+        "a": "Admin", "admin": "Admin",
+    }
+    role = roles.get(raw_role)
+    if role is None:
+        print("ERROR: --role must be user, power-user, or admin", file=sys.stderr)
+        return 1
+    if role == "Normal User":
+        perms.set_user(username)
+    elif role == "Admin":
+        perms.set_admin(username, confirm=False, quiet=True)
+    elif current[0][0] != "Power User":
+        print("ERROR: changing to power-user requires its device and quota details; use interactive users manage", file=sys.stderr)
+        return 1
+
+    result = {"user": username, "role": role}
+    if flags.get("json"):
+        print(json.dumps(result, separators=(",", ":")))
+    else:
+        print(f"Set {username} role to {role}.")
+    return 0
 
 
 def cmd_hosts_token(argv: List[str]) -> int:
