@@ -972,6 +972,11 @@ class DynamicV2ServerTests(unittest.TestCase):
         self.assertFalse(_matches_wire_type(np.array(["a"]), "list[float]"))
         # np.mean(samples) is np.complex64; it must survive the JSON codec.
         self.assertEqual(decode_value(encode_value(np.complex64(1 + 2j))), 1 + 2j)
+        # Nested bytes go through JSON; top-level bytes stay bytes_value.
+        self.assertEqual(decode_value(encode_value({"x": b"\x01\x00"})), {"x": b"\x01\x00"})
+        self.assertEqual(decode_value(encode_value([b"\x00"])), [b"\x00"])
+        self.assertEqual(encode_value(b"\x00").WhichOneof("value"), "bytes_value")
+        self.assertEqual(decode_value(encode_value(b"\x00")), b"\x00")
         with self.assertRaises(RemoteRFOverloadError):
             _validate_overload(methods["set_rx_freq"], "default", {"tune_request": None, "chan": 0}, [])
 
