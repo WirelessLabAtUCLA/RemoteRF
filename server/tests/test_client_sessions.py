@@ -113,13 +113,35 @@ class ReservedTotalTests(unittest.TestCase):
             now = datetime.now()
             add = "INSERT INTO Reservations (username, device_id, start_time, end_time, salt, hash) VALUES ('u', 1, ?, ?, '', '')"
             total = lambda: db.execute("SELECT seconds FROM ReservedTotal").fetchone()[0]
-            db.execute(add, (now - timedelta(hours=3), now - timedelta(hours=2)))  # 1 h, past
             db.execute(add, (now + timedelta(hours=1), now + timedelta(hours=3)))  # 2 h, future
+            db.execute(add, (now + timedelta(hours=4), now + timedelta(hours=5)))  # 1 h, future
             self.assertAlmostEqual(total(), 3 * 3600, delta=1)
+            # Let the 1 h one end; moving it back by UPDATE fires no trigger.
+            db.execute("UPDATE Reservations SET start_time = ?, end_time = ? WHERE start_time > ?",
+                       (now - timedelta(hours=3), now - timedelta(hours=2), now + timedelta(hours=2)))
             db.execute("DELETE FROM Reservations WHERE end_time < ?", (now,))  # purge: no change
             self.assertAlmostEqual(total(), 3 * 3600, delta=1)
             db.execute("DELETE FROM Reservations")  # cancel the future one: unused 2 h refunded
             self.assertAlmostEqual(total(), 3600, delta=2)
+
+    def test_a_booking_made_after_its_start_counts_only_from_then(self):
+        import sqlite3
+        from datetime import datetime, timedelta
+        from remoteRF_server.server import reservation
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(reservation, "get_db_dir", return_value=Path(tmp)):
+            reservation.ReservationHandler()
+            db = sqlite3.connect(Path(tmp) / "reservations.db", isolation_level=None)
+            now = datetime.now()
+            add = "INSERT INTO Reservations (username, device_id, start_time, end_time, salt, hash) VALUES ('u', 1, ?, ?, '', '')"
+            total = lambda: db.execute("SELECT seconds FROM ReservedTotal").fetchone()[0]
+            db.execute(add, (now - timedelta(minutes=15), now + timedelta(minutes=15)))
+            self.assertAlmostEqual(total(), 15 * 60, delta=2)
+            db.execute("DELETE FROM Reservations")  # cancelled right away: nothing held
+            self.assertAlmostEqual(total(), 0, delta=2)
+            db.execute(add, (now - timedelta(hours=2), now - timedelta(hours=1)))  # already over
+            self.assertAlmostEqual(total(), 0, delta=2)
 
     def test_a_partner_device_is_left_to_its_owner_even_with_the_old_triggers(self):
         import sqlite3
@@ -255,15 +277,18 @@ class ReservationBucketsTests(unittest.TestCase):
 
         self.handler()
         db = self.connect()
-        self.add(db, 1, "2026-11-02 02:00:00", "2026-11-02 03:00:00")  # Mon 02:00 here = Sun 20:30 UTC
-        self.add(db, 1, "2026-11-04 12:00:00", "2026-11-04 14:00:00")  # Wed 12:00 here = Wed 06:30 UTC
-        self.add(db, ALIAS_BASE, "2026-11-02 02:00:00", "2026-11-02 03:00:00")
+        self.add(db, 1, "2099-11-02 02:00:00", "2099-11-02 03:00:00")  # Mon 02:00 here = Sun 20:30 UTC
+        self.add(db, 1, "2099-11-04 12:00:00", "2099-11-04 14:00:00")  # Wed 12:00 here = Wed 06:30 UTC
+        self.add(db, ALIAS_BASE, "2099-11-02 02:00:00", "2099-11-02 03:00:00")
         expected = {"all": (2, 3 * 3600), "h20": (1, 3600), "d6": (1, 3600), "h06": (1, 2 * 3600), "d2": (1, 2 * 3600)}
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.buckets(db, ALIAS_BASE), {})
-        days = {"2026-11-01": (1, 3600), "2026-11-04": (1, 2 * 3600)}  # the first starts the UTC day before
+        days = {"2099-11-01": (1, 3600), "2099-11-04": (1, 2 * 3600)}  # the first starts the UTC day before
         self.assertEqual(self.days(db, 1), days)
         self.assertEqual(self.days(db, ALIAS_BASE), {})
+        # Let them end; moving them back by UPDATE fires no trigger.
+        db.execute("UPDATE Reservations SET start_time = datetime(start_time, '-100 years'), "
+                   "end_time = datetime(end_time, '-100 years')")
         db.execute("DELETE FROM Reservations WHERE end_time < ?", (datetime.now(),))  # purge: no change
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.days(db, 1), days)
@@ -281,10 +306,13 @@ class ReservationBucketsTests(unittest.TestCase):
         self.assertEqual(values(2), [(1, 2 * 3600)] * 4)
         db.execute("DELETE FROM Reservations WHERE device_id = 2")  # cancel before start: all given back
         self.assertEqual(values(2), [(0, 0)] * 4)
+        for n, seconds in values(3):  # booked an hour after its start: only the rest counts
+            self.assertEqual(n, 1)
+            self.assertAlmostEqual(seconds, 3600, delta=2)
         db.execute("DELETE FROM Reservations WHERE device_id = 3")  # cancel after start: unused hour back
         for n, seconds in values(3):
             self.assertEqual(n, 1)
-            self.assertAlmostEqual(seconds, 3600, delta=2)
+            self.assertAlmostEqual(seconds, 0, delta=2)
         for table in ("ReservationBuckets", "ReservationDays"):
             db.execute(f"UPDATE {table} SET reservations = 0, seconds = 0 WHERE device_id = 4")
         db.execute("DELETE FROM Reservations WHERE device_id = 4")
@@ -317,9 +345,30 @@ class ReservationBucketsTests(unittest.TestCase):
         time.tzset()
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.days(db, 1), days)
-        self.add(db, 1, "2026-11-02 02:20:00", "2026-11-02 02:50:00")  # 20:50 UTC
+        self.add(db, 1, "2099-11-02 02:20:00", "2099-11-02 02:50:00")  # 20:50 UTC
         self.assertEqual(self.buckets(db, 1)["h20"], (3, 7200))
-        self.assertEqual(self.days(db, 1), {"2026-11-01": (3, 7200)})
+        self.assertEqual(self.days(db, 1), {"2026-11-01": (2, 5400), "2099-11-01": (1, 1800)})
+
+    def test_a_restart_replaces_the_old_insert_triggers(self):
+        from datetime import datetime, timedelta
+
+        self.handler()
+        db = self.connect()
+        # A lab from before: its insert triggers count the full length.
+        for name in ("reservation_buckets_ins", "reservation_days_ins"):
+            sql = db.execute("SELECT sql FROM sqlite_master WHERE name = ?", (name,)).fetchone()[0]
+            old = sql.replace("MAX(NEW.start_time, datetime('now', 'localtime'))", "NEW.start_time")
+            self.assertNotEqual(old, sql)
+            db.executescript(f"DROP TRIGGER {name}; {old};")
+        self.handler()
+        for name in ("reservation_buckets_ins", "reservation_days_ins", "reserved_total_ins"):
+            sql = db.execute("SELECT sql FROM sqlite_master WHERE name = ?", (name,)).fetchone()[0]
+            self.assertIn("MAX(NEW.start_time, datetime('now', 'localtime'))", sql)
+        now = datetime.now()
+        self.add(db, 5, now - timedelta(minutes=15), now + timedelta(minutes=15))
+        for n, seconds in [*self.buckets(db, 5).values(), *self.days(db, 5).values()]:
+            self.assertEqual(n, 1)
+            self.assertAlmostEqual(seconds, 15 * 60, delta=2)
 
     def test_days_seed_into_an_existing_lab_that_already_has_buckets(self):
         """A lab upgrading from 1.7.14 has ReservationBuckets but no ReservationDays yet."""
