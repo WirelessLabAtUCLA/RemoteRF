@@ -40,6 +40,7 @@ from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, d
 from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_builtin_drivers,
                                  load_drivers, override_stale)
 from ..host import host_tunnel_server as hts
+from .tx_limits import parse_limits
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,8 @@ class _DeviceState:
     reset_pending: bool = False
     # _name_handle(name); _handle_owners() decides who keeps a duplicate.
     handle: str = ""
+    # devices.yaml limits (tx_limits.parse_limits); host devices have none.
+    limits: Dict[str, Any] = field(default_factory=dict)
 
 # gid -> state
 _devices: Dict[int, _DeviceState] = {}
@@ -386,6 +389,7 @@ def _load_device_records() -> Dict[int, Dict[str, str]]:
             "NAME": name,
             "IDENT": address or serial or device_args or device_index,
             "INIT": init,
+            "LIMITS": parse_limits(item.get("limits"), gid=gid),
         }
 
     return recs
@@ -474,6 +478,7 @@ def _init_from_env() -> None:
             dtype=dtype2 or dtype,
             io_lock=threading.RLock(),
             handle=_name_handle(name),
+            limits=rec.get("LIMITS") or {},
         )
 
     # Swap atomically
@@ -1088,6 +1093,12 @@ def device_is_available(device_id: int) -> bool:
             return False
         return (st.salt == "") and (st.hsh == "")
 
+def get_tx_freq_limit(device_id: int):
+    """The device's limits.tx_freq rule (tx_limits.TxFreqRule), or None."""
+    with _state_lock:
+        st = _devices.get(int(device_id))
+        return st.limits.get("tx_freq") if st else None
+
 def get_device_by_id(device_id: int):
     _sync_host_devices()
 
@@ -1528,6 +1539,7 @@ def _reload_devices_locked(on_device=None) -> None:
             dtype=dtype2,
             io_lock=threading.RLock(),
             handle=_name_handle(name),
+            limits=rec.get("LIMITS") or {},
         )
 
     with _state_lock:

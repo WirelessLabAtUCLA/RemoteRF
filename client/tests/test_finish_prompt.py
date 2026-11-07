@@ -34,3 +34,11 @@ def test_a_host_device_failure_is_an_error_not_a_silent_set_or_a_bad_value():
     assert grpc_client._finish(_reply(), "Pluto:rx_lo:SET")  # a SET answers {}
     assert grpc_client._finish(_reply(rx_lo=915e6), "Pluto:rx_lo:GET")
     assert grpc_client._finish(_reply(Error="old lab"), "Pluto:batch:CALL1")  # probes keep their own handling
+
+
+def test_a_set_reply_warning_is_printed(monkeypatch):
+    printed = []
+    monkeypatch.setattr(grpc_client, "printf", lambda *args: printed.append(args))
+    warning = "Transmitting at 2.455 GHz is not allowed by this device's limits. Tuned to 2.42 GHz instead."
+    assert grpc_client._finish(_reply(warning=warning), "adalm_pluto:tx_lo:SET")
+    assert printed == [(warning, grpc_client.Sty.WARNING)]

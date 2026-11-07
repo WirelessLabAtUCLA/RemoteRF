@@ -74,7 +74,8 @@ import numpy as np
 from .reservation import reservation_handler
 from ..common.utils import *
 from ..common.grpc import grpc_pb2 as generic_pb2
-from .device_manager import acquire_device, acquire_device_by_gid, VirtualDevice, get_device_schema, find_device_id_by_name, get_device_by_id, resolve_gid_for_token
+from .device_manager import acquire_device, acquire_device_by_gid, VirtualDevice, get_device_schema, find_device_id_by_name, get_device_by_id, resolve_gid_for_token, get_tx_freq_limit
+from .tx_limits import tx_freq_prop
 from ..host import host_tunnel_server as hts
 
 
@@ -248,6 +249,13 @@ class RpcManager:
         if self._should_use_builtin_ip_fallback(function_name=function_name, gid=gid, dev=dev):
             return {"ip": map_arg(self._builtin_ip_fallback(gid=gid, dev=dev))}
 
+        args, warning = self._apply_tx_limits(function_name=function_name, args=args, gid=gid, dev=dev)
+        if warning is not None:
+            results = self._dispatch_acquired(function_name=function_name, args=args, gid=gid, dev=dev)
+            if not any(key in results for key in ("a", "Error")):
+                results["warning"] = map_arg(warning)
+            return results
+
         if isinstance(dev, VirtualDevice):
             fwd_args = dict(args)
             fwd_args.pop('a', None)
@@ -271,6 +279,39 @@ class RpcManager:
             return results
 
         return self._dispatch_local_schema(function_name=function_name, args=args, gid=gid, dev=dev)
+
+    def _apply_tx_limits(self, *, function_name: str, args: dict, gid: int, dev: object):
+        """(args to dispatch, warning); raises when limits.tx_freq refuses the call."""
+        rule = get_tx_freq_limit(gid)
+        if rule is None:
+            return args, None
+        _, prop, verb = function_name.split(':', 2)
+        dtype = self._resolve_device_type(gid=gid, dev=dev).strip().lower()
+
+        if dtype == "hackrf":
+            # One shared center_freq: it is a TX frequency only while TX runs.
+            # HackRF never retunes to the default.
+            if isinstance(dev, VirtualDevice):
+                return args, None
+            if prop == "start_tx" and verb == "CALL0":
+                rule.check(dev.dispatch("get_center_freq", {}), allow_default=False)
+            elif (prop, verb) in (("center_freq", "SET"), ("set_freq", "CALL1")) and getattr(
+                getattr(dev, "device", None), "_remoterf_tx_active", False
+            ):
+                key = prop if verb == "SET" else "arg1"
+                if key in args:
+                    rule.check(unmap_arg(args[key]), allow_default=False)
+            return args, None
+
+        if verb != "SET" or prop != tx_freq_prop(dtype) or prop not in args:
+            return args, None
+        value = unmap_arg(args[prop])
+        freq, warning = rule.check(value)
+        if warning is None:
+            return args, None
+        args = dict(args)
+        args[prop] = map_arg(int(freq) if isinstance(value, int) else freq)
+        return args, warning
 
     def _run_batch(self, *, function_name: str, args: dict, gid: int, dev: object) -> dict:
         """Every op is checked before any runs; the first failing op (raised,
@@ -304,11 +345,14 @@ class RpcManager:
             ops.append(op)
 
         results = {}
+        warnings = []
         for i, op in enumerate(ops):
             try:
                 results = self._dispatch_acquired(
                     function_name=op.function_name, args=dict(op.args), gid=gid, dev=dev
                 )
+                if "warning" in results:
+                    warnings.append(str(unmap_arg(results.pop("warning"))))
                 failure = results.get('a', results.get('Error'))
                 error = None if failure is None else str(unmap_arg(failure))
             except Exception as exc:
@@ -319,6 +363,8 @@ class RpcManager:
                     "batch_failed": map_arg(i),
                     "batch_error": map_arg(error),
                 }
+        if warnings:
+            results["warning"] = map_arg(" ".join(warnings))
         return {**results, "batch_done": map_arg(count)}
 
     def _run_rx_n(self, *, function_name: str, args: dict, gid: int, dev: object) -> dict:

@@ -49,10 +49,12 @@ from ..drivers.usrp.uhd_manifest import (
 from .device_manager import (
     diag_blocks,
     get_local_device_context,
+    get_tx_freq_limit,
     register_reservation_end_callback,
     resolve_gid_for_token,
     token_matches_device,
 )
+from .tx_limits import tune_request_freq, tx_freq_method
 from .v2_errors import (
     RemoteRFNativeUHDError,
     RemoteRFOverloadError,
@@ -1048,6 +1050,23 @@ class SessionManager:
                 args,
                 positional_args,
             )
+            rule = get_tx_freq_limit(session.gid)
+            if rule is not None and method_name == tx_freq_method(
+                getattr(session.schema, "device_type", "")
+            ):
+                in_args = "tune_request" in args or not positional_args
+                request = args.get("tune_request") if in_args else positional_args[0]
+                try:
+                    freq, warning = rule.check(tune_request_freq(request))
+                except ValueError as exc:
+                    raise RemoteRFPolicyError(str(exc), method=method_name) from None
+                if warning is not None:
+                    # No reply field on this path: the lab log keeps it.
+                    print(f"Device gid={session.gid}: {warning}")
+                    if in_args:
+                        args = {**args, "tune_request": freq}
+                    else:
+                        positional_args[0] = freq
             native_args = {
                 key: self._resolve_handle_argument(session, value)
                 for key, value in args.items()
