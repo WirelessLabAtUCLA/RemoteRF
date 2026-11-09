@@ -12,4 +12,8 @@ The parts of RemoteRF that a lab Server (`remoteRF-server`) and a Host (`remoter
 Server and Host pin the same version, so a host running a built-in driver reports exactly the hash its lab knows.
 End users do not install this package directly; it comes in as a dependency of `remoteRF-server` or `remoterf-host`.
 
+Experimental application-adapter primitives are documented in
+[`docs/application-integrations.md`](../../docs/application-integrations.md).
+They are opt-in building blocks and are not connected to the server/host runtime yet.
+
 License: GPL-3.0-or-later.

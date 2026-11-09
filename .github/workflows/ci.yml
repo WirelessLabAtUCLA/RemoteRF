@@ -24,6 +24,7 @@ jobs:
             server:
               - 'server/**'
               - 'packages/**'
+              - 'examples/integrations/**'
               - '.github/workflows/ci.yml'
             host:
               - 'host/**'
@@ -64,7 +65,8 @@ jobs:
           case "${{ matrix.package }}" in
             server)
               pip install $core -e . pytest
-              pytest tests --ignore-glob='*hardware*' -q ;;
+              pytest tests --ignore-glob='*hardware*' -q
+              pytest ../packages/remoterf-device-core/tests -q ;;
             host)
               pip install $core -e . pytest pyjwt # tests/test_direct_host.py imports jwt
               PYTHONPATH=src pytest tests -q ;;
@@ -73,8 +75,21 @@ jobs:
               pytest tests --ignore=tests/integration -q ;;
           esac
 
+      - name: verify integration wheels and disabled-adapter UHD loopback
+        if: matrix.package == 'server'
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/integration-cfg
+          XDG_DATA_HOME: ${{ runner.temp }}/integration-data
+        run: |
+          pip wheel --no-deps ../packages/remoterf-device-core ../examples/integrations/counter --wheel-dir "$RUNNER_TEMP/integration-wheels"
+          python -m venv "$RUNNER_TEMP/integration-wheel-env"
+          "$RUNNER_TEMP/integration-wheel-env/bin/pip" install --no-deps "$RUNNER_TEMP"/integration-wheels/*.whl
+          "$RUNNER_TEMP/integration-wheel-env/bin/python" ../examples/integrations/counter/smoke.py
+          pip install --no-deps "$RUNNER_TEMP"/integration-wheels/remoterf_example_counter-*.whl
+          pytest tests/test_usrp_client_server_localhost.py -q
+
   # The one check the main ruleset requires: green when every package that changed passed
-  # (test is skipped when nothing under server/, host/, client/ or packages/ changed).
+  # (test is skipped when no package, integration example or workflow changed).
   ci-ok:
     if: always()
     needs: [changes, test]

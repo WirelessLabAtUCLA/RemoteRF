@@ -1,0 +1,9 @@
+{
+  "id": "org.remoterf.examples.counter",
+  "version": "0.1.0",
+  "contract_version": "0.1",
+  "factory": "rrf_example_counter:create_adapter",
+  "device_types": ["sim_sdr"],
+  "profiles": ["counter"],
+  "actions": ["increment"]
+}
