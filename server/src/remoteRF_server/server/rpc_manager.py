@@ -390,6 +390,12 @@ class RpcManager:
         return str(getattr(schema, "device_type", "") or "")
 
     def _dispatch_local_schema(self, *, function_name: str, args: dict, dev: object, gid: int | None = None) -> dict:
+        from contextlib import nullcontext
+        from .device_manager import hardware_access
+        with hardware_access.native(gid) if gid is not None else nullcontext():
+            return self._dispatch_native_schema(function_name=function_name, args=args, dev=dev, gid=gid)
+
+    def _dispatch_native_schema(self, *, function_name: str, args: dict, dev: object, gid: int | None = None) -> dict:
         _, prop, verb = function_name.split(':', 2)
 
         if gid is not None and getattr(dev, "session_scoped", False) and getattr(dev, "device", None) is None:
@@ -398,6 +404,8 @@ class RpcManager:
             from .dynamic_v2 import session_manager
 
             session_manager.close_gid(gid)
+            if session_manager.cleanup_pending(gid):
+                raise RuntimeError("previous native cleanup is still in progress")
 
         if verb == "GET":
             result = dev.dispatch(f"get_{prop}", {})

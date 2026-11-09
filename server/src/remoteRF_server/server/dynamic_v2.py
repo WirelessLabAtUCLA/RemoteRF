@@ -26,6 +26,8 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager, nullcontext
+from remoterf_device_core.native_lifetime import Activity, submit_cleanup
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Any
@@ -47,6 +49,7 @@ from ..drivers.usrp.uhd_manifest import (
     HANDLE_RETURN_METHODS,
 )
 from .device_manager import (
+    hardware_access,
     diag_blocks,
     get_local_device_context,
     register_reservation_end_callback,
@@ -523,6 +526,11 @@ class DeviceSession:
     control_lock: threading.RLock = field(default_factory=threading.RLock)
     lifecycle_lock: threading.RLock = field(default_factory=threading.RLock)
     closed: bool = False
+    activity: Activity = field(default_factory=Activity)
+    closing_handles: dict = field(default_factory=dict)
+    cleanup: Any = None
+    cleanup_error: bool = False
+    retired_handles: list = field(default_factory=list)
     created_monotonic: float = field(default_factory=time.monotonic)
 
 
@@ -549,6 +557,10 @@ class SessionManager:
         self._session_by_gid: dict[int, str] = {}
         self._opening_gids: set[int] = set()
         self._generation = 0
+        self._closing_sessions = {}
+        self._epochs = {}
+        self._stopping = False
+        self._cleanup_failures = 0
 
     def _next_generation(self) -> int:
         with self._lock:
@@ -558,13 +570,88 @@ class SessionManager:
     def busy(self, gid: int) -> bool:
         """A live or opening session holds this device."""
         with self._lock:
-            return gid in self._opening_gids or self._session_by_gid.get(gid) in self._sessions
+            return (hardware_access.blocked(gid) or gid in self._opening_gids or self._session_by_gid.get(gid) in self._sessions
+                    or any(s.gid == gid for s in self._closing_sessions.values()))
+
+    def cleanup_pending(self, gid):
+        with self._lock:
+            return int(gid) in self._opening_gids or any(s.gid == int(gid) for s in self._closing_sessions.values())
+
+    def integration_binding(self, session_id, *, work_dir, resources_released):
+        """Internal binding for qualified, durably fenced lab-local USRPs.
+
+        No RPC/configuration exposes this yet. The deployment must install a
+        canonical physical gate shared by every alias before this can succeed.
+        resource verification comes from trusted supervision, never the client.
+        """
+        from remoterf_device_core.integrations import IntegrationError
+        from remoterf_device_core.integrations.runtime import Binding
+
+        session = self.get(session_id)
+        inventory = get_local_device_context(session.gid)
+        gate = hardware_access.gate(session.gid)
+        if not inventory or inventory["dtype"] != "usrp" or gate.journal is None:
+            raise IntegrationError("unsupported", "physical ownership has not been qualified/configured")
+        root = self.get_handle(session, session.root_handle)
+        generation = root.generation
+
+        def authority():
+            return not session.closed and token_matches_device(session.token, session.gid)
+
+        def claim(acquire):
+            # Never wait behind a long root call on the startup/RPC thread.
+            if not session.control_lock.acquire(blocking=False):
+                raise IntegrationError("device_busy", "native control is active")
+            try:
+                with session.lifecycle_lock:
+                    if not authority():
+                        raise IntegrationError("expired", "reservation authority ended")
+                    if root.generation != generation:
+                        raise IntegrationError("stale_owner", "native ownership generation has changed")
+                    if session.cleanup_error:
+                        raise IntegrationError("recovery_required", "a native resource failed cleanup")
+                    if (session.closing_handles or len(session.handles) != 1
+                            or not session.activity.idle() or root.value is None):
+                        raise IntegrationError("device_busy", "close all native child handles before handoff")
+                    return acquire()
+            finally:
+                session.control_lock.release()
+
+        def release_native():
+            with session.control_lock:
+                root.value = None  # a root handle must not pin the old native radio
+                session.schema.close_native_device()
+
+        def native_released():
+            return root.value is None and session.schema.device is None
+
+        def restore_native():
+            with session.control_lock:
+                live = inventory["schema"].create_session_schema()
+                try:
+                    metadata = live.build_session_metadata_v2()
+                    with session.lifecycle_lock:
+                        if not authority():
+                            raise IntegrationError("expired", "reservation ended during native reacquisition")
+                        metadata["remote_resource_limits"] = session.capabilities.get("remote_resource_limits", {})
+                        session.schema = live
+                        session.capabilities = metadata
+                        root.value = live.device
+                        root.generation = self._next_generation()
+                except BaseException:
+                    live.close_native_device()
+                    raise
+
+        return Binding(gate, str(session.gid), "usrp", session.session_id, generation,
+                       work_dir, authority, release_native, native_released, restore_native,
+                       resources_released, claim)
 
     def metrics(self) -> dict[str, int]:
         """Return bounded-resource counters for server status/monitoring hooks."""
         with self._lock:
             sessions = list(self._sessions.values())
             opening = len(self._opening_gids)
+            closing = len(self._closing_sessions)
         handles = []
         for session in sessions:
             with session.lifecycle_lock:
@@ -572,6 +659,9 @@ class SessionManager:
         return {
             "sessions": len(sessions),
             "opening_sessions": opening,
+            "closing_sessions": closing,
+            "failed_native_cleanups": self._cleanup_failures,
+            "closing_handles": sum(len(s.closing_handles) for s in sessions),
             "handles": len(handles),
             "async_queue_depth": sum(entry.async_events.qsize() for entry in handles),
             "async_queue_overflows": sum(
@@ -608,12 +698,32 @@ class SessionManager:
         gid = resolve_gid_for_token(token)
         if gid is None:
             raise RemoteRFReservationError("invalid token or inactive reservation")
+        context = get_local_device_context(gid) or {}
+        with hardware_access.native(gid), context.get("io_lock", nullcontext()):
+            prepare = context.get("prepare")
+            if prepare is not None:
+                prepare()
+            return self._open_admitted(token, requested_schema_hash, admitted_gid=gid,
+                                       admitted_schema=context.get("schema"))
+
+    def _open_admitted(self, token: str, requested_schema_hash: str = "", *,
+                       admitted_gid: int, admitted_schema) -> DeviceSession:
+        _refuse_partner_token(token)
+        gid = resolve_gid_for_token(token)
+        if gid is None:
+            raise RemoteRFReservationError("invalid token or inactive reservation")
+        if gid != admitted_gid:
+            raise RemoteRFReservationError("device authority changed; retry open")
+        if diag_blocks(gid):
+            raise RemoteRFReservationError("the device is under diagnostics; try again in a few minutes")
         context = get_local_device_context(gid)
         if context is None:
             raise RemoteRFReservationError(
                 "Dynamic v2 currently supports local devices only"
             )
         inventory_schema = context["schema"]
+        if inventory_schema is not admitted_schema:
+            raise RemoteRFReservationError("device inventory changed; retry open")
         schema_v2 = self.schema_for_token(token)
         if requested_schema_hash and requested_schema_hash != schema_v2["schema_hash"]:
             raise RemoteRFProtocolError(
@@ -628,6 +738,11 @@ class SessionManager:
             # Under the lock diag's busy() takes after its hold: one of the two sees the other.
             if diag_blocks(gid):
                 raise RemoteRFReservationError("the device is under diagnostics; try again in a few minutes")
+            if self._stopping:
+                raise RemoteRFReservationError("device runtime is stopping")
+            if any(s.gid == gid for s in self._closing_sessions.values()):
+                raise RemoteRFReservationError("previous native cleanup is still in progress")
+            epoch = self._epochs.get(gid, 0)
             if gid in self._opening_gids:
                 raise RemoteRFReservationError(
                     "the reserved USRP is already being opened by another Dynamic v2 session"
@@ -636,7 +751,7 @@ class SessionManager:
             if existing not in self._sessions:
                 existing = None
             live = len(self._sessions) - (1 if existing else 0)
-            if live + len(self._opening_gids) >= _MAX_SESSIONS:
+            if live + len(self._opening_gids) + len(self._closing_sessions) >= _MAX_SESSIONS:
                 raise RemoteRFServerOverloadedError(
                     "the Dynamic v2 session limit has been reached",
                     details={"maximum_sessions": _MAX_SESSIONS},
@@ -659,6 +774,9 @@ class SessionManager:
                     self.close(existing)
                 except Exception:
                     pass
+            with self._lock:
+                if any(s.gid == gid for s in self._closing_sessions.values()):
+                    raise RemoteRFReservationError("previous native cleanup is still in progress")
             if getattr(inventory_schema, "device", None) is not None:
                 try:
                     inventory_schema.close_native_device()
@@ -674,10 +792,19 @@ class SessionManager:
                 "maximum_stream_credits": _MAX_CREDITS,
             }
         except Exception:
-            if "live_schema" in locals():
-                live_schema.close_native_device()
-            with self._lock:
-                self._opening_gids.discard(gid)
+            try:
+                if "live_schema" in locals():
+                    failed_id = _opaque_id("failed")
+                    failed = DeviceSession(failed_id, token, gid, live_schema, schema_v2, "", {})
+                    with self._lock:
+                        self._sessions[failed_id] = failed
+                        self._session_by_gid[gid] = failed_id
+                    self.close(failed_id, wait=False)
+            except Exception:
+                pass  # preserve the open error and historical raw reopen policy
+            finally:
+                with self._lock:
+                    self._opening_gids.discard(gid)
             raise
 
         session_id = _opaque_id("sess")
@@ -698,10 +825,25 @@ class SessionManager:
             parent=None,
             generation=self._next_generation(),
         )
+        # Recheck after the potentially slow open. Host reservation-end
+        # callbacks advance the epoch even though bridge tokens are long-lived.
+        try:
+            valid = resolve_gid_for_token(token) == gid
+        except Exception:
+            valid = False
         with self._lock:
-            self._opening_gids.discard(gid)
+            stale = not valid or self._epochs.get(gid, 0) != epoch or self._stopping
             self._sessions[session_id] = session
             self._session_by_gid[gid] = session_id
+            if not stale:
+                self._opening_gids.discard(gid)
+        if stale:
+            try:
+                self.close(session_id, wait=False)
+            finally:
+                with self._lock:
+                    self._opening_gids.discard(gid)
+            raise RemoteRFSessionExpiredError("reservation changed while opening the device")
         return session
 
     def get(self, session_id: str, *, validate_reservation: bool = True) -> DeviceSession:
@@ -778,7 +920,7 @@ class SessionManager:
                 raise RemoteRFSessionExpiredError(
                     "cannot create a handle for a closed session"
                 )
-            if len(session.handles) >= _MAX_HANDLES_PER_SESSION:
+            if len(session.handles) + len(session.closing_handles) >= _MAX_HANDLES_PER_SESSION:
                 raise RemoteRFServerOverloadedError(
                     "the remote handle limit for this session has been reached",
                     details={"maximum_handles": _MAX_HANDLES_PER_SESSION},
@@ -797,6 +939,40 @@ class SessionManager:
             self._start_async_worker(session, entry)
         return entry
 
+    def _publish_handle(self, session, value, type_id, *, parent):
+        try:
+            self.get(session.session_id)
+            return self.register_handle(session, value, type_id, parent=parent)
+        except BaseException:
+            # A native return can arrive after CloseSession or hit the handle
+            # limit. Retain it until admitted calls finish; don't lose the only
+            # reference or leave it pinned in an exception traceback.
+            with session.lifecycle_lock:
+                existing = next((entry for entry in session.handles.values()
+                                 if entry.value is value and entry.handle != session.root_handle), None)
+                if existing is not None:
+                    session.handles.pop(existing.handle)
+                entry = existing or HandleEntry(_opaque_id("unpublished"), type_id, value, parent, 0)
+                entry.closed = True
+                entry.stop_event.set()
+                entry.rx_prefetch_stop.set()
+                session.closing_handles[entry.handle] = entry
+            value = None
+
+            def dispose():
+                try:
+                    self._dispose_entry(entry)
+                except BaseException:
+                    session.cleanup_error = True
+                    with self._lock:
+                        self._cleanup_failures += 1
+                    raise
+                finally:
+                    with session.lifecycle_lock:
+                        session.closing_handles.pop(entry.handle, None)
+            submit_cleanup(lambda: session.activity.idle() and self._workers_done(entry), dispose)
+            raise
+
     def _start_async_worker(self, session: DeviceSession, entry: HandleEntry) -> None:
         native_method = getattr(entry.value, "recv_async_msg", None)
         metadata_type = getattr(getattr(__import__("uhd"), "types", None), "TXAsyncMetadata", None)
@@ -807,8 +983,11 @@ class SessionManager:
             while not entry.stop_event.is_set() and not session.closed:
                 metadata = metadata_type()
                 try:
-                    found = bool(native_method(metadata, 0.1))
+                    with self.admitted(session, entry, worker=True):
+                        found = bool(native_method(metadata, 0.1))
                 except Exception:
+                    break
+                if entry.stop_event.is_set() or session.closed:
                     break
                 if not found:
                     continue
@@ -839,8 +1018,11 @@ class SessionManager:
         if not entry.type_id.endswith("RXStreamer"):
             return
         self._stop_rx_prefetch(entry)
+        if entry.rx_worker is not None and entry.rx_worker.is_alive():
+            return
         self._clear_rx_prefetch(entry)
-        entry.rx_prefetch_stop.clear()
+        stop = threading.Event()
+        entry.rx_prefetch_stop = stop
 
         try:
             import uhd
@@ -867,7 +1049,7 @@ class SessionManager:
         def run():
             buffer = np.empty((channels, batch_samps), dtype=dtype)
             while (
-                not entry.rx_prefetch_stop.is_set()
+                not stop.is_set()
                 and not entry.stop_event.is_set()
                 and not session.closed
             ):
@@ -877,9 +1059,11 @@ class SessionManager:
                     # every sample frame's bookkeeping takes that lock. UHD
                     # streamers accept control calls while another thread recvs,
                     # and issue_stream_cmd stops this worker before it runs.
-                    with entry.rx_recv_lock:
+                    with entry.rx_recv_lock, self.admitted(session, entry, worker=True):
                         received = int(entry.value.recv(buffer, metadata, 0.1))
                 except Exception:
+                    break
+                if stop.is_set() or entry.stop_event.is_set() or session.closed:
                     break
                 snapshot = snapshot_native(metadata)
                 error_code = str(snapshot.get("error_code", "none")).rsplit(
@@ -915,7 +1099,8 @@ class SessionManager:
         worker = entry.rx_worker
         if worker and worker.is_alive() and worker is not threading.current_thread():
             worker.join(timeout=0.5)
-        entry.rx_worker = None
+        if worker is None or not worker.is_alive():
+            entry.rx_worker = None
         self._clear_rx_prefetch(entry)
 
     @staticmethod
@@ -946,78 +1131,176 @@ class SessionManager:
         finally:
             entry.lock.release()
 
+    @contextmanager
+    def admitted(self, session, entry, lock=None, *, worker=False):
+        # Lock order: per-entry/control lock -> short lifecycle bookkeeping.
+        # No manager/lifecycle lock is held across a native call or cleanup wait.
+        with lock if lock is not None else nullcontext(), hardware_access.native(session.gid):
+            if not worker:
+                self.get(session.session_id)
+            with session.lifecycle_lock:
+                if session.closed or entry.closed:
+                    raise RemoteRFStaleHandleError("native admission is closed")
+                ticket = nullcontext() if worker else session.activity.use()
+                ticket.__enter__()
+            try:
+                yield
+            finally:
+                ticket.__exit__(None, None, None)
+
+    @staticmethod
+    def _workers_done(entry):
+        return all(worker is None or not worker.is_alive()
+                   for worker in (entry.worker, entry.rx_worker))
+
+    def _dispose_entry(self, entry):
+        self._stop_streamer(entry)
+        close = getattr(entry.value, "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            entry.value = None
+            self._clear_rx_prefetch(entry)
+
     def close_handle(self, session_id: str, handle: str) -> bool:
         session = self.get(session_id, validate_reservation=False)
+        if handle == session.root_handle:
+            return self.close(session_id)
         with session.lifecycle_lock:
+            pending = session.closing_handles.get(handle)
+            if pending:
+                return True  # attach to existing cleanup, never claim release
             entry = session.handles.get(handle)
             if entry is None or entry.closed:
                 return False
-            if handle == session.root_handle:
-                return self.close(session_id)
             entry.closed = True
             entry.stop_event.set()
-            session.handles.pop(handle, None)
-        self._stop_rx_prefetch(entry)
-        self._stop_streamer(entry)
-        close = getattr(entry.value, "close", None)
-        if callable(close):
+            entry.rx_prefetch_stop.set()
+            session.handles.pop(handle)
+            session.closing_handles[handle] = entry
+
+        def dispose():
             try:
-                close()
-            except Exception:
-                pass
-        if entry.worker and entry.worker.is_alive():
-            entry.worker.join(timeout=0.5)
+                self._dispose_entry(entry)
+            except BaseException:
+                session.cleanup_error = True
+                with self._lock:
+                    self._cleanup_failures += 1
+                raise
+            finally:
+                with session.lifecycle_lock:
+                    session.closing_handles.pop(handle, None)
+
+        job = submit_cleanup(lambda: session.activity.idle() and self._workers_done(entry), dispose)
+        job.done.wait(0.5)
         return True
 
-    def close(self, session_id: str) -> bool:
+    def close(self, session_id: str, *, wait=True) -> bool:
         with self._lock:
             session = self._sessions.pop(session_id, None)
-        if session is None or session.closed:
-            return False
+            if session is None:
+                pending = self._closing_sessions.get(session_id)
+                return pending is not None
+            self._closing_sessions[session_id] = session
         with session.lifecycle_lock:
             session.closed = True
             entries = list(session.handles.values())
+            session.retired_handles = entries
             session.handles.clear()
             for entry in entries:
                 entry.closed = True
                 entry.stop_event.set()
-        for entry in entries:
-            self._stop_rx_prefetch(entry)
-            if entry.worker and entry.worker.is_alive():
-                entry.worker.join(timeout=0.5)
-            if entry.handle != session.root_handle:
-                self._stop_streamer(entry)
-                close = getattr(entry.value, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-        try:
-            session.schema.close_native_device()
-        finally:
-            with self._lock:
-                if self._session_by_gid.get(session.gid) == session_id:
-                    self._session_by_gid.pop(session.gid, None)
+                entry.rx_prefetch_stop.set()
+
+        def ready():
+            with session.lifecycle_lock:
+                return (session.activity.idle() and not session.closing_handles
+                        and all(self._workers_done(entry) for entry in entries))
+
+        def dispose():
+            errors = []
+            try:
+                for entry in entries:
+                    if entry.handle != session.root_handle:
+                        try:
+                            self._dispose_entry(entry)
+                        except BaseException as exc:
+                            errors.append(exc)
+                try:
+                    session.schema.close_native_device()
+                except BaseException as exc:
+                    errors.append(exc)
+                for entry in entries:
+                    entry.value = None
+                session.retired_handles.clear()
+            finally:
+                # Raw-only close errors retain historical reopen behavior.
+                # Application leases use the stricter journal/verification gate.
+                with self._lock:
+                    self._closing_sessions.pop(session_id, None)
+                    if self._session_by_gid.get(session.gid) == session_id:
+                        self._session_by_gid.pop(session.gid, None)
+            if errors:
+                with self._lock:
+                    self._cleanup_failures += len(errors)
+                raise errors[0]
+
+        def dispose_locked():
+            with session.control_lock:
+                return dispose()
+
+        session.cleanup = submit_cleanup(ready, dispose_locked)
+        if wait and session.cleanup.done.wait(0.5) and session.cleanup.error:
+            raise session.cleanup.error
         return True
 
-    def close_gid(self, gid: int) -> None:
+    def close_gid(self, gid: int, *, wait=True) -> None:
         with self._lock:
-            session_id = self._session_by_gid.get(int(gid))
+            gid = int(gid)
+            self._epochs[gid] = self._epochs.get(gid, 0) + 1
+            session_id = self._session_by_gid.get(gid)
         if session_id:
-            self.close(session_id)
+            self.close(session_id, wait=wait)
 
-    def close_all(self) -> int:
-        """Close every live session and native handle during server shutdown."""
+    def resume_admission(self):
+        """Allow an in-process service restart only after old native work drains."""
         with self._lock:
-            session_ids = list(self._sessions)
-        closed = 0
-        for session_id in session_ids:
-            if self.close(session_id):
-                closed += 1
-        return closed
+            if not self._stopping:
+                return
+            if self._sessions or self._closing_sessions or self._opening_gids:
+                raise RemoteRFReservationError("previous runtime still owns native resources")
+            self._stopping = False
 
-    def invoke(
+    def close_all(self, *, stop_admission=False) -> int:
+        """Stop admission first; one failed cleanup cannot skip other radios."""
+        with self._lock:
+            self._stopping = self._stopping or stop_admission
+            session_ids = list(self._sessions)
+        for session_id in session_ids:
+            try:
+                self.close(session_id, wait=False)
+            except Exception:
+                # Scheduler overload or a bookkeeping failure must not skip
+                # other devices. The closing record retains native references.
+                with self._lock:
+                    self._cleanup_failures += 1
+        deadline = time.monotonic() + 0.5
+        with self._lock:
+            jobs = [s.cleanup for s in self._closing_sessions.values() if s.cleanup is not None]
+        for job in jobs:
+            job.done.wait(max(0.0, deadline - time.monotonic()))
+        return len(session_ids)
+
+    def invoke(self, session_id, handle, method_name, args, *, positional_args=None, overload_id=""):
+        session = self.get(session_id)
+        entry = self.get_handle(session, handle)
+        lock = session.control_lock if entry.type_id == "uhd.usrp.MultiUSRP" else entry.lock
+        with self.admitted(session, entry, lock):
+            return self._invoke_admitted(session_id, handle, method_name, args,
+                                         positional_args=positional_args, overload_id=overload_id)
+
+    def _invoke_admitted(
         self,
         session_id: str,
         handle: str,
@@ -1072,12 +1355,12 @@ class SessionManager:
                         uhd_version=session.capabilities.get("uhd_version", ""),
                         method=method_name,
                     ) from exc
-            self.get(session_id)
             type_id = HANDLE_RETURN_METHODS.get(method_name)
             if type_id and result is not None:
-                child = self.register_handle(
-                    session, result, type_id, parent=session.root_handle
-                )
+                try:
+                    child = self._publish_handle(session, result, type_id, parent=session.root_handle)
+                finally:
+                    result = None
                 stream_args = args.get("stream_args")
                 if stream_args is None and positional_args:
                     stream_args = positional_args[0]
@@ -1091,6 +1374,7 @@ class SessionManager:
                     "__remoterf_type__": child.type_id,
                     "generation": child.generation,
                 }, mutations
+            self.get(session_id)
             return snapshot_native(result), mutations
 
         descriptor = next(
@@ -1170,18 +1454,15 @@ class SessionManager:
                 ) from exc
         if rx_stream_command and stream_mode in {"start_cont", "start_continuous"}:
             self._start_rx_prefetch(session, entry)
-        self.get(session_id)
         snapshot = snapshot_native(result)
         return_type = HANDLE_METHOD_RETURN_TYPES.get(
             (entry.type_id, method_name)
         )
         if return_type and result is not None:
-            child = self.register_handle(
-                session,
-                result,
-                return_type,
-                parent=entry.handle,
-            )
+            try:
+                child = self._publish_handle(session, result, return_type, parent=entry.handle)
+            finally:
+                result = None
             return {
                 "__remoterf_handle__": child.handle,
                 "__remoterf_type__": child.type_id,
@@ -1192,22 +1473,21 @@ class SessionManager:
             and not isinstance(result, (str, bool, int, float, complex, bytes, dict, list, tuple, np.ndarray, np.generic))
             and isinstance(snapshot, str)
         ):
-            child = self.register_handle(
-                session,
-                result,
-                f"{entry.type_id}.{method_name}",
-                parent=entry.handle,
-            )
+            try:
+                child = self._publish_handle(session, result, f"{entry.type_id}.{method_name}", parent=entry.handle)
+            finally:
+                result = None
             return {
                 "__remoterf_handle__": child.handle,
                 "__remoterf_type__": child.type_id,
                 "generation": child.generation,
             }, mutations
+        self.get(session_id)
         return snapshot, mutations
 
 
 session_manager = SessionManager()
-register_reservation_end_callback(session_manager.close_gid)
+register_reservation_end_callback(lambda gid: session_manager.close_gid(gid, wait=False))
 
 
 class DynamicControlV2Servicer(grpc_pb2_grpc.DynamicControlV2Servicer):
@@ -1640,7 +1920,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                                 timeout,
                             )
                         else:
-                            with entry.lock, entry.rx_recv_lock:
+                            with entry.lock, entry.rx_recv_lock, session_manager.admitted(session, entry):
                                 while count < int(request.sample_count):
                                     remaining = max(0.0, deadline - time.monotonic())
                                     if count and remaining <= 0.0:
@@ -1735,7 +2015,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             session.schema, "TXMetadata", request.metadata_json
                         )
                         timeout = _sample_timeout(request.timeout_sec)
-                        with entry.lock:
+                        with entry.lock, session_manager.admitted(session, entry):
                             count = int(
                                 entry.value.send(
                                     samples,

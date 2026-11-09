@@ -110,6 +110,7 @@ class TunnelTrustTests(unittest.TestCase):
                 agent._handle_control(pb.Control(kind="reservation_end", device_id="200"))
                 agent._handle_control(pb.Control(kind="reservation_end", device_id="999"))
                 agent._handle_control(pb.Control(kind="something_new", device_id="200"))
+                dm._reservation_hooks[200].result(timeout=2)  # hooks run off the tunnel thread
                 assert events == [("closed", 200), "reset"], events
                 print("ok")
             """)

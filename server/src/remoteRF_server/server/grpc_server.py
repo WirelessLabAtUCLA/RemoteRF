@@ -237,35 +237,41 @@ class ServerRuntime:
             self._stopped = True
             self.stop_event.set()
 
-        termination = self.grpc_server.stop(max(0.0, float(grace_sec)))
         try:
+            termination = self.grpc_server.stop(max(0.0, float(grace_sec)))
             termination.wait(timeout=max(1.0, float(grace_sec) + 2.0))
         finally:
-            transport_counters.flush(force=True)
+            def cleanup(name, action):
+                try:
+                    action()
+                except Exception:
+                    logger.exception("shutdown cleanup failed: %s", name)
+
+            cleanup("transport counters", lambda: transport_counters.flush(force=True))
             if direct_path is not None:
-                direct_path.shutdown()
-            session_manager.close_all()
-            host_session_proxy.close_all()
-            close_local_devices()
+                cleanup("direct paths", direct_path.shutdown)
+            cleanup("native sessions", lambda: session_manager.close_all(stop_admission=True))
+            cleanup("host sessions", host_session_proxy.close_all)
+            cleanup("inventory devices", close_local_devices)
             if self.cert_server is not None:
-                stop_cert_provider(self.cert_server)
+                cleanup("certificate provider", lambda: stop_cert_provider(self.cert_server))
             if (
                 self.update_thread is not None
                 and self.update_thread.is_alive()
                 and self.update_thread is not threading.current_thread()
             ):
-                self.update_thread.join(timeout=2.0)
+                cleanup("update thread", lambda: self.update_thread.join(timeout=2.0))
             if self.control_server is not None:
-                self.control_server.stop()
+                cleanup("control server", self.control_server.stop)
                 self.control_server = None
             if self.writer_lock is not None:
-                self.writer_lock.close()
+                cleanup("writer lock", self.writer_lock.close)
                 self.writer_lock = None
             close_permissions = getattr(self.federation_permissions, "close", None)
             if close_permissions is not None:
-                close_permissions()
+                cleanup("permissions", close_permissions)
             if self.federation_devices is not None:
-                self.federation_devices.close()
+                cleanup("federation devices", self.federation_devices.close)
 
 
 def _load_server_credentials(cert_dir: Path):
@@ -439,6 +445,7 @@ def start_server_runtime(
         from . import startup_check
 
         startup_check.run(open_devices)
+        session_manager.resume_admission()
         server.start()
         if direct_path is not None:
             direct_path.start_listener()

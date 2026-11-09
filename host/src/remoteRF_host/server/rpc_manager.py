@@ -79,6 +79,19 @@ class RpcManager:
         return a
 
     def run_rpc(self, *, function_name, args) -> dict:
+        from contextlib import nullcontext
+        from .device_manager import hardware_access, get_local_device_context
+        gid = self._resolve_gid(args)
+        if gid is None or function_name.startswith(("DynamicV2:", "IDL:")) or function_name == "echo":
+            return self._run_admitted(function_name=function_name, args=args)
+        try:
+            context = get_local_device_context(gid) or {}
+            with hardware_access.native(gid), context.get("io_lock", nullcontext()):
+                return self._run_admitted(function_name=function_name, args=args)
+        except Exception as exc:
+            return {"Error": map_arg(str(exc))}
+
+    def _run_admitted(self, *, function_name, args) -> dict:
         if function_name == "echo":
             return args
 
@@ -130,6 +143,8 @@ class RpcManager:
             from .dynamic_v2 import session_manager
 
             session_manager.close_gid(gid)
+            if session_manager.cleanup_pending(gid):
+                raise RuntimeError("previous native cleanup is still in progress")
 
         try:
             if verb == "GET":
