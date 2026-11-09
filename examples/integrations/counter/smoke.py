@@ -4,8 +4,20 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 from threading import Event
+import time
 
 from remoterf_device_core.integrations import Context, IntegrationError, Manifest, Registry, object_data
+from remoterf_device_core.integrations.ownership import Gate, Journal
+from remoterf_device_core.integrations.runtime import Binding, Runtime
+
+
+def wait_for(predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("installed lifecycle did not drain")
 
 
 def main():
@@ -45,10 +57,44 @@ def main():
             adapter.stop()
             adapter.stop()
         assert not object_data(adapter.status())["running"]
+
+        # Exercise the installed ownership/runtime modules as well. This sample
+        # has no external resources: native callbacks model a simulated owner,
+        # and the resource verifier has nothing external to reconcile.
+        with TemporaryDirectory() as journal_dir:
+            journal = Journal(Path(journal_dir))
+            runtime = Runtime(registry, capacity=1, workers=1)
+            state = {"native": True}
+            binding = Binding(Gate("simulated:sample", journal), "sample", "sim_sdr", "wheel-test", 1,
+                Path(work_dir), lambda: True, lambda: state.update(native=False),
+                lambda: not state["native"], lambda: state.update(native=True), lambda: True)
+            try:
+                op = runtime.start(binding, integration_id, "counter", {"initial": 10}, request_key="one")
+                operation_id = op["operation_id"]
+                wait_for(lambda: runtime.status(binding, operation_id)["state"] == "RUNNING")
+                assert not state["native"] and journal.records()
+                assert runtime.start(binding, integration_id, "counter", {"initial": 10},
+                                     request_key="one")["operation_id"] == operation_id
+                runtime.stop(binding, operation_id)
+                wait_for(lambda: runtime.status(binding, operation_id)["released"])
+                assert state["native"] and journal.records() == {}
+            finally:
+                runtime.shutdown()
+                # close() refuses unresolved work instead of waiving ownership.
+                def close_when_drained():
+                    try:
+                        runtime.close()
+                        return True
+                    except IntegrationError as exc:
+                        if exc.code != "recovery_required":
+                            raise
+                        return False
+                wait_for(close_when_drained)
+                journal.close()
     assert "uhd" not in sys.modules
     assert "numpy" not in sys.modules
     assert "remoterf_device_core.idl.schema" not in sys.modules
-    print("Installed adapter discovery, opt-in, validation, lifecycle and cleanup passed")
+    print("Installed adapter discovery, opt-in, validation, durable lifecycle and cleanup passed")
 
 
 if __name__ == "__main__":
