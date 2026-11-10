@@ -1,0 +1,1360 @@
+{
+  "device_id": 40,
+  "format": "remoterf-real-radio-dev-e2e-qualification-1",
+  "framework_changed": false,
+  "generated_at": 1794341652.1159732,
+  "operator_sources": {
+    "remoterf-phase1c-e2e-confirm-calendar.py": {
+      "sha256": "bf0816442c69bb512d72c7794f4ea0d82034089791264c897260ae7828ea4595",
+      "source": "\"\"\"Coordinate read-only independent cleanup proof; never sends device RPCs.\"\"\"\nfrom pathlib import Path\nimport json,os,subprocess,sys,time\nmode=sys.argv[1];assert mode in {'cancel','expiry'}\nbase=Path('/tmp/remoterf-phase1c-e2e-evidence-20261110')\nrequest=base/(mode+'-request.json');confirmed=base/(mode+'-confirmed.json')\nassert not confirmed.exists()\ndeadline=time.monotonic()+360\nwhile not request.exists():\n assert time.monotonic()<deadline,'calendar observation request missing'\n time.sleep(.2)\nvalue=json.loads(request.read_text());assert value['mode']==mode\nwhile time.time()<value['quiet_started_at']+10:time.sleep(.1)\nattempts=[];deadline=time.monotonic()+60\nwhile True:\n query=subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=8','ucla',\n  '/tmp/remoterf-phase1c-radio-final-20261109/env/bin/python /tmp/remoterf-phase1c-e2e-20261110/remoterf-phase1c-e2e-observe.py'],\n  capture_output=True,text=True,timeout=15)\n attempts.append({'observed_at':time.time(),'returncode':query.returncode})\n if query.returncode==0:break\n assert time.monotonic()<deadline,'independent cleanup did not become provable'\n time.sleep(.5)\nproof=json.loads(query.stdout)\nassert proof['observed_at']>=value['quiet_started_at']+10\nfor name in ('hardware_owners','populated_owned_scopes','unknown_owned_scopes','observable_usb_owners'):\n assert type(proof[name]) is int and proof[name]==0\nassert proof['root_identity_verified'] is True and proof['usb_observation_scope']=='current uid only'\nwith (base/(mode+'-observation.json')).open('x') as output:\n json.dump({'request':value,'proof':proof,'attempts':attempts},output,indent=2);output.write('\\n')\nreply={**{k:value[k] for k in ('run_id','mode','deployment_id','device_id','serial','operation_id','reservation_id')},**proof}\ntemp=confirmed.with_suffix('.new')\nwith temp.open('x') as output:json.dump(reply,output,indent=2);output.write('\\n')\nos.chmod(temp,0o600);temp.replace(confirmed)\nprint(json.dumps({'passed':True,'mode':mode,'observed_at':proof['observed_at'],'quiet_seconds':proof['observed_at']-value['quiet_started_at'],'observations':len(attempts)}))\n"
+    },
+    "remoterf-phase1c-e2e-descendant-check.py": {
+      "sha256": "37967bff5111c7bdcc9c4d29dd9ee3c82ad42bce36f9b4972fb535fd1904ebe1",
+      "source": "\"\"\"Independent read-only reconciliation before releasing the radio guardian.\"\"\"\nfrom pathlib import Path\nfrom importlib.metadata import version\nimport hashlib,json,subprocess,time,stat\nbase=Path('/tmp/remoterf-phase1c-e2e-20261110');state=base/'descendant/run'\nraw=(state/'evidence.json').read_bytes();e=json.loads(raw)\nroot=Path(e['guarded_root']['root']);identity=e['guarded_root']['identity']\nassert [root.stat().st_dev,root.stat().st_ino]==identity\nfor p in (state/'ownership/ownership.json',state/'processes/scopes.json'):\n assert stat.S_ISREG(p.lstat().st_mode) and not p.is_symlink()\nassert json.loads((state/'ownership/ownership.json').read_text())=={}\nledger=json.loads((state/'processes/scopes.json').read_text())\nassert ledger['scopes']=={} and ledger['root']==identity and ledger['boot']==Path('/proc/sys/kernel/random/boot_id').read_text().strip()\nassert [p.name for p in root.iterdir() if p.is_dir()]==['manager']\nusb=[]\nfor p in Path('/sys/bus/usb/devices').glob('*/serial'):\n try:\n  if p.read_text().strip()=='32C78EE':usb.append(p.parent)\n except OSError:pass\nassert len(usb)==1\nd=usb[0];node=Path('/dev/bus/usb')/('%03d'%int((d/'busnum').read_text()))/('%03d'%int((d/'devnum').read_text()))\nquery=subprocess.run(['fuser',str(node)],capture_output=True,timeout=2)\nassert query.returncode==1 and not query.stdout.strip() and not query.stderr.strip()\nprod=Path.home()/'.config/remoterf';before=json.loads((base/'production-before.json').read_text())\nnow={'service_pid':subprocess.check_output(['systemctl','--user','show','remoterf-lab.service','-p','MainPID','--value'],text=True).strip(),\n 'versions':{n:version(n) for n in before['versions']},'inventory_sha256':hashlib.sha256((prod/'devices.yml').read_bytes()).hexdigest(),'integration_config_present':(prod/'integrations.json').exists()}\nassert now==before\nresult={'format':'remoterf-receiver-descendant-independent-cleanup-1','passed':True,'serial':'32C78EE','device_id':40,\n 'evidence_sha256':hashlib.sha256(raw).hexdigest(),'hardware_records':0,'process_records':0,'owned_cgroups':0,\n 'usb_owner_count':0,'usb_observation_scope':'current uid only','cross_uid_usb_owners_observed':False,\n 'root_identity_verified':True,'production_unchanged':True,'observed_at':time.time(),\n 'guarded_root':{'root':str(root),'identity':identity},'usb_device_node':str(node),'production':now}\nwith (base/'descendant/independent-cleanup.json').open('x') as f:json.dump(result,f,indent=2);f.write('\\n')\nprint(json.dumps(result))\n"
+    },
+    "remoterf-phase1c-e2e-descendant-guardian.py": {
+      "sha256": "7ac0279b5212aa96a2fa63373a840a807dd69c9fd247b5d5805409796f1f04e6",
+      "source": "\"\"\"Private bounded operator guardian; never substitutes for normal child auth.\"\"\"\nfrom pathlib import Path\nimport hashlib\nimport importlib.util\nimport json\nimport os\nimport re\nimport subprocess\nimport sys\nimport time\nimport traceback\n\nfrom remoterf_device_core.integrations.supervision import CgroupSupervisor, _read_control, _write_control\n\nPARENT = Path('/tmp/remoterf-phase1c-e2e-20261110')\nBASE = PARENT / 'descendant'\nSTATE = BASE / 'run'\nENV = Path('/tmp/remoterf-phase1c-radio-final-20261109/env/bin/python')\nBOOKING = '52ae81ca-fd98-4e4c-8819-38cffa86247b:1029'\nSTART, END = 1794340800, 1794344400\nFRAMEWORK = '8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a'\nUNIT = 'remoterf-phase1c-e2e-descendant-20261110.service'\n\n\ndef require(value, message):\n    if not value:\n        raise RuntimeError(message)\n\n\ndef qualifier_command(lock_fd):\n    return [str(ENV), '-I', str(PARENT / 'usrp_e2e_descendants.py'),\n        '--serial', '32C78EE', '--device-id', '40', '--reservation-id', BOOKING,\n        '--authority-command', str(PARENT / 'authority'), '--cgroup-root', str(root),\n        '--state-dir', str(STATE), '--evidence', str(STATE / 'evidence.json'),\n        '--expected-framework-hash', FRAMEWORK, '--lock-fd', str(lock_fd)]\n\n\nif len(sys.argv) == 4 and sys.argv[1] == '--runner-child':\n    runner_descriptor, lock_descriptor = int(sys.argv[2]), int(sys.argv[3])\n    require(runner_descriptor > 2 and lock_descriptor > 2, 'invalid inherited runner descriptors')\n    entries = [v.split('::', 1)[1] for v in Path('/proc/self/cgroup').read_text().splitlines() if v.startswith('0::')]\n    require(len(entries) == 1, 'unified runner cgroup required')\n    current = Path('/sys/fs/cgroup') / entries[0].lstrip('/')\n    require(current.name == 'manager' and current.parent.name == UNIT, 'runner bootstrap outside guardian manager')\n    root = current.parent\n    pinned, expected = os.fstat(runner_descriptor), (root / 'runner').stat()\n    require((pinned.st_dev, pinned.st_ino) == (expected.st_dev, expected.st_ino), 'runner descriptor identity differs')\n    require(_read_control(runner_descriptor, 'cgroup.type') == 'domain', 'runner must be domain')\n    _write_control(runner_descriptor, 'cgroup.procs', str(os.getpid()))\n    entries = [v.split('::', 1)[1] for v in Path('/proc/self/cgroup').read_text().splitlines() if v.startswith('0::')]\n    require(len(entries) == 1 and Path('/sys/fs/cgroup') / entries[0].lstrip('/') == root / 'runner', 'runner failed cgroup admission')\n    os.close(runner_descriptor)\n    os.set_inheritable(lock_descriptor, True)\n    os.execv(str(ENV), qualifier_command(lock_descriptor))\n\n\nlines = [v.split('::', 1)[1] for v in Path('/proc/self/cgroup').read_text().splitlines() if v.startswith('0::')]\nrequire(len(lines) == 1, 'unified cgroup required')\nmanager = Path('/sys/fs/cgroup') / lines[0].lstrip('/')\nrequire(manager.name == 'manager' and manager.parent.name == UNIT, 'unexpected guardian cgroup')\nroot = manager.parent\nroot_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\nroot_identity = [os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino]\nrequire((root / 'cgroup.type').read_text().strip() == 'domain', 'guarded root must be domain')\n(root / 'cgroup.subtree_control').write_text('+pids +memory')\nBASE.mkdir(mode=0o700, exist_ok=False)\nspec = importlib.util.spec_from_file_location('e2e_guardian_lock', PARENT / 'usrp_handoff.py')\nhelper = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(helper)\nradio_lock = None\nchild = None\npayload_authorized = False\nrunner_fd = None\nrunner_identity = None\nresult = {'passed': False, 'started_at': time.time(), 'booking': BOOKING,\n    'framework_hash': FRAMEWORK, 'serial': '32C78EE', 'device_id': 40,\n    'transmit': False, 'external_guard_patches_auth': False, 'deadline_seconds': 180,\n    'guarded_root': {'root': str(root), 'identity': root_identity},\n    'parent_limits': {k: (root / k).read_text().strip() for k in ('cpu.max', 'memory.max', 'pids.max')},\n    'guardian_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),\n    'authority_queries': 0, 'independent_cleanup_required': True}\n\n\ndef identity():\n    info = root.stat()\n    require([info.st_dev, info.st_ino] == root_identity, 'guarded root identity changed')\n    require([os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino] == root_identity,\n            'pinned guarded root identity changed')\n\n\ndef write():\n    helper.write_evidence(BASE / 'guardian-evidence.json', result)\n\n\ndef authority():\n    result['authority_queries'] += 1\n    require(START <= time.time() < END - 15, 'outside approved booking window')\n    query = subprocess.run([str(PARENT / 'authority'), '--reservation-id', BOOKING,\n        '--device-id', '40', '--serial', '32C78EE'], capture_output=True, timeout=2)\n    require(query.returncode == 0 and len(query.stdout) < 4096, 'external authority query failed')\n    value = json.loads(query.stdout)\n    require(value.get('active') is True and\n        (value.get('reservation_id'), value.get('device_id'), value.get('serial'), value.get('expires_at'))\n        == (BOOKING, 40, '32C78EE', END), 'external booking is not active')\n    return {k: value[k] for k in ('reservation_id', 'device_id', 'serial', 'expires_at')}\n\n\ndef usb_free():\n    nodes = []\n    for serial in Path('/sys/bus/usb/devices').glob('*/serial'):\n        try:\n            if serial.read_text().strip() == '32C78EE': nodes.append(serial.parent)\n        except OSError:\n            pass\n    require(len(nodes) == 1, 'reserved USB serial not unique')\n    device = nodes[0]\n    node = Path('/dev/bus/usb') / ('%03d' % int((device / 'busnum').read_text())) / ('%03d' % int((device / 'devnum').read_text()))\n    require(node.exists(), 'reserved USB node unavailable')\n    query = subprocess.run(['fuser', str(node)], capture_output=True, timeout=2)\n    require(query.returncode == 1 and not query.stdout.strip() and not query.stderr.strip(), 'USB owner remains')\n    return {'device_node': str(node), 'owner_count': 0}\n\n\ndef empty_state():\n    identity()\n    hardware_path = STATE / 'ownership/ownership.json'\n    process_path = STATE / 'processes/scopes.json'\n    require(hardware_path.is_file() and process_path.is_file(), 'qualification journals missing')\n    hardware, processes = json.loads(hardware_path.read_text()), json.loads(process_path.read_text())\n    require(hardware == {} and type(hardware) is dict, 'hardware ownership remains')\n    require(processes['scopes'] == {} and processes['root'] == root_identity and\n        processes['boot'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'process ownership remains or identity changed')\n    require(not [p for p in root.iterdir() if p.is_dir() and p.name != 'manager'], 'owned or unexpected descendant cgroup remains')\n    return {'hardware_records': 0, 'process_records': 0, 'owned_cgroups': 0, 'root_identity_verified': True}\n\n\ndef runner_release(*, kill):\n    global runner_fd\n    if runner_fd is None:\n        return\n    identity()\n    pinned, current = os.fstat(runner_fd), os.stat('runner', dir_fd=root_fd, follow_symlinks=False)\n    require([pinned.st_dev, pinned.st_ino] == runner_identity == [current.st_dev, current.st_ino], 'runner cgroup identity changed')\n    if kill:\n        _write_control(runner_fd, 'cgroup.kill', '1')\n    until = time.monotonic() + 5\n    while True:\n        events = dict(v.split() for v in _read_control(runner_fd, 'cgroup.events').splitlines())\n        if events.get('populated') == '0':\n            break\n        require(time.monotonic() < until, 'runner cgroup remains populated')\n        time.sleep(.05)\n    result['runner_cleanup'] = {'identity': runner_identity, 'kernel_populated': 0, 'emergency_kill': kill}\n    os.rmdir('runner', dir_fd=root_fd)\n    os.close(runner_fd)\n    runner_fd = None\n\n\ndef stop_owned_after_failure():\n    if not payload_authorized:\n        return\n    # Kill only this exact child relationship, never a PID read from disk.\n    # Native preload helpers are in runner too. Stop the pinned runner domain,\n    # including every inherited descendant, before reconciling adapter scopes.\n    runner_error = None\n    try:\n        runner_release(kill=True)\n    except BaseException as exc:\n        runner_error = type(exc).__name__\n        result['runner_cleanup_failure_type'] = runner_error\n    if child is not None and child.poll() is None:\n        child.kill()\n        child.wait(timeout=10)\n    identity()\n    # This exclusive delegated root was empty except manager before the fixed\n    # qualifier launched. Pin every payload scope before signaling; do not rely\n    # on intact journals to stop receivers after an unexpected controller exit.\n    emergency = []\n    for name in os.listdir(root_fd):\n        if not re.fullmatch(r'rrf-[0-9a-f]{32}', name):\n            continue\n        row = {'name': name, 'released': False}\n        emergency.append(row)\n        scope_fd = None\n        try:\n            scope_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)\n            pinned = os.fstat(scope_fd)\n            current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)\n            require((pinned.st_dev, pinned.st_ino) == (current.st_dev, current.st_ino), 'payload scope identity changed')\n            row['identity'] = [pinned.st_dev, pinned.st_ino]\n            require(_read_control(scope_fd, 'cgroup.type') == 'domain', 'payload scope is not domain')\n            _write_control(scope_fd, 'cgroup.kill', '1')\n            until = time.monotonic() + 5\n            while True:\n                events = dict(v.split() for v in _read_control(scope_fd, 'cgroup.events').splitlines())\n                if events.get('populated') == '0':\n                    row['released'] = True\n                    break\n                require(time.monotonic() < until, 'payload scope remains populated')\n                time.sleep(.05)\n        except BaseException as exc:\n            row['failure_type'] = type(exc).__name__\n        finally:\n            if scope_fd is not None:\n                os.close(scope_fd)\n    result['emergency_payload_scope_cleanup'] = emergency\n    require(all(v['released'] for v in emergency), 'emergency payload cleanup needs operator intervention')\n    require(runner_error is None, 'runner cleanup needs operator intervention')\n    path = STATE / 'processes/scopes.json'\n    if not path.exists():\n        return\n    supervisor = CgroupSupervisor(root, STATE / 'processes')\n    stopped = []\n    try:\n        for owner, record in supervisor.describe()['owners'].items():\n            if record['state'] == 'released' and supervisor.reconcile_released(owner):\n                stopped.append({'owner': owner, 'already_released': True})\n                continue\n            scope = supervisor.reopen(owner)\n            released = scope.stop(timeout=5)\n            stopped.append({'owner': owner, 'verified_release': released})\n            require(released, 'owned scope failed verified release')\n            scope.close()\n        supervisor.close()\n    finally:\n        result['failure_owned_scope_cleanup'] = stopped\n    # A retained hardware ownership journal is deliberately not cleared here.\n    # The coordinator must reconcile it independently before releasing guardian.\n\n\ntry:\n    radio_lock = helper.acquire_radio_lock('32C78EE')\n    result['serial_lock_held'] = True\n    identity()\n    require(not [p for p in root.iterdir() if p.is_dir() and p.name != 'manager'], 'guarded root is not exclusive and empty')\n    result['authority_before'] = authority()\n    require(time.time() < END - 240, 'insufficient reservation cleanup margin')\n    result['usb_before'] = usb_free()\n    payload_authorized = True\n    os.mkdir('runner', mode=0o700, dir_fd=root_fd)\n    runner_fd = os.open('runner', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)\n    runner_identity = [os.fstat(runner_fd).st_dev, os.fstat(runner_fd).st_ino]\n    require(_read_control(runner_fd, 'cgroup.type') == 'domain', 'runner cgroup must be domain')\n    _write_control(runner_fd, 'pids.max', '128')\n    _write_control(runner_fd, 'memory.max', str(768 * 1024 * 1024))\n    _write_control(runner_fd, 'cgroup.max.descendants', '0')\n    command = [str(ENV), '-I', str(Path(__file__).absolute()), '--runner-child', str(runner_fd), str(radio_lock)]\n    env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',\n        'HOME': str(Path.home()), 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',\n        'REMOTERF_BIND_HOST': '127.0.0.1', 'GRPC_PORT': '50051', 'CERT_PORT': '50052'}\n    with (BASE / 'child.log').open('xb') as log:\n        child = subprocess.Popen(command, cwd=PARENT, env=env, stdin=subprocess.DEVNULL,\n            stdout=log, stderr=subprocess.STDOUT, close_fds=True, pass_fds=(radio_lock, runner_fd))\n        deadline, last_check = time.monotonic() + 180, 0\n        while child.poll() is None:\n            if time.monotonic() - last_check >= 1:\n                identity(); authority(); last_check = time.monotonic()\n            require(time.monotonic() < deadline, 'qualification exceeded 180 second deadline')\n            time.sleep(.05)\n    result['child_returncode'] = child.returncode\n    runner_release(kill=False)\n    raw = (STATE / 'evidence.json').read_bytes()\n    result['child_evidence_sha256'] = hashlib.sha256(raw).hexdigest()\n    evidence = json.loads(raw)\n    result['child_passed'] = evidence.get('passed') is True\n    require(child.returncode == 0 and result['child_passed'], 'qualification child failed')\n    result['cleanup'] = empty_state()\n    result['usb_after'] = usb_free()\n    result['authority_after'] = authority()\n    result.update(passed=True, finished_at=time.time())\nexcept BaseException as exc:\n    result['failure'] = {'type': type(exc).__name__, 'frames': [\n        {'file': Path(f.filename).name, 'line': f.lineno, 'function': f.name}\n        for f in traceback.extract_tb(exc.__traceback__)[-8:]]}\n    result['failed_at'] = time.time()\n    try:\n        stop_owned_after_failure()\n    except BaseException as cleanup_error:\n        result['cleanup_failure_type'] = type(cleanup_error).__name__\nfinally:\n    write()\n\n# Persist the root and canonical serial lock until the coordinator independently\n# checks journals, actual USB release, root identity and production invariants.\nwhile not (BASE / 'guardian.release').exists():\n    time.sleep(.25)\nempty_state()\nrequire(usb_free()['owner_count'] == 0, 'USB remains owned at release')\nif radio_lock is not None:\n    os.close(radio_lock)\nos.close(root_fd)\nraise SystemExit(0 if result['passed'] else 1)\n"
+    },
+    "remoterf-phase1c-e2e-observe.py": {
+      "sha256": "41366b704d71bead7ca1384c9c2eb90b68adb1f3b934ed877d87503ba189ef1f",
+      "source": "\"\"\"Read-only hardware/process observation of the isolated dev canary.\"\"\"\nimport json,os,stat,subprocess,time\nfrom pathlib import Path\nfrom remoterf_device_core.integrations.operator import inspect\nBASE=Path('/tmp/remoterf-phase1c-e2e-20261110')\nCONFIG=BASE/'service/config/remoterf'\nREADY=BASE/'server-guardian-v4/ready.json'\nready=json.loads(READY.read_text());root=Path(ready['apps'])\nfd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\ntry:\n assert [os.fstat(fd).st_dev,os.fstat(fd).st_ino]==ready['apps_identity']\n assert [root.stat().st_dev,root.stat().st_ino]==ready['apps_identity']\n state=CONFIG/'db/integrations'\n for journal in (state/'ownership/ownership.json',state/'processes/scopes.json'):\n  info=journal.lstat()\n  assert stat.S_ISREG(info.st_mode) and not journal.is_symlink() and info.st_uid==os.getuid(),'missing or unexpected owned journal'\n observations=[]\n for _ in range(2):\n  value=inspect(state,root)\n  assert value['backend_verified'] is True\n  assert value['hardware']==[] and value['unknown_scopes']==[]\n  assert all(row['identity_verified'] is True and row['populated'] is False for row in value['processes'])\n  assert dict(v.split() for v in (root/'cgroup.events').read_text().splitlines())['populated']=='0'\n  assert not (root/'cgroup.procs').read_text().strip()\n  observations.append(value)\n  time.sleep(.1)\n usb=[]\n for file in Path('/sys/bus/usb/devices').glob('*/serial'):\n  try:\n   if file.read_text().strip()=='32C78EE':usb.append(file.parent)\n  except OSError:pass\n assert len(usb)==1\n device=usb[0];node=Path('/dev/bus/usb')/('%03d'%int((device/'busnum').read_text()))/('%03d'%int((device/'devnum').read_text()))\n query=subprocess.run(['fuser',str(node)],capture_output=True,timeout=2)\n assert query.returncode==1 and not query.stdout.strip() and not query.stderr.strip()\n assert [root.stat().st_dev,root.stat().st_ino]==ready['apps_identity']\n print(json.dumps({'observed_at':time.time(),'root_identity_verified':True,'hardware_owners':0,\n  'populated_owned_scopes':0,'unknown_owned_scopes':0,'observable_usb_owners':0,\n  'usb_observation_scope':'current uid only','cross_uid_usb_owners_observed':False,\n  'in_process_runtime_counters_observed':False,'usb_node':str(node),'root':str(root),\n  'root_identity':ready['apps_identity'],'inspections':observations}))\nfinally:os.close(fd)\n"
+    },
+    "remoterf-phase1c-e2e-server-guardian.py": {
+      "sha256": "e7c9808631fbd2b06babed185875ce3ef661992617d3058a815c7a833b9f0e64",
+      "source": "\"\"\"Private dev-only operator guard. Does not alter server/auth implementation.\"\"\"\nimport hashlib,json,os,signal,subprocess,time,traceback\nfrom pathlib import Path\nfrom uuid import uuid4\nfrom remoterf_device_core.integrations.supervision import CgroupSupervisor\nimport importlib.util\nBASE=Path('/tmp/remoterf-phase1c-e2e-20261110')\nSTATE=BASE/'server-guardian-v4';STATE.mkdir(mode=0o700)\nCONFIG=BASE/'service/config/remoterf'\nBOOKING='52ae81ca-fd98-4e4c-8819-38cffa86247b:1029'\nmanager=Path('/sys/fs/cgroup')/Path('/proc/self/cgroup').read_text().strip().split('::',1)[1].lstrip('/')\nassert manager.name=='manager' and manager.parent.name=='remoterf-phase1c-e2e-server-20261110.service'\nroot=manager.parent;(root/'cgroup.subtree_control').write_text('+pids +memory')\napps=root/'apps';apps.mkdir();(apps/'cgroup.subtree_control').write_text('+pids +memory')\napps_fd=os.open(apps,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\napps_identity=[os.fstat(apps_fd).st_dev,os.fstat(apps_fd).st_ino]\nspec=importlib.util.spec_from_file_location('guardian_helper',BASE/'usrp_handoff.py');helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)\nspec=importlib.util.spec_from_file_location('guardian_pidfd',BASE/'usrp_e2e_descendants.py');pidfd=importlib.util.module_from_spec(spec);spec.loader.exec_module(pidfd)\nassert pidfd.pidfd_supported(),'Linux pidfd support required'\nsupervisor=CgroupSupervisor(root,STATE/'processes',max_scopes=2,max_processes=1,max_pids=256,memory_bytes=1024**3)\nscope=None;process=None;process_id=None;server_pidfd=None;radio_lock=None;hardware=False;sequence=0\nevidence={'started_at':time.time(),'root':str(root),'identity':[root.stat().st_dev,root.stat().st_ino],'apps':str(apps),'apps_identity':[apps.stat().st_dev,apps.stat().st_ino],'guardian_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'events':[]}\ndef write(path,value):\n temp=path.with_suffix('.new');temp.write_text(json.dumps(value,indent=2)+'\\n');os.chmod(temp,0o600);temp.replace(path)\ndef save():write(STATE/'evidence.json',evidence)\ndef authority():\n result=subprocess.run([str(BASE/'authority'),'--reservation-id',BOOKING,'--device-id','40','--serial','32C78EE'],capture_output=True,timeout=2)\n assert result.returncode==0 and len(result.stdout)<4096,'outer authority query failed'\n v=json.loads(result.stdout);assert v['active'] is True and (v['reservation_id'],v['device_id'],v['serial'],v['expires_at'])==(BOOKING,40,'32C78EE',1794344400),'outer booking inactive'\n assert time.time()<1794344400-120,'outer booking cleanup margin reached'\n return v\ndef usb_free():\n nodes=[]\n for p in Path('/sys/bus/usb/devices').glob('*/serial'):\n  try:\n   if p.read_text().strip()=='32C78EE':nodes.append(p.parent)\n  except OSError:pass\n assert len(nodes)==1,'USB serial not unique'\n d=nodes[0];node=Path('/dev/bus/usb')/('%03d'%int((d/'busnum').read_text()))/('%03d'%int((d/'devnum').read_text()))\n result=subprocess.run(['fuser',str(node)],capture_output=True,timeout=2)\n assert result.returncode==1 and not result.stdout.strip() and not result.stderr.strip(),'USB owner remains'\n return {'node':str(node),'owners':0}\ndef clean_apps():\n assert [apps.stat().st_dev,apps.stat().st_ino]==evidence['apps_identity'],'apps root identity changed'\n state=CONFIG/'db/integrations'\n hp=state/'ownership/ownership.json'; pp=state/'processes/scopes.json'\n if hp.exists():assert json.loads(hp.read_text())=={},'hardware owners remain'\n if pp.exists():\n  data=json.loads(pp.read_text());assert data['scopes']=={},'application scopes remain'\n  assert data['root']==evidence['apps_identity'],'process journal root differs'\n assert not list(apps.glob('rrf-*')),'unrecorded owned application cgroup'\n assert not (apps/'cgroup.procs').read_text().strip(),'apps root has processes'\n assert dict(line.split() for line in (apps/'cgroup.events').read_text().splitlines())['populated']=='0','application descendants remain'\n return {'hardware_records':0,'process_records':0,'owned_cgroups':0,'root_identity_verified':True}\ndef emergency_apps():\n assert [os.fstat(apps_fd).st_dev,os.fstat(apps_fd).st_ino]==apps_identity==[apps.stat().st_dev,apps.stat().st_ino],'emergency apps identity differs'\n fd=os.open('cgroup.kill',os.O_WRONLY|os.O_NOFOLLOW,dir_fd=apps_fd)\n try:os.write(fd,b'1')\n finally:os.close(fd)\n until=time.monotonic()+10\n while True:\n  assert [apps.stat().st_dev,apps.stat().st_ino]==apps_identity\n  populated=dict(line.split() for line in (apps/'cgroup.events').read_text().splitlines())['populated']\n  if populated=='0':break\n  assert time.monotonic()<until,'emergency application scope did not empty'\n  time.sleep(.05)\n return {'identity_verified':True,'populated':0,'journals_retained':True,'normal_cleanup_claimed':False,'at':time.time()}\ndef stop(reason):\n global scope,process,process_id,server_pidfd,radio_lock,hardware\n event={'action':'stop','reason':reason,'started_at':time.time()};evidence['events'].append(event);save()\n if scope is not None and process is None:\n  event['partial_launch_cleanup']=scope.stop(timeout=5)\n  assert event['partial_launch_cleanup'],'partial launch scope remains'\n  scope.close();scope=None\n if process is not None:\n  if process.poll() is None:\n   if server_pidfd is None:event['uncaptured_server_cleanup']=scope.stop(timeout=5)\n   else:pidfd.pidfd_send_signal(server_pidfd,signal.SIGTERM)\n  until=time.monotonic()+30\n  while process.poll() is None and time.monotonic()<until:time.sleep(.1)\n  event['returncode']=process.poll()\n  if process.poll() is None:\n   event['forced_server_scope_cleanup']=scope.stop(timeout=5)\n  deadline=time.monotonic()+10\n  while not scope.resources_released() and time.monotonic()<deadline:time.sleep(.1)\n  if not scope.resources_released():event['forced_server_descendant_cleanup']=scope.stop(timeout=5)\n  for stream in ('stdout','stderr'):(STATE/('server-%02d-%s.log'%(sequence,stream))).write_bytes(scope.log_tail(process_id,stream))\n  event['server_resources_released']=scope.resources_released()\n  assert event['server_resources_released'],'server descendant remains'\n  scope.close();scope=process=process_id=None\n  if server_pidfd is not None:os.close(server_pidfd);server_pidfd=None\n event['applications']=clean_apps()\n if hardware:event['usb']=usb_free()\n if radio_lock is not None:os.close(radio_lock);radio_lock=None\n hardware=False;event['finished_at']=time.time();save()\ndef start():\n global scope,process,process_id,server_pidfd,radio_lock,hardware,sequence\n import yaml\n assert scope is None and process is None,'server already active'\n clean_apps()\n devices=yaml.safe_load((CONFIG/'devices.yml').read_text())['devices']\n hardware=bool(devices)\n if hardware:\n  assert len(devices)==1 and devices[0]['device_id']==40 and devices[0]['device_type']=='usrp' and devices[0]['init']=={'profile':'usrp2901','type':'b200','serial':'32C78EE'},'unexpected inventory'\n  authority();assert time.time()<1794344400-300,'insufficient outer booking time'\n  radio_lock=helper.acquire_radio_lock('32C78EE');usb_free()\n sequence+=1;scope=supervisor.create('server-'+uuid4().hex)\n env={'HOME':str(Path.home()),'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8','LC_ALL':'C.UTF-8','XDG_RUNTIME_DIR':os.environ['XDG_RUNTIME_DIR']}\n process_id=scope.launch([str(BASE/'private-server'),'--serve','--headless'],env=env,cwd=BASE,timeout=30)\n process=scope._processes[process_id]['popen']\n with scope._lock:\n  scope._verify_identity();assert process.poll() is None,'server exited before signal identity capture'\n  server_pidfd=pidfd.pidfd_open(process.pid)\n  cgroup=root/supervisor.describe()['owners'][scope.owner_id]['name']\n  assert str(process.pid) in (cgroup/'cgroup.procs').read_text().split(),'server outside owned scope'\n  if process.poll() is not None:\n   os.close(server_pidfd);server_pidfd=None\n   raise RuntimeError('server exited during pidfd capture')\n evidence['events'].append({'action':'start','at':time.time(),'hardware_inventory':hardware,'sequence':sequence,'owner':scope.owner_id,'server_scope':supervisor.describe()['owners'][scope.owner_id]});save()\nwrite(STATE/'ready.json',{'root':str(root),'identity':evidence['identity'],'apps':str(apps),'apps_identity':evidence['apps_identity']})\nfailed=False;last_authority=0\nwhile True:\n try:\n  if process is not None:\n   assert process.poll() is None,'normal canary server exited unexpectedly'\n   if hardware and time.monotonic()-last_authority>=1:authority();last_authority=time.monotonic()\n  for command in sorted(STATE.glob('command-*.json')):\n   if command.name.endswith('.result.json'):continue\n   value=json.loads(command.read_text());done=command.with_name(command.stem+'.result.json')\n   if done.exists():continue\n   assert set(value)=={'action'} and value['action'] in {'start','stop','release'},'invalid guardian command'\n   if failed and value['action']=='start':raise RuntimeError('guardian failure requires operator review')\n   if value['action']=='start':start()\n   elif value['action']=='stop':stop('operator')\n   else:\n    assert process is None and scope is None and not hardware\n    clean_apps();assert supervisor.describe()['owners']=={};supervisor.close();os.close(apps_fd);apps.rmdir()\n    write(done,{'passed':True,'at':time.time()});evidence['released_at']=time.time();save();raise SystemExit(0)\n   write(done,{'passed':True,'at':time.time()})\n  time.sleep(.1)\n except Exception as exc:\n  failed=True;evidence['failure']={'type':type(exc).__name__,'message':str(exc),'at':time.time(),'trace':[{'file':Path(f.filename).name,'line':f.lineno} for f in traceback.extract_tb(exc.__traceback__)[-6:]]};save()\n  try:stop('guardian_failure')\n  except Exception as cleanup:evidence['cleanup_failure']={'type':type(cleanup).__name__,'message':str(cleanup)};save()\n  try:evidence['emergency_app_cleanup']=emergency_apps();evidence['emergency_usb']=usb_free();save()\n  except Exception as cleanup:evidence['emergency_cleanup_failure']={'type':type(cleanup).__name__,'message':str(cleanup)};save()\n  while not (STATE/'failure-reviewed').exists():time.sleep(.25)\n  raise\n"
+    }
+  },
+  "passed": true,
+  "physical_reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+  "production_enabled": false,
+  "production_push_or_publication": false,
+  "record_sha256": {
+    "cancel-observation.json": "a0e3f85cf0ccd29a2e11c2358cf2095251bc4c001b67725db64b6ab621400668",
+    "cancel.json": "62b162c58f2030d7f7000beb90a0fb416a96db78edd7dcb33565d906d394d8da",
+    "descendants.json": "97607481870a5382cf81da1b91e8474c5ff93742b921e91d2698aa070b220c25",
+    "empty-catalog-preflight.json": "d8fbdc6ef8d9438e3eedba5776027d8b3fa9c5fb9363f1e4e90a16674840c4b7",
+    "empty-inventory-guardian-failure.json": "41192078200c72e81b595c55d0dc1c0d03bba5227c162ac12b7421d490640f72",
+    "enabled-client.json": "af571ef9c79a4e7d0671bb69f3e31146af13bea14d5a3cd733fba2bd4eac9234",
+    "enabled-observation.json": "17abe1d35394332f9fd2326cad4e840b8d5fa33b4b7e51c9097633f29a96ce0b",
+    "enabled-startup.json": "df4530ba88a74f7b9ebfc29d6c75179077d3443fb480409ff189f73784b7fa99",
+    "enabled.json": "f7e49e0b65bbe26cac581ada7260db57fb9d3316fafa4ff7418db58c296c644f",
+    "exact-build-before.json": "22df0d7123d5bb011893fb592681c3e4e51659cea35021e242b4f7357cd962c8",
+    "expiry-observation.json": "c56fc409a5788efb46190cda32d8a174c6be627603570c8a4fbc31d388a515fa",
+    "expiry-running-observation.json": "6cc1006b36a17dc0ca420e6ce81dc250b0e7cba63f905c264491350b47d109e4",
+    "expiry.json": "2debff808e563717f8a6f6c30452cb1577b255941e32a50c50bc6e81cd20bfe0",
+    "guardian-evidence.json": "cd8c5c098aba6c2948db5c107a3cc0bd9e135b7b4853ca511fc18331434c10c6",
+    "independent-cleanup.json": "94c61ddedf401dafc4617fc6249f43d2e444d56cb830c27c965ecc30b111e0c2",
+    "independent-failure-cleanup.json": "ef3749ecdf87769155a328e747cac76e80a25ed7eed865b1ae3b0d6304b7dbff",
+    "preflight-status.json": "b310158714f53f647bf5889e9a476360d5882f333b4342b52e1bd891ac10291e",
+    "receipt-mismatch-cleanup.json": "7a75597a44ca84a38812a3123d5564bfd5865d49c2440617573d2f1c4c404114",
+    "receipt-mismatch-startup.json": "c4dab9115b7481486152f7fe6c85cf51b0a16093083c05f2e9d5421774beda84",
+    "receipt-mismatch.json": "04e077b80c26fd785f5da1a3c1e3db856ffefa4e3dcde496455e587380cc8610",
+    "receipt-missing-cleanup.json": "99249e8a1e2152078fb2f85ee5f38e38202235c7f2e452bb052be8193ca9ab9d",
+    "receipt-missing-startup.json": "d740b921afd098f678288c9f274dcbfeaf671a79bdb222f9d7c0575e47544d8f",
+    "receipt-missing.json": "4578dc28bc3d5d520d4a92d552834b52fb29a2772de3a70cfed74b59c06e1987",
+    "server-guardian-final.json": "1419c1e3c1c911d80452a76613f5d34ee7360bdd9b3deb87a0a6ed1e494f3ec4"
+  },
+  "records": {
+    "cancel-observation.json": {
+      "attempts": [
+        {
+          "observed_at": 1794341140.468145,
+          "returncode": 0
+        }
+      ],
+      "proof": {
+        "cross_uid_usb_owners_observed": false,
+        "hardware_owners": 0,
+        "in_process_runtime_counters_observed": false,
+        "inspections": [
+          {
+            "backend_verified": true,
+            "hardware": [],
+            "inspection_only": true,
+            "managed_resources_only": true,
+            "processes": [
+              {
+                "identity_verified": true,
+                "owner_id": "c4c5adbb3c183d9736bc9ad6204f304ecfcd10dfd39aa4411a24bea85e42fcc0",
+                "populated": false,
+                "state": "ready"
+              }
+            ],
+            "recovery_required": true,
+            "unknown_scopes": []
+          },
+          {
+            "backend_verified": true,
+            "hardware": [],
+            "inspection_only": true,
+            "managed_resources_only": true,
+            "processes": [
+              {
+                "identity_verified": true,
+                "owner_id": "c4c5adbb3c183d9736bc9ad6204f304ecfcd10dfd39aa4411a24bea85e42fcc0",
+                "populated": false,
+                "state": "ready"
+              }
+            ],
+            "recovery_required": true,
+            "unknown_scopes": []
+          }
+        ],
+        "observable_usb_owners": 0,
+        "observed_at": 1794341140.4653134,
+        "populated_owned_scopes": 0,
+        "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+        "root_identity": [
+          29,
+          495366
+        ],
+        "root_identity_verified": true,
+        "unknown_owned_scopes": 0,
+        "usb_node": "/dev/bus/usb/003/015",
+        "usb_observation_scope": "current uid only"
+      },
+      "request": {
+        "calendar_end": 1794341700,
+        "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+        "device_id": 40,
+        "event_at": 1794341129.816143,
+        "mode": "cancel",
+        "operation_id": "74f90c77f20545f2aafe5a7d8b3545c8",
+        "quiet_started_at": 1794341129.816143,
+        "reservation_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:4",
+        "run_id": "26036ebfcffd4a468125a158bba0bf36",
+        "serial": "32C78EE"
+      }
+    },
+    "cancel.json": {
+      "checks": {
+        "catalog": {
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "deployment_name": "Isolated UCLA Integration Qualification",
+          "device_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:40",
+          "device_type": "usrp",
+          "local_device_id": "40",
+          "online": true
+        },
+        "duplicate_health_same_action": true,
+        "duplicate_start_same_operation": true,
+        "first_post_revocation_device_rpc_at": 1794341140.5125241,
+        "health": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "ready": true,
+          "received": 4096,
+          "serial": "32C78EE",
+          "uhd_version": "4.10.0.main-release"
+        },
+        "independent_release_observation": {
+          "cross_uid_usb_owners_observed": false,
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "device_id": 40,
+          "hardware_owners": 0,
+          "in_process_runtime_counters_observed": false,
+          "inspections": [
+            {
+              "backend_verified": true,
+              "hardware": [],
+              "inspection_only": true,
+              "managed_resources_only": true,
+              "processes": [
+                {
+                  "identity_verified": true,
+                  "owner_id": "c4c5adbb3c183d9736bc9ad6204f304ecfcd10dfd39aa4411a24bea85e42fcc0",
+                  "populated": false,
+                  "state": "ready"
+                }
+              ],
+              "recovery_required": true,
+              "unknown_scopes": []
+            },
+            {
+              "backend_verified": true,
+              "hardware": [],
+              "inspection_only": true,
+              "managed_resources_only": true,
+              "processes": [
+                {
+                  "identity_verified": true,
+                  "owner_id": "c4c5adbb3c183d9736bc9ad6204f304ecfcd10dfd39aa4411a24bea85e42fcc0",
+                  "populated": false,
+                  "state": "ready"
+                }
+              ],
+              "recovery_required": true,
+              "unknown_scopes": []
+            }
+          ],
+          "mode": "cancel",
+          "observable_usb_owners": 0,
+          "observed_at": 1794341140.4653134,
+          "operation_id": "74f90c77f20545f2aafe5a7d8b3545c8",
+          "populated_owned_scopes": 0,
+          "reservation_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:4",
+          "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+          "root_identity": [
+            29,
+            495366
+          ],
+          "root_identity_verified": true,
+          "run_id": "26036ebfcffd4a468125a158bba0bf36",
+          "serial": "32C78EE",
+          "unknown_owned_scopes": 0,
+          "usb_node": "/dev/bus/usb/003/015",
+          "usb_observation_scope": "current uid only"
+        },
+        "native_refused_while_owned": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "next_holder_native_rx": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "no_device_rpc_seconds_after_revocation": 10.696381092071533,
+        "old_operation_hidden_from_next_holder": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        },
+        "release_observation_scope": {
+          "cross_uid_usb_owners_observed": false,
+          "in_process_runtime_counters_observed": false,
+          "source": "independent ownership journal, kernel cgroups and USB owners visible to the service uid"
+        },
+        "revoked_session_refused": {
+          "integration_code": null,
+          "type": "RemoteRFReservationError"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.13.13.dev0",
+      "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "deployment_name": "Isolated UCLA Integration Qualification",
+      "deployment_slug": "ucla-integrations-20261110",
+      "device_id": 40,
+      "finished_at": 1794341144.717865,
+      "mode": "cancel",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "usrp",
+      "route": "relay",
+      "run_id": "26036ebfcffd4a468125a158bba0bf36",
+      "serial": "32C78EE",
+      "started_at": 1794341122.340001,
+      "transmit": false
+    },
+    "descendants.json": {
+      "activation_changed": false,
+      "adapter_id": "org.remoterf.usrp_probe",
+      "adapter_version": "0.1.0",
+      "checks": {
+        "application_rx": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "ready": true,
+          "received": 4096,
+          "serial": "32C78EE",
+          "uhd_version": "4.10.0.main-release"
+        },
+        "before_parent_death": {
+          "kernel_populated": 1,
+          "process_count": 2,
+          "scope_identity_verified": true,
+          "usb_device_node": "/dev/bus/usb/003/015",
+          "usb_owner_count": 1,
+          "usb_owners_inside_scope": true
+        },
+        "cleanup_descendants": {
+          "automatic_required_parent_failure": true,
+          "health_action_used": false,
+          "journal_empty": true,
+          "outcome": {
+            "active_action_id": null,
+            "details": {
+              "channel": 0,
+              "frequency": 100000000.0,
+              "gain": 0.0,
+              "rate": 1000000.0,
+              "ready": true,
+              "received": 4096,
+              "serial": "32C78EE",
+              "uhd_version": "4.10.0.main-release"
+            },
+            "error": "process_exited",
+            "generation": 1,
+            "operation_id": "bf2eb79850d64db7affe6c0586fa23f2",
+            "phase": "complete",
+            "released": true,
+            "state": "ERROR"
+          },
+          "passed": true,
+          "verified_cgroup_cleanup": true
+        },
+        "native_open_refused_while_descendant_alive": true,
+        "native_rx_after": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_before": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "receiver_after_parent_death": {
+          "kernel_populated": 1,
+          "process_count": 1,
+          "scope_identity_verified": true,
+          "usb_device_node": "/dev/bus/usb/003/015",
+          "usb_owner_count": 1,
+          "usb_owners_inside_scope": true
+        }
+      },
+      "cleanup": {
+        "hardware_records": 0,
+        "owned_cgroups": 0,
+        "process_records": 0,
+        "root_identity_verified": true
+      },
+      "device_id": 40,
+      "external_booking_after": {
+        "device_id": 40,
+        "expires_at": 1794344400.0,
+        "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+        "serial": "32C78EE"
+      },
+      "external_booking_before": {
+        "device_id": 40,
+        "expires_at": 1794344400.0,
+        "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+        "serial": "32C78EE"
+      },
+      "fault_injection": "required_wrapper_parent_exits_real_receiver_descendant_keeps_usb",
+      "finished_at": 1794340848.8934026,
+      "format": "remoterf-receiver-descendant-qualification-1",
+      "guarded_root": {
+        "guardian_required_until_independent_release": true,
+        "identity": [
+          29,
+          497138
+        ],
+        "qualifier_subgroup": "runner",
+        "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-descendant-20261110.service"
+      },
+      "normal_auth": {
+        "four_second_authority_cache_used": false,
+        "match_function_agrees": true,
+        "resolver_unmodified": true,
+        "token_matches": true
+      },
+      "passed": true,
+      "phase": "complete",
+      "private_calendar_empty": true,
+      "qualification_receipt_created": false,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+      "route": "isolated_normal_local_auth_internal_runtime",
+      "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+      "serial": "32C78EE",
+      "source_identity": {
+        "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+        "descendant_harness_sha256": "89b3e504955b6ffe616bc022e9ada1e011cd9609876f28a47a74781ee85f68f3",
+        "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+        "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+        "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+        "module_sha256": {
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+          "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+        },
+        "versions": {
+          "remoterf-device-core": "0.1.7.dev0",
+          "remoterf-example-usrp-probe": "0.1.0",
+          "remoterf-server": "1.7.23.dev0"
+        }
+      },
+      "started_at": 1794340837.9664516,
+      "transmit": false,
+      "uhd_version": "4.10.0.main-release"
+    },
+    "empty-catalog-preflight.json": {
+      "at": 1794340577.6142132,
+      "dev_catalog_request_succeeded": true,
+      "no_physical_inventory_advertised": true,
+      "normal_saved_login": true,
+      "passed": true,
+      "private_deployment_device_count": 0
+    },
+    "empty-inventory-guardian-failure.json": {
+      "apps": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+      "apps_identity": [
+        29,
+        493822
+      ],
+      "emergency_app_cleanup": {
+        "at": 1794339810.9021618,
+        "identity_verified": true,
+        "journals_retained": true,
+        "normal_cleanup_claimed": false,
+        "populated": 0
+      },
+      "emergency_usb": {
+        "node": "/dev/bus/usb/003/015",
+        "owners": 0
+      },
+      "events": [
+        {
+          "action": "stop",
+          "applications": {
+            "hardware_records": 0,
+            "owned_cgroups": 0,
+            "process_records": 0,
+            "root_identity_verified": true
+          },
+          "finished_at": 1794339810.9018855,
+          "reason": "guardian_failure",
+          "returncode": -9,
+          "server_resources_released": true,
+          "started_at": 1794339810.8858135,
+          "uncaptured_server_cleanup": true
+        }
+      ],
+      "failure": {
+        "at": 1794339810.8854249,
+        "message": "module 'os' has no attribute 'pidfd_open'",
+        "trace": [
+          {
+            "file": "remoterf-phase1c-e2e-server-guardian.py",
+            "line": 128
+          },
+          {
+            "file": "remoterf-phase1c-e2e-server-guardian.py",
+            "line": 111
+          }
+        ],
+        "type": "AttributeError"
+      },
+      "guardian_sha256": "278bbe03d59626e52ec54eefd1a0ac4c5dc21499eb806c5e19de2684ada4ff69",
+      "identity": [
+        29,
+        493729
+      ],
+      "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service",
+      "started_at": 1794339780.3735955
+    },
+    "enabled-client.json": {
+      "checks": {
+        "catalog": {
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "deployment_name": "Isolated UCLA Integration Qualification",
+          "device_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:40",
+          "device_type": "usrp",
+          "local_device_id": "40",
+          "online": true
+        },
+        "describe": true,
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": true,
+          "generation": 1,
+          "integrations": [
+            {
+              "actions": [
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": true,
+              "id": "org.remoterf.usrp_probe",
+              "profiles": [
+                "receive"
+              ],
+              "qualified_profiles": [
+                "receive"
+              ],
+              "version": "0.1.0"
+            }
+          ],
+          "next_cursor": null,
+          "reason": null
+        },
+        "duplicate_health_same_action": true,
+        "duplicate_start_same_operation": true,
+        "health": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "ready": true,
+          "received": 4096,
+          "serial": "32C78EE",
+          "uhd_version": "4.10.0.main-release"
+        },
+        "native_refused_while_owned": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "native_rx_after_stop": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "stop_released": true
+      },
+      "client_version": "2.13.13.dev0",
+      "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "deployment_name": "Isolated UCLA Integration Qualification",
+      "deployment_slug": "ucla-integrations-20261110",
+      "device_id": 40,
+      "finished_at": 1794341079.4734888,
+      "mode": "enabled",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "usrp",
+      "route": "relay",
+      "run_id": "17150842999a4e0790e7d5a1232c4c9f",
+      "serial": "32C78EE",
+      "started_at": 1794341066.7655659,
+      "transmit": false
+    },
+    "enabled-observation.json": {
+      "cross_uid_usb_owners_observed": false,
+      "hardware_owners": 0,
+      "in_process_runtime_counters_observed": false,
+      "inspections": [
+        {
+          "backend_verified": true,
+          "hardware": [],
+          "inspection_only": true,
+          "managed_resources_only": true,
+          "processes": [
+            {
+              "identity_verified": true,
+              "owner_id": "a9a9b41994a74ee88975eac3096e16cd27bfec93a35ad23ca84bd773e2417cef",
+              "populated": false,
+              "state": "ready"
+            }
+          ],
+          "recovery_required": true,
+          "unknown_scopes": []
+        },
+        {
+          "backend_verified": true,
+          "hardware": [],
+          "inspection_only": true,
+          "managed_resources_only": true,
+          "processes": [
+            {
+              "identity_verified": true,
+              "owner_id": "a9a9b41994a74ee88975eac3096e16cd27bfec93a35ad23ca84bd773e2417cef",
+              "populated": false,
+              "state": "ready"
+            }
+          ],
+          "recovery_required": true,
+          "unknown_scopes": []
+        }
+      ],
+      "observable_usb_owners": 0,
+      "observed_at": 1794341120.6355298,
+      "populated_owned_scopes": 0,
+      "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+      "root_identity": [
+        29,
+        495366
+      ],
+      "root_identity_verified": true,
+      "unknown_owned_scopes": 0,
+      "usb_node": "/dev/bus/usb/003/015",
+      "usb_observation_scope": "current uid only"
+    },
+    "enabled-startup.json": {
+      "configuration_sha256": "334524c94cf55dbac15c7b68993141efbccc7cb23948250f2a06b37b6b20fc1b",
+      "installed_at": 1794341053.3690658,
+      "mode": "enabled",
+      "production_approved": false,
+      "receipt_sha256": "f7e49e0b65bbe26cac581ada7260db57fb9d3316fafa4ff7418db58c296c644f"
+    },
+    "enabled.json": {
+      "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+      "adapter_version": "0.1.0",
+      "checks": {
+        "application_rx": true,
+        "cleanup_descendants": true,
+        "expired_running": true,
+        "expired_start": true,
+        "explicit_stop": true,
+        "native_rx_after": true,
+        "native_rx_before": true,
+        "next_holder_rx": true,
+        "process_crash": true,
+        "startup_failure": true
+      },
+      "dev_canary_only": true,
+      "evidence_scope": {
+        "descendants": "qualification wrapper parent dies; unchanged real receiver child survives until verified cleanup",
+        "historical_expiry": "local injected revocation while external booking held",
+        "public_generic_api_and_global_calendar": "not established by this receipt; the isolated dev canary tests them next"
+      },
+      "evidence_sha256": {
+        "cleanup": "94c61ddedf401dafc4617fc6249f43d2e444d56cb830c27c965ecc30b111e0c2",
+        "descendants": "97607481870a5382cf81da1b91e8474c5ff93742b921e91d2698aa070b220c25",
+        "handoff": "8d71d1307cf97ebccfa77d2c4f7bd9b7f778e9069268012f98212d5d807f42b0",
+        "service": "c59dda85b683270b856149cb1c703213625d1649af759e9ddf21756522b7a242"
+      },
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "integration_id": "org.remoterf.usrp_probe",
+      "passed": true,
+      "production_approved": false,
+      "profile": "receive",
+      "qualification_version": 1,
+      "run_id": "ucla-dev-only-20261110-e2e",
+      "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+      "serial": "32C78EE",
+      "uhd_version": "4.10.0.main-release"
+    },
+    "exact-build-before.json": {
+      "checked_at": 1794339679.960784,
+      "passed": true,
+      "wheels": {
+        "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": {
+          "files": 79,
+          "sha256": "9d3b88258c7a6298c460f50468a6385bc59d64c72e763dcb21719d230e331d97"
+        },
+        "remoterf_example_usrp_probe-0.1.0-py3-none-any.whl": {
+          "files": 3,
+          "sha256": "e6894b585afcf6a769ec8f9112f60a509eb18521568820fa21907780b152c784"
+        },
+        "remoterf_server-1.7.23.dev0-py3-none-any.whl": {
+          "files": 127,
+          "sha256": "f9b382782d457bb7197c22b1bc77f310075d103ea5a688f9f4923d1249397d4e"
+        }
+      }
+    },
+    "expiry-observation.json": {
+      "attempts": [
+        {
+          "observed_at": 1794341350.651614,
+          "returncode": 0
+        }
+      ],
+      "proof": {
+        "cross_uid_usb_owners_observed": false,
+        "hardware_owners": 0,
+        "in_process_runtime_counters_observed": false,
+        "inspections": [
+          {
+            "backend_verified": true,
+            "hardware": [],
+            "inspection_only": true,
+            "managed_resources_only": true,
+            "processes": [
+              {
+                "identity_verified": true,
+                "owner_id": "b4e565a5e094ecd7c4d8ec0c8a621ab1a0ab3f8be73b977030e2c4bef4c710dd",
+                "populated": false,
+                "state": "ready"
+              }
+            ],
+            "recovery_required": true,
+            "unknown_scopes": []
+          },
+          {
+            "backend_verified": true,
+            "hardware": [],
+            "inspection_only": true,
+            "managed_resources_only": true,
+            "processes": [
+              {
+                "identity_verified": true,
+                "owner_id": "b4e565a5e094ecd7c4d8ec0c8a621ab1a0ab3f8be73b977030e2c4bef4c710dd",
+                "populated": false,
+                "state": "ready"
+              }
+            ],
+            "recovery_required": true,
+            "unknown_scopes": []
+          }
+        ],
+        "observable_usb_owners": 0,
+        "observed_at": 1794341350.6470153,
+        "populated_owned_scopes": 0,
+        "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+        "root_identity": [
+          29,
+          495366
+        ],
+        "root_identity_verified": true,
+        "unknown_owned_scopes": 0,
+        "usb_node": "/dev/bus/usb/003/015",
+        "usb_observation_scope": "current uid only"
+      },
+      "request": {
+        "calendar_end": 1794341340,
+        "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+        "device_id": 40,
+        "event_at": 1794341340,
+        "mode": "expiry",
+        "operation_id": "3f312bd96f1749eb93693e899daa5351",
+        "quiet_started_at": 1794341340,
+        "reservation_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:6",
+        "run_id": "65e090b785d844b9af610be74d1d7660",
+        "serial": "32C78EE"
+      }
+    },
+    "expiry-running-observation.json": {
+      "device_rpcs": 0,
+      "hardware_owners": 1,
+      "observed_at": 1794341233.33503,
+      "populated_owned_scopes": 1,
+      "purpose": "positive independent owned-state observation before actual expiry",
+      "root_identity_verified": true,
+      "unknown_scopes": 0
+    },
+    "expiry.json": {
+      "checks": {
+        "catalog": {
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "deployment_name": "Isolated UCLA Integration Qualification",
+          "device_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:40",
+          "device_type": "usrp",
+          "local_device_id": "40",
+          "online": true
+        },
+        "duplicate_health_same_action": true,
+        "duplicate_start_same_operation": true,
+        "first_post_revocation_device_rpc_at": 1794341350.731324,
+        "health": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "ready": true,
+          "received": 4096,
+          "serial": "32C78EE",
+          "uhd_version": "4.10.0.main-release"
+        },
+        "independent_release_observation": {
+          "cross_uid_usb_owners_observed": false,
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "device_id": 40,
+          "hardware_owners": 0,
+          "in_process_runtime_counters_observed": false,
+          "inspections": [
+            {
+              "backend_verified": true,
+              "hardware": [],
+              "inspection_only": true,
+              "managed_resources_only": true,
+              "processes": [
+                {
+                  "identity_verified": true,
+                  "owner_id": "b4e565a5e094ecd7c4d8ec0c8a621ab1a0ab3f8be73b977030e2c4bef4c710dd",
+                  "populated": false,
+                  "state": "ready"
+                }
+              ],
+              "recovery_required": true,
+              "unknown_scopes": []
+            },
+            {
+              "backend_verified": true,
+              "hardware": [],
+              "inspection_only": true,
+              "managed_resources_only": true,
+              "processes": [
+                {
+                  "identity_verified": true,
+                  "owner_id": "b4e565a5e094ecd7c4d8ec0c8a621ab1a0ab3f8be73b977030e2c4bef4c710dd",
+                  "populated": false,
+                  "state": "ready"
+                }
+              ],
+              "recovery_required": true,
+              "unknown_scopes": []
+            }
+          ],
+          "mode": "expiry",
+          "observable_usb_owners": 0,
+          "observed_at": 1794341350.6470153,
+          "operation_id": "3f312bd96f1749eb93693e899daa5351",
+          "populated_owned_scopes": 0,
+          "reservation_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:6",
+          "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+          "root_identity": [
+            29,
+            495366
+          ],
+          "root_identity_verified": true,
+          "run_id": "65e090b785d844b9af610be74d1d7660",
+          "serial": "32C78EE",
+          "unknown_owned_scopes": 0,
+          "usb_node": "/dev/bus/usb/003/015",
+          "usb_observation_scope": "current uid only"
+        },
+        "native_refused_while_owned": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "next_holder_native_rx": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "no_device_rpc_seconds_after_revocation": 10.731324911117554,
+        "old_operation_hidden_from_next_holder": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        },
+        "release_observation_scope": {
+          "cross_uid_usb_owners_observed": false,
+          "in_process_runtime_counters_observed": false,
+          "source": "independent ownership journal, kernel cgroups and USB owners visible to the service uid"
+        },
+        "revoked_session_refused": {
+          "integration_code": null,
+          "type": "RemoteRFReservationError"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.13.13.dev0",
+      "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "deployment_name": "Isolated UCLA Integration Qualification",
+      "deployment_slug": "ucla-integrations-20261110",
+      "device_id": 40,
+      "finished_at": 1794341355.15313,
+      "mode": "expiry",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "usrp",
+      "route": "relay",
+      "run_id": "65e090b785d844b9af610be74d1d7660",
+      "serial": "32C78EE",
+      "started_at": 1794341181.878738,
+      "transmit": false
+    },
+    "guardian-evidence.json": {
+      "authority_after": {
+        "device_id": 40,
+        "expires_at": 1794344400.0,
+        "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+        "serial": "32C78EE"
+      },
+      "authority_before": {
+        "device_id": 40,
+        "expires_at": 1794344400.0,
+        "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+        "serial": "32C78EE"
+      },
+      "authority_queries": 13,
+      "booking": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+      "child_evidence_sha256": "97607481870a5382cf81da1b91e8474c5ff93742b921e91d2698aa070b220c25",
+      "child_passed": true,
+      "child_returncode": 0,
+      "cleanup": {
+        "hardware_records": 0,
+        "owned_cgroups": 0,
+        "process_records": 0,
+        "root_identity_verified": true
+      },
+      "deadline_seconds": 180,
+      "device_id": 40,
+      "external_guard_patches_auth": false,
+      "finished_at": 1794340849.060033,
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "guarded_root": {
+        "identity": [
+          29,
+          497138
+        ],
+        "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-descendant-20261110.service"
+      },
+      "guardian_sha256": "7ac0279b5212aa96a2fa63373a840a807dd69c9fd247b5d5805409796f1f04e6",
+      "independent_cleanup_required": true,
+      "parent_limits": {
+        "cpu.max": "max 100000",
+        "memory.max": "1610612736",
+        "pids.max": "256"
+      },
+      "passed": true,
+      "runner_cleanup": {
+        "emergency_kill": false,
+        "identity": [
+          29,
+          497231
+        ],
+        "kernel_populated": 0
+      },
+      "serial": "32C78EE",
+      "serial_lock_held": true,
+      "started_at": 1794340837.7692049,
+      "transmit": false,
+      "usb_after": {
+        "device_node": "/dev/bus/usb/003/015",
+        "owner_count": 0
+      },
+      "usb_before": {
+        "device_node": "/dev/bus/usb/003/015",
+        "owner_count": 0
+      }
+    },
+    "independent-cleanup.json": {
+      "cross_uid_usb_owners_observed": false,
+      "device_id": 40,
+      "evidence_sha256": "97607481870a5382cf81da1b91e8474c5ff93742b921e91d2698aa070b220c25",
+      "format": "remoterf-receiver-descendant-independent-cleanup-1",
+      "guarded_root": {
+        "identity": [
+          29,
+          497138
+        ],
+        "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-descendant-20261110.service"
+      },
+      "hardware_records": 0,
+      "observed_at": 1794340869.726373,
+      "owned_cgroups": 0,
+      "passed": true,
+      "process_records": 0,
+      "production": {
+        "integration_config_present": false,
+        "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+        "service_pid": "359991",
+        "versions": {
+          "remoterf-device-core": "0.1.6",
+          "remoterf-server": "1.7.21"
+        }
+      },
+      "production_unchanged": true,
+      "root_identity_verified": true,
+      "serial": "32C78EE",
+      "usb_device_node": "/dev/bus/usb/003/015",
+      "usb_observation_scope": "current uid only",
+      "usb_owner_count": 0
+    },
+    "independent-failure-cleanup.json": {
+      "application_population": 0,
+      "failure": "Python build omitted pidfd wrappers; emergency cleanup passed",
+      "hardware_inventory_was_empty": true,
+      "observed_at": 1794339904.8381915,
+      "passed": true,
+      "production_unchanged": true,
+      "root_identity_verified": true,
+      "server_scopes": 0
+    },
+    "preflight-status.json": {
+      "at": 1794340403.255743,
+      "dev_schema_approval_changed": true,
+      "hardware_started": false,
+      "local_combined_tests": {
+        "command": "PYTHONPATH=client/src /tmp/remoterf-phase1-python312/bin/python -m pytest -q tools/qualification/tests/test_usrp_e2e_descendants.py tools/qualification/tests/test_usrp_e2e_receipt.py tools/qualification/tests/test_usrp_dev_e2e.py",
+        "passed": 61,
+        "setup_failures": [
+          "server-only test environment lacked client import path",
+          "client-only environment lacked core/probe; corrected by using server/probe env with client source path"
+        ]
+      },
+      "no_production_deploy": true,
+      "radio_access_begins_at": 1794340800,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+      "restore_status": "rejected",
+      "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+      "test_guardian_preflight_failure": "UCLA Python lacked os/signal pidfd wrappers; corrected with tested libc fallback, all empty-inventory scopes independently cleared before restart"
+    },
+    "receipt-mismatch-cleanup.json": {
+      "application_cgroups": 0,
+      "application_population": 0,
+      "guarded_root_identity_verified": true,
+      "journal_files_present": false,
+      "journal_persistence": "No first application claim; receipt rejection preceded journal writes",
+      "mode": "receipt-mismatch",
+      "observable_usb_owners": 0,
+      "observed_at": 1794341053.3687944,
+      "passed": true,
+      "server_graceful_exit": true,
+      "usb_observation_scope": "current uid only"
+    },
+    "receipt-mismatch-startup.json": {
+      "configuration_sha256": "ba9dc1e5be7a1f2bd1bd77fb7a197c4566656dcfc8c66c9bae5045d34512fd3f",
+      "installed_at": 1794340996.8870573,
+      "mismatch_field": "framework_hash",
+      "mismatch_value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mode": "receipt-mismatch",
+      "receipt_sha256": "831f4e28c939c3552e804e8fe801c2791c64c25d127dfe659475756b38f54e13"
+    },
+    "receipt-mismatch.json": {
+      "checks": {
+        "catalog": {
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "deployment_name": "Isolated UCLA Integration Qualification",
+          "device_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:40",
+          "device_type": "usrp",
+          "local_device_id": "40",
+          "online": true
+        },
+        "describe": true,
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": false,
+          "generation": 1,
+          "integrations": [
+            {
+              "actions": [
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": false,
+              "id": "org.remoterf.usrp_probe",
+              "profiles": [
+                "receive"
+              ],
+              "qualified_profiles": [],
+              "version": "0.1.0"
+            }
+          ],
+          "next_cursor": null,
+          "reason": "qualification_required"
+        },
+        "native_rx_after_refusal": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "unqualified_start_refused": {
+          "integration_code": "qualification_required",
+          "type": "RemoteRFProtocolError"
+        }
+      },
+      "client_version": "2.13.13.dev0",
+      "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "deployment_name": "Isolated UCLA Integration Qualification",
+      "deployment_slug": "ucla-integrations-20261110",
+      "device_id": 40,
+      "finished_at": 1794341014.9329028,
+      "mode": "receipt-mismatch",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "usrp",
+      "route": "relay",
+      "run_id": "9718cf70bae34c55905d6b141d3af8ee",
+      "serial": "32C78EE",
+      "started_at": 1794341008.054781,
+      "transmit": false
+    },
+    "receipt-missing-cleanup.json": {
+      "application_cgroups": 0,
+      "application_population": 0,
+      "guarded_root_identity_verified": true,
+      "journal_files_present": false,
+      "journal_persistence": "No first application claim; negative receipt rejection preceded journal writes",
+      "mode": "receipt-missing",
+      "observable_usb_owners": 0,
+      "observed_at": 1794340996.886836,
+      "passed": true,
+      "server_graceful_exit": true,
+      "strict_live_observer": "Correctly refused missing journals; not used to claim empty persisted files",
+      "usb_observation_scope": "current uid only"
+    },
+    "receipt-missing-startup.json": {
+      "configuration_sha256": "5d5ede7ab4d3a593c6de063dd54d601bae1c964acf57db62e6ae483f81cc24d6",
+      "installed_at": 1794340902.8404236,
+      "inventory_sha256": "e0bcc37df5b2fbbad9eca991d9382be8b08aaa22df9525097fdf520c61d6a766",
+      "mode": "receipt-missing",
+      "receipt_exists": false
+    },
+    "receipt-missing.json": {
+      "checks": {
+        "catalog": {
+          "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "deployment_name": "Isolated UCLA Integration Qualification",
+          "device_id": "c59791c0-7645-4a4a-94d8-55c5551061a9:40",
+          "device_type": "usrp",
+          "local_device_id": "40",
+          "online": true
+        },
+        "describe": true,
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": false,
+          "generation": 1,
+          "integrations": [
+            {
+              "actions": [
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": false,
+              "id": "org.remoterf.usrp_probe",
+              "profiles": [
+                "receive"
+              ],
+              "qualified_profiles": [],
+              "version": "0.1.0"
+            }
+          ],
+          "next_cursor": null,
+          "reason": "qualification_required"
+        },
+        "native_rx_after_refusal": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096,
+          "serial": "32C78EE"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "unqualified_start_refused": {
+          "integration_code": "qualification_required",
+          "type": "RemoteRFProtocolError"
+        }
+      },
+      "client_version": "2.13.13.dev0",
+      "deployment_id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "deployment_name": "Isolated UCLA Integration Qualification",
+      "deployment_slug": "ucla-integrations-20261110",
+      "device_id": 40,
+      "finished_at": 1794340923.528298,
+      "mode": "receipt-missing",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "usrp",
+      "route": "relay",
+      "run_id": "a505939d84494f6e95234eb619972191",
+      "serial": "32C78EE",
+      "started_at": 1794340916.5481548,
+      "transmit": false
+    },
+    "server-guardian-final.json": {
+      "apps": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+      "apps_identity": [
+        29,
+        495366
+      ],
+      "events": [
+        {
+          "action": "start",
+          "at": 1794340230.0758333,
+          "hardware_inventory": false,
+          "owner": "server-266542abe1264ddb8f79fcd3b2e41b34",
+          "sequence": 1,
+          "server_scope": {
+            "identity": [
+              29,
+              495752
+            ],
+            "name": "rrf-443cd568256149c7abdc4a7d13a77583",
+            "state": "ready"
+          }
+        },
+        {
+          "action": "stop",
+          "applications": {
+            "hardware_records": 0,
+            "owned_cgroups": 0,
+            "process_records": 0,
+            "root_identity_verified": true
+          },
+          "finished_at": 1794340884.1980531,
+          "reason": "operator",
+          "returncode": 0,
+          "server_resources_released": true,
+          "started_at": 1794340883.5855362
+        },
+        {
+          "action": "start",
+          "at": 1794340903.0137045,
+          "hardware_inventory": true,
+          "owner": "server-89eaf0e45866470bb48e23e17adc0c82",
+          "sequence": 2,
+          "server_scope": {
+            "identity": [
+              29,
+              497717
+            ],
+            "name": "rrf-51f0b7328fcd453e8e7eca265038d092",
+            "state": "ready"
+          }
+        },
+        {
+          "action": "stop",
+          "applications": {
+            "hardware_records": 0,
+            "owned_cgroups": 0,
+            "process_records": 0,
+            "root_identity_verified": true
+          },
+          "finished_at": 1794340942.1484978,
+          "reason": "operator",
+          "returncode": 0,
+          "server_resources_released": true,
+          "started_at": 1794340941.5193946,
+          "usb": {
+            "node": "/dev/bus/usb/003/015",
+            "owners": 0
+          }
+        },
+        {
+          "action": "start",
+          "at": 1794340997.039735,
+          "hardware_inventory": true,
+          "owner": "server-1984618e365f4be1ac3c613f67e54f07",
+          "sequence": 3,
+          "server_scope": {
+            "identity": [
+              29,
+              498010
+            ],
+            "name": "rrf-17324f1247694bc2ad7fc87efdec07c5",
+            "state": "ready"
+          }
+        },
+        {
+          "action": "stop",
+          "applications": {
+            "hardware_records": 0,
+            "owned_cgroups": 0,
+            "process_records": 0,
+            "root_identity_verified": true
+          },
+          "finished_at": 1794341031.6865234,
+          "reason": "operator",
+          "returncode": 0,
+          "server_resources_released": true,
+          "started_at": 1794341031.362356,
+          "usb": {
+            "node": "/dev/bus/usb/003/015",
+            "owners": 0
+          }
+        },
+        {
+          "action": "start",
+          "at": 1794341053.551591,
+          "hardware_inventory": true,
+          "owner": "server-083c4898a06648e5b0861b834c1a6bda",
+          "sequence": 4,
+          "server_scope": {
+            "identity": [
+              29,
+              498203
+            ],
+            "name": "rrf-0fedca43b1474ebba449411cfab25a11",
+            "state": "ready"
+          }
+        },
+        {
+          "action": "stop",
+          "applications": {
+            "hardware_records": 0,
+            "owned_cgroups": 0,
+            "process_records": 0,
+            "root_identity_verified": true
+          },
+          "finished_at": 1794341522.4703248,
+          "reason": "operator",
+          "returncode": 0,
+          "server_resources_released": true,
+          "started_at": 1794341521.8358493,
+          "usb": {
+            "node": "/dev/bus/usb/003/015",
+            "owners": 0
+          }
+        }
+      ],
+      "guardian_sha256": "e7c9808631fbd2b06babed185875ce3ef661992617d3058a815c7a833b9f0e64",
+      "identity": [
+        29,
+        495273
+      ],
+      "released_at": 1794341536.034867,
+      "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service",
+      "started_at": 1794340173.8270526
+    }
+  },
+  "route": "isolated_dev_Global_relay",
+  "scope": "one serial/UHD/profile/default receive configuration; no global cross-UID USB audit or hidden runtime-counter inference",
+  "serial": "32C78EE",
+  "transmit": false
+}

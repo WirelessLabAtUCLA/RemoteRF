@@ -1,0 +1,339 @@
+{
+  "dev_account_deleted_and_proxy_cleanup_completed": true,
+  "dev_canary_withdrawn": true,
+  "dev_lease_release": "released remoterf-core issue-900110\n{\"branch\":\"\",\"repo\":\"\",\"sha\":\"\",\"since\":\"\",\"free\":true,\"queue\":[],\"global\":{\"image\":\"ghcr.io/wirelesslabatucla/remoterf-global:sha-766e2cc78e7814e4eff467d7d88c65d7a1554770\"},\"testlab\":{\"server\":\"1.7.22\"}}\n",
+  "dev_lease_released": true,
+  "final_local_check_source": "from pathlib import Path\nfrom importlib.metadata import version\nimport hashlib,json,subprocess,time,zipfile,yaml\nbase=Path('/tmp/remoterf-phase1c-e2e-20261110')\nartifacts=Path('/tmp/remoterf-phase1c-radio-final-20261109')\ndef show(unit):\n out=subprocess.check_output(['systemctl','--user','show',unit,'-p','MainPID','-p','ActiveState','-p','SubState','-p','ControlGroup','-p','Result'],text=True)\n return dict(line.split('=',1) for line in out.splitlines() if '=' in line)\nbefore=json.loads((base/'production-before.json').read_text());prod=Path.home()/'.config/remoterf'\nservice=show('remoterf-lab.service');assert service['ActiveState']=='active'\nnow={'service_pid':service['MainPID'],'versions':{n:version(n) for n in before['versions']},\n 'inventory_sha256':hashlib.sha256((prod/'devices.yml').read_bytes()).hexdigest(),'integration_config_present':(prod/'integrations.json').exists()}\nassert now==before\nunits={}\nfor name in ('server','descendant'):\n unit='remoterf-phase1c-e2e-'+name+'-20261110.service';v=show(unit)\n assert v['MainPID']=='0' and not v['ControlGroup'] and v['Result']=='success'\n units[unit]=v\nfor path,key in ((base/'server-guardian-v4/ready.json','root'),(base/'descendant/guardian-evidence.json','guarded_root')):\n value=json.loads(path.read_text())[key];root=Path(value['root'] if isinstance(value,dict) else value);assert not root.exists()\nc=base/'service/config/remoterf';assert yaml.safe_load((c/'devices.yml').read_text())['devices']==[]\nassert json.loads((c/'integrations.json').read_text())['enabled'] is False\nfor p,key in ((c/'db/integrations/ownership/ownership.json',None),(c/'db/integrations/processes/scopes.json','scopes'),\n (base/'server-guardian-v4/processes/scopes.json','scopes'),(base/'descendant/run/ownership/ownership.json',None),(base/'descendant/run/processes/scopes.json','scopes')):\n value=json.loads(p.read_text());assert (value[key] if key else value)=={}\nusb=[]\nfor p in Path('/sys/bus/usb/devices').glob('*/serial'):\n try:\n  if p.read_text().strip()=='32C78EE':usb.append(p.parent)\n except OSError:pass\nassert len(usb)==1\nd=usb[0];node=Path('/dev/bus/usb')/('%03d'%int((d/'busnum').read_text()))/('%03d'%int((d/'devnum').read_text()))\nquery=subprocess.run(['fuser',str(node)],capture_output=True,timeout=2)\nassert query.returncode==1 and not query.stdout.strip() and not query.stderr.strip()\nidentity=json.loads((artifacts/'installed-identity.json').read_text());site=artifacts/'env/lib/python3.12/site-packages';wheels={}\nfor name,record in identity['wheel_identity'].items():\n wheel=artifacts/name;assert hashlib.sha256(wheel.read_bytes()).hexdigest()==record['sha256'];count=0\n with zipfile.ZipFile(wheel) as archive:\n  for member in archive.namelist():\n   if member.endswith('/') or '.dist-info/' in member:continue\n   assert (site/member).read_bytes()==archive.read(member),member\n   count+=1\n wheels[name]={'sha256':record['sha256'],'packaged_files_matched':count}\nassert sum(v['packaged_files_matched'] for v in wheels.values())==209\nresult={'passed':True,'observed_at':time.time(),'production':now,'production_unchanged':True,\n 'units':units,'owned_cgroup_roots_absent':True,'persisted_hardware_and_process_journals_empty':True,\n 'private_canary_disabled':True,'private_inventory_empty':True,'observable_usb_owners':0,\n 'usb_observation_scope':'current uid only','cross_uid_usb_owners_observed':False,'usb_node':str(node),\n 'exact_wheels':wheels,'production_integrations_enabled':False,'production_push_or_publication':False}\nwith (base/'final-state.json').open('x') as output:json.dump(result,output,indent=2);output.write('\\n')\nprint(json.dumps(result))\n",
+  "format": "remoterf-real-radio-dev-e2e-restoration-1",
+  "generated_at": 1794341786.42241,
+  "outer_reservation_released": true,
+  "passed": true,
+  "prior_dev_schema_status_restored": true,
+  "production_integrations_enabled": false,
+  "production_push_or_publication": false,
+  "production_unchanged": true,
+  "record_sha256": {
+    "dev-account-schema-restoration.json": "8e341326f530419d91476b3208e4953056c0d9cf03aff0091676939eef57b0b1",
+    "dev-calendar-empty.json": "8c113990fa0e37ed62197ccf497fb74ceaca66ba6b688e1b24e7365c915e471f",
+    "dev-deployment-restoration.json": "6dbe540233953a37be00d3c9025dcb918b192f76824bd64d2bb1444db550b3c6",
+    "dev-final-status.json": "ee72b2a554aed2b4eb5a56748ca10722f625fb84a104f3177875ecb91af69142",
+    "final-live-observation.json": "7cbaa36bc8bad9a8574a801969ce2d6b0db42c15bdda65ccaa05f77818d2ae11",
+    "final-state.json": "a2e1c85f89d8a49e4c1308110aa204f1c8de197b593db0cd4adf138e637f58b5",
+    "outer-reservation-release.json": "0be15fb078665630c4e65fb847d7706570f6ac6148a0ab0f227d9fa2f7a1b628",
+    "production-before.json": "13da3d5a8c1226204496cb453edf576e9c90d656d05cd2cb3ec9a59470e69008",
+    "production-rx-after.json": "9f7fd1bc610fa5ce1cc60393bbf860deb1d5559081d61d2c111896ec9ce90032",
+    "production-rx-before.json": "6f48b72ffb812c8a8f77b35d22b1d36a2f47f9e4ff55285262a440f7c38df367"
+  },
+  "records": {
+    "dev-account-schema-restoration.json": {
+      "account": "integration-e2e-20261110",
+      "account_delete": {
+        "deleted": {
+          "account_tokens": 1,
+          "deployment_accounts": 1,
+          "deployment_group_memberships": 1,
+          "device_tokens": 0,
+          "global_cluster_enrollments": 0,
+          "global_invite_enrollments": 1,
+          "global_lan_links": 0,
+          "home_sessions": 2,
+          "oauth_codes": 0,
+          "oauth_grants": 0,
+          "users": 1
+        },
+        "previous_status": "active",
+        "subject_id": "d696c2e1-dd83-48e8-bb7c-9d1aa0dd710e",
+        "username": "integration-e2e-20261110"
+      },
+      "account_delete_exit_code": 0,
+      "all_prior_schema_statuses_restored": true,
+      "destination": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "finished_at": 1794341492.809462,
+      "global_leave_performed": false,
+      "origin": "https://dev.global.remoterf.net",
+      "other_schema_rows_unchanged": true,
+      "production_changed": false,
+      "proxy_revocation_complete": true,
+      "ready_for_server_stop": true,
+      "revocation_observation": {
+        "global": {
+          "observed_at": 1794341466.2195313,
+          "pending_subject_revocations": 0,
+          "remaining_accounts": 0,
+          "remaining_device_tokens": 0
+        },
+        "private_canary": {
+          "group_memberships": 0,
+          "observed_at": 1794341465.9964423,
+          "retained_audit_events": 262,
+          "retained_subject_redemptions": 1,
+          "subject_principals": 0
+        }
+      },
+      "schema_after": [
+        {
+          "decided_at": 1793396633,
+          "decided_by": "admin",
+          "deployment_id": "9ad48dc2-aa41-4e05-82f5-e50f36dbdbdb",
+          "deployment_name": "RemoteRF dev test lab",
+          "device_type": "sim_sdr",
+          "first_seen": 1793396620,
+          "note": null,
+          "schema_hash": "sha256:3e5daa54e92aa4463cea402b14d05039018cefb867d4503e2048bb8ebdceba7d",
+          "schema_version": "1.0",
+          "status": "approved"
+        },
+        {
+          "decided_at": 1794341491,
+          "decided_by": "integration-e2e-20261110",
+          "deployment_id": "9ad48dc2-aa41-4e05-82f5-e50f36dbdbdb",
+          "deployment_name": "RemoteRF dev test lab",
+          "device_type": "usrp",
+          "first_seen": 1794272184,
+          "note": "DEV ONLY: qualification complete; prior rejected status restored",
+          "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+          "schema_version": "2.0",
+          "status": "rejected"
+        }
+      ],
+      "schema_restoration_command": {
+        "at": 1794341492.230569,
+        "exit_code": 0,
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "status": "rejected"
+      },
+      "started_at": 1794341421.415301,
+      "subject_id": "d696c2e1-dd83-48e8-bb7c-9d1aa0dd710e"
+    },
+    "dev-calendar-empty.json": {
+      "dev_reservations": 0,
+      "observed_at": 1794341383.028398,
+      "passed": true
+    },
+    "dev-deployment-restoration.json": {
+      "broker_after_leave": {
+        "canary": {
+          "active_relay_member": false,
+          "bound_name": null,
+          "id": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+          "status": "left"
+        },
+        "testlab": {
+          "id": "9ad48dc2-aa41-4e05-82f5-e50f36dbdbdb",
+          "slug": "testlab",
+          "status": "active"
+        }
+      },
+      "destination": "c59791c0-7645-4a4a-94d8-55c5551061a9",
+      "dev_after_leave": {
+        "images": {
+          "remoterf-v2-live-broker-1": "ghcr.io/wirelesslabatucla/remoterf-global:sha-766e2cc78e7814e4eff467d7d88c65d7a1554770",
+          "remoterf-v2-live-deployment-1": "ghcr.io/wirelesslabatucla/remoterf-global:sha-766e2cc78e7814e4eff467d7d88c65d7a1554770",
+          "remoterf-vps-global-caddy-1": "caddy:2-alpine",
+          "remoterf-vps-global-haproxy-1": "haproxy:2.9-alpine"
+        },
+        "testlab": {
+          "ActiveState": "active",
+          "ExecMainStartTimestampMonotonic": "954262405237",
+          "MainPID": "1031200",
+          "SubState": "running",
+          "integration_configuration_exists": false,
+          "inventory_path": "/opt/remoterf-testlab/.config/remoterf/devices.yml",
+          "inventory_sha256": "cc5325a4c291798467b761ff40ac276e131969373e07c4ee6aefbfc9e1f34200"
+        }
+      },
+      "dev_before_leave": {
+        "images": {
+          "remoterf-v2-live-broker-1": "ghcr.io/wirelesslabatucla/remoterf-global:sha-766e2cc78e7814e4eff467d7d88c65d7a1554770",
+          "remoterf-v2-live-deployment-1": "ghcr.io/wirelesslabatucla/remoterf-global:sha-766e2cc78e7814e4eff467d7d88c65d7a1554770",
+          "remoterf-vps-global-caddy-1": "caddy:2-alpine",
+          "remoterf-vps-global-haproxy-1": "haproxy:2.9-alpine"
+        },
+        "testlab": {
+          "ActiveState": "active",
+          "ExecMainStartTimestampMonotonic": "954262405237",
+          "MainPID": "1031200",
+          "SubState": "running",
+          "integration_configuration_exists": false,
+          "inventory_path": "/opt/remoterf-testlab/.config/remoterf/devices.yml",
+          "inventory_sha256": "cc5325a4c291798467b761ff40ac276e131969373e07c4ee6aefbfc9e1f34200"
+        }
+      },
+      "dev_images_unchanged": true,
+      "finished_at": 1794341689.678893,
+      "local_secret_cleanup": {
+        "audit_evidence_retained": true,
+        "other_user_credentials_touched": false,
+        "remaining_credential_files": 0,
+        "removed_files": [
+          "account.json",
+          "enrollment-secret.json",
+          ".config/remoterf-client/deployment/credentials/629a1a7a389625b2ee376e75e988b42a9d5da048fe90bec80a20e24c6706ae67/d696c2e1-dd83-48e8-bb7c-9d1aa0dd710e.json",
+          ".config/remoterf-client/deployment/credentials/629a1a7a389625b2ee376e75e988b42a9d5da048fe90bec80a20e24c6706ae67/selected.json"
+        ]
+      },
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "private_leave": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "Left RemoteRF Global. The relay and status report stop immediately.\n"
+      },
+      "production_changed": false,
+      "started_at": 1794341617.4219341,
+      "testlab_pid_inventory_and_configuration_unchanged": true
+    },
+    "dev-final-status.json": {
+      "branch": "",
+      "free": true,
+      "global": {
+        "image": "ghcr.io/wirelesslabatucla/remoterf-global:sha-766e2cc78e7814e4eff467d7d88c65d7a1554770"
+      },
+      "queue": [],
+      "repo": "",
+      "sha": "",
+      "since": "",
+      "testlab": {
+        "server": "1.7.22"
+      }
+    },
+    "final-live-observation.json": {
+      "cross_uid_usb_owners_observed": false,
+      "hardware_owners": 0,
+      "in_process_runtime_counters_observed": false,
+      "inspections": [
+        {
+          "backend_verified": true,
+          "hardware": [],
+          "inspection_only": true,
+          "managed_resources_only": true,
+          "processes": [],
+          "recovery_required": false,
+          "unknown_scopes": []
+        },
+        {
+          "backend_verified": true,
+          "hardware": [],
+          "inspection_only": true,
+          "managed_resources_only": true,
+          "processes": [],
+          "recovery_required": false,
+          "unknown_scopes": []
+        }
+      ],
+      "observable_usb_owners": 0,
+      "observed_at": 1794341383.662215,
+      "populated_owned_scopes": 0,
+      "root": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-e2e-server-20261110.service/apps",
+      "root_identity": [
+        29,
+        495366
+      ],
+      "root_identity_verified": true,
+      "unknown_owned_scopes": 0,
+      "usb_node": "/dev/bus/usb/003/015",
+      "usb_observation_scope": "current uid only"
+    },
+    "final-state.json": {
+      "cross_uid_usb_owners_observed": false,
+      "exact_wheels": {
+        "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": {
+          "packaged_files_matched": 79,
+          "sha256": "9d3b88258c7a6298c460f50468a6385bc59d64c72e763dcb21719d230e331d97"
+        },
+        "remoterf_example_usrp_probe-0.1.0-py3-none-any.whl": {
+          "packaged_files_matched": 3,
+          "sha256": "e6894b585afcf6a769ec8f9112f60a509eb18521568820fa21907780b152c784"
+        },
+        "remoterf_server-1.7.23.dev0-py3-none-any.whl": {
+          "packaged_files_matched": 127,
+          "sha256": "f9b382782d457bb7197c22b1bc77f310075d103ea5a688f9f4923d1249397d4e"
+        }
+      },
+      "observable_usb_owners": 0,
+      "observed_at": 1794341555.5645056,
+      "owned_cgroup_roots_absent": true,
+      "passed": true,
+      "persisted_hardware_and_process_journals_empty": true,
+      "private_canary_disabled": true,
+      "private_inventory_empty": true,
+      "production": {
+        "integration_config_present": false,
+        "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+        "service_pid": "359991",
+        "versions": {
+          "remoterf-device-core": "0.1.6",
+          "remoterf-server": "1.7.21"
+        }
+      },
+      "production_integrations_enabled": false,
+      "production_push_or_publication": false,
+      "production_unchanged": true,
+      "units": {
+        "remoterf-phase1c-e2e-descendant-20261110.service": {
+          "ActiveState": "inactive",
+          "ControlGroup": "",
+          "MainPID": "0",
+          "Result": "success",
+          "SubState": "dead"
+        },
+        "remoterf-phase1c-e2e-server-20261110.service": {
+          "ActiveState": "inactive",
+          "ControlGroup": "",
+          "MainPID": "0",
+          "Result": "success",
+          "SubState": "dead"
+        }
+      },
+      "usb_node": "/dev/bus/usb/003/015",
+      "usb_observation_scope": "current uid only"
+    },
+    "outer-reservation-release.json": {
+      "account_reservations_after": [],
+      "approval": "November 10, 2026 noon\u20131 PM Pacific; release afterward",
+      "cancel_observed_at": "2026-11-10T20:12:43Z",
+      "cancelled": true,
+      "passed": true,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1029",
+      "verified_at": "2026-11-10 20:13:22 UTC"
+    },
+    "production-before.json": {
+      "integration_config_present": false,
+      "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+      "service_pid": "359991",
+      "versions": {
+        "remoterf-device-core": "0.1.6",
+        "remoterf-server": "1.7.21"
+      }
+    },
+    "production-rx-after.json": {
+      "client": "2.13.13.dev0",
+      "closed": true,
+      "deployed_schema_hash": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+      "open_seconds": 2.6807300410000607,
+      "passed": true,
+      "purpose": "ordinary production UHD after isolated dev end-to-end cleanup",
+      "rate": 1000000.0,
+      "received": 4096,
+      "route": "deployed_global_device_plane",
+      "serial": "32C78EE",
+      "transmit": false,
+      "uhd_version": "4.10.0.main-release"
+    },
+    "production-rx-before.json": {
+      "client": "2.13.13.dev0",
+      "closed": true,
+      "deployed_schema_hash": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+      "open_seconds": 2.658801250043325,
+      "passed": true,
+      "purpose": "ordinary production UHD baseline before isolated dev E2E",
+      "rate": 1000000.0,
+      "received": 4096,
+      "route": "deployed_global_device_plane",
+      "serial": "32C78EE",
+      "transmit": false,
+      "uhd_version": "4.10.0.main-release"
+    }
+  },
+  "serial": "32C78EE"
+}

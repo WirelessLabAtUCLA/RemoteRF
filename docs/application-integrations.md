@@ -156,7 +156,13 @@ package is installed or enabled automatically by the runtime.
 ## Operator configuration and qualification
 
 The server reads `integrations.json` in its RemoteRF configuration root before
-opening native inventory. This example stays disabled and names no receipt:
+opening native inventory.
+
+On Linux, keep `$XDG_CONFIG_HOME/remoterf` aligned with `REMOTERF_CONFIG_DIR`
+when isolating a deployment. Setting only an arbitrary `REMOTERF_CONFIG_DIR`
+does not relocate the integration configuration/state root used by `db_location`.
+
+This example stays disabled and names no receipt:
 
 ```json
 {
@@ -187,6 +193,9 @@ cannot be ruled out. Changes to the installed physical alias mapping require a
 drained restart; inventory reload cannot introduce an unfenced alias. An active
 native session, legacy inventory object, child handle, worker, opening alias or
 unfinished cleanup prevents handoff before existing UHD resources are released.
+Audit the entire inventory before activation: even an unrelated broad/address/
+composite USRP or Phaser record can make the enabled mapping fail with
+`ambiguous_hardware`. The disabled, owner-free path keeps its existing behavior.
 
 Qualification is a trusted operator record, not a client flag, signature service
 or evidence generator. For **each physical serial and adapter profile**, the
@@ -227,6 +236,15 @@ Do not turn these fields true without the corresponding hardware evidence.
 Review and install the receipt under an operator-protected path, then reference
 it in `qualifications`; enable only the explicitly qualified deployment/device.
 Global schema approval is a separate gate and is not replaced by this receipt.
+
+The current receipt matches a **profile name**, not an enforced configuration
+envelope. Qualification at one rate/frequency/channel/gain/sample count does not
+qualify every value accepted by an adapter's validator. Before production
+activation, constrain the enabled profile to its qualified settings or add an
+enforced qualification envelope and test its supported bounds. The example
+probe's broad validator is not evidence for that entire range. Extra receipt
+annotations such as `dev_canary_only` or `production_approved` are not runtime
+enforcement; keep dev receipts and enabled configuration private to the canary.
 
 `integrations.fingerprint.adapter_digest(manifest)` returns the unprefixed
 64-character adapter SHA-256 without importing it. It binds manifest/factory,
@@ -360,6 +378,25 @@ remain `Any`. Test raw client/server/host compatibility before publishing.
 
 ## Verification and remaining release gates
 
+Keep three decisions separate: rollout of the framework with integrations
+disabled, activation of a qualified adapter, and later OAI support. Passing an
+isolated dev radio run does not authorize production activation. Remaining
+production work includes:
+
+- A shipped, reviewed service/delegation setup with stable ownership identity
+  across server restarts and independent worker cleanup after server/native
+  failure. Temporary qualification guardians do not ship this containment.
+- Aggregate service CPU, memory, task and retained-directory budgets, followed
+  by extended physical-radio soak and ordinary UHD responsiveness/fairness checks.
+  Per-scope limits and fake-radio load tests do not establish these budgets.
+- Recovery/rollback rehearsal: stop admission, drain, verify managed processes,
+  hardware and journals, restart disabled, restore supported prior artifacts and
+  schemas, then receive through ordinary UHD. Never downgrade over unresolved
+  ownership. Reboot/replaced cgroup identities need an explicit operator procedure.
+- A declared supported configuration, inventory, hardware, native-UHD, client
+  and route matrix; required release/schema/receipt approvals remain separate.
+  Receive-only evidence does not qualify TX or unsupported application profiles.
+
 The [Phase 1c evidence summary](qualification/phase1c-2026-11-09.md) links the
 recorded software, Linux-process and receive-only hardware results.
 
@@ -386,6 +423,16 @@ reuse. This closes that narrow cold-process concern for the tested exact build;
 the original harness failure's precise cause remains unproven. Public new-server
 startup/Global routes, physical power-cycle starts and broader production gates
 remain separate.
+
+The [November 10 real-radio dev Global run](qualification/phase1c-ucla-dev-e2e-2026-11-10.md)
+then passed normal private-server startup, missing/mismatched/matching receipts,
+the generic client lifecycle, receiver-descendant cleanup and actual Global
+cancellation/expiry on the unchanged exact build. Independent observations
+preceded every post-revocation device RPC; next-holder and unchanged production
+UHD receive passed. The temporary account, schema approval, deployment and work
+lease were cleaned up, and the physical booking was released. CI passed 83
+focused checks without skips. This closes those scoped dev/RX gaps for the
+tested radio and configuration; the production gates above remain open.
 
 Deterministic tests cover disabled/broken packages, raw request rejection before
 native construction, current authority and cross-session IDs, start/action
