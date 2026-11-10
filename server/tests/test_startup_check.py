@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import io
 import os
 import pty
+import select
 import sys
 import threading
 import time
@@ -198,13 +200,35 @@ def test_poe_failure_still_returns_to_standby():
 def test_tty_spinner_redraws_in_place():
     master, slave = pty.openpty()
     out = os.fdopen(slave, "w", encoding="utf-8")
-    display = sc._Display(out)
-    display.spin("[100] Pluto 00 · testing…")
-    display.result(True, "[100] Pluto 00", "operational")
-    out.flush()
-    text = os.read(master, 4096).decode()
-    out.close()
-    os.close(master)
+    try:
+        display = sc._Display(out)
+        display.spin("[100] Pluto 00 · testing…")
+        display.result(True, "[100] Pluto 00", "operational")
+        out.flush()
+        # A PTY read may contain only one of the display's several writes.
+        # Keep the writer open: macOS may discard queued output when it closes.
+        # Drain until a short idle interval, within an overall bounded deadline.
+        chunks = []
+        deadline = time.monotonic() + 2
+        while True:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "PTY output did not finish"
+            if not select.select([master], [], [], min(remaining, 0.05) if chunks else remaining)[0]:
+                break
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            chunks.append(chunk)
+            assert sum(map(len, chunks)) <= 16384, "unexpectedly large PTY output"
+        text = b"".join(chunks).decode()
+    finally:
+        out.close()
+        os.close(master)
     assert "\r\x1b[2K" in text and "testing…" in text and "operational" in text
     assert text.index("testing…") < text.rindex("\r\x1b[2K") < text.index("✓")
 
