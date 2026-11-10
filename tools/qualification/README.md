@@ -1,4 +1,51 @@
-# Receive-only ownership qualification
+# Integration qualification
+
+## Synthetic runtime load and soak
+
+`integration_soak.py` runs the real session manager, generic controller, runtime
+and durable ownership journal against explicitly fake radios, reservation
+authority, qualification receipts and process scopes. Run it in an isolated
+Linux environment containing the intended core/server builds. It never enables
+deployed integrations or supplies a hardware qualification receipt.
+
+```sh
+env -u PYTHONPATH -u REMOTERF_CONFIG_DIR \
+  XDG_CONFIG_HOME=/tmp/remoterf-runtime-soak/config \
+  XDG_CACHE_HOME=/tmp/remoterf-runtime-soak/cache \
+  XDG_DATA_HOME=/tmp/remoterf-runtime-soak/data \
+  python tools/qualification/integration_soak.py \
+    --state-dir /tmp/remoterf-runtime-soak/new-state \
+    --seconds 600 --baseline-seconds 30 --raw-rate 100
+```
+
+The state directory must not already exist. `--raw-rate` is the target cycle
+rate per independent raw radio; each cycle invokes control, RX and TX methods.
+Two fake radios run those calls continuously while two others cycle through
+nine application scenarios: normal operation, cancelled startup, held action,
+refused action, adapter exception, held stop, local expiry, required-worker exit
+and monitor failure. Duplicate starts/actions, native-access refusals, status
+poll floods and post-handoff native recovery run alongside those scenarios.
+Monitor failure leaves the simulated resource alive until cleanup verifies its
+release. Separate preflights exercise bounded owner/action admission and an
+injected journal ENOSPC failure; no disk is filled.
+
+Before measurement the harness declares these limits: status p99 at most 50ms;
+each independent raw-method p99 at most the greater of 5ms or four times its
+raw-only baseline; raw throughput at least 90% of baseline; RSS growth at most
+64MiB; thread/file-descriptor growth at most four/eight; and at most 16 retained
+owners and 64 actions. The harness records one-second resource samples, exact
+call/error/cycle counts, and estimated latency percentiles from bounded uniform
+reservoirs of up to 8192 observations. It checks empty ownership/scopes/retained
+operations and native recovery at the end. Results and exact source identities
+go to `evidence.json`; an incomplete or failed run cannot report success.
+
+Finish other CI stress workloads before taking the baseline and timed run.
+These results cover in-process scheduling with fake native methods, not physical
+UHD throughput, network routes, deployed authority, real calendar expiry, kernel
+process containment or production capacity. Use the separate process and
+real-radio harnesses for their respective gates.
+
+## Real-radio handoff
 
 `usrp_handoff.py` is an operator-only hardware harness for one explicitly
 reserved lab-local USRP. It never enables deployed integrations, publishes
@@ -36,6 +83,13 @@ RX, leaving its process behind; the parent verifies restart fencing, reconciles
 only the recorded cgroup identity, terminates that owned group, and proves native
 RX again. The real external booking remains held during injected expiry and
 crash recovery so another actual user cannot acquire the test radio mid-cleanup.
+
+The current probe declares its long-lived receiver `required_while_running=True`.
+The forced child-exit case now waits for autonomous runtime cleanup without a
+health action; the independent cgroup proof must still verify all descendants
+gone. Earlier saved reports identify their exact source hashes and may instead
+have used an explicit health action. Changing the monitoring behavior requires
+fresh exact-build radio qualification before activation.
 
 The local SessionManager's resolver is deliberately replaced by a cached view of
 the externally verified reservation. Evidence labels this route and injected
@@ -175,3 +229,89 @@ This proof covers framework-managed native ownership and supervised processes.
 It does not audit external diagnostic programs, network interfaces, shared
 memory or other unmanaged radio owners. Keep integrations disabled until the
 required hardware checks and any recovery have completed.
+
+## Process-only sustained qualification
+
+`process_soak.py` exercises an installed core wheel without selecting a radio.
+It requires its own transient `remoterf-supervision-soak-*.service`, with the
+process in that unit's `manager` subgroup and an empty delegated parent as above.
+The wrapper enables `+pids +memory`, then executes:
+
+```sh
+python tools/qualification/process_soak.py \
+  --cgroup-root /sys/fs/cgroup/EXACT_TRANSIENT_UNIT \
+  --state-dir /absolute/private/NEW_STATE_DIRECTORY \
+  --evidence /absolute/private/process-soak.json --iterations 100
+```
+
+Use an outer `MemoryMax=512M`, `TasksMax=192` and `RuntimeMaxSec=300` for the
+100-cycle CI run. These are isolated test containment settings, not production
+capacity recommendations. It records thresholds and source hashes before
+launching: 60 normal parent/setsid-descendant cycles, 10 target-exec failures,
+10 pre-spawn failures, 10 injected pre-ack timeouts, and 10 abrupt controller
+exits followed by identity-checked offline recovery of a non-radio lease.
+It also checks 16 simultaneous owners and rejection at the 64-scope/4-launch
+limits. Normal and restart workers opt into required-worker exit monitoring;
+finite failures remain optional by default.
+
+Pass requires every cycle to clean up, the independent sentinel to survive,
+no final scopes or leases, no accumulating idle threads or file descriptors,
+bounded output tails, stop/recovery below 5.5 seconds for the five-second stop
+budget, post-warmup RSS growth below 32 MiB, latter-half RSS growth below 16 MiB,
+and unit memory peak below 256 MiB. These are pass/fail limits declared in the
+script, not latency or throughput promises. A separate opt-in kernel test
+exercises Runtime's autonomous required-worker failure path, including exit
+zero and a surviving descendant, without an adapter health call.
+
+Keep unrelated load tests out of the measured interval when collecting capacity
+evidence. This short process stress run proves neither RF performance nor Global
+authorization, supported released-client compatibility, production rollback,
+or aggregate service resource allocation under real radio load.
+
+## Dev Global route and rollback checks
+
+`dev_routes.py` is restricted to `https://dev.global.remoterf.net`, the testlab
+identity, and synthetic device IDs 99/401/402. Use the separately installed
+[dev fixture](dev_fixture/README.md), a dedicated verified dev account, and a
+private disposable client home whose name starts `remoterf-phase1c-dev-client`.
+It leaves the operator's saved login and shell HOME unchanged. The coordinator
+must hold the dev lease, clone configuration/environment, approve the exact dev
+schema through the normal gate, and arrange the temporary service and teardown.
+Never run the same-identity canary and original testlab together.
+
+```sh
+CLIENT_PY=/absolute/isolated/client/bin/python
+"$CLIENT_PY" tools/qualification/dev_routes.py --mode enabled \
+  --client-home /tmp/remoterf-phase1c-dev-client \
+  --evidence /absolute/dev-enabled.json
+```
+
+Modes `baseline`, `baseline-relay`, `schema`, `disabled`, `enabled`, `expiry` and `shutdown` cover
+old-service simulated receive, schema gating, disabled broken-package safety,
+generic relay/direct calls, retry identity after an injected lost direct reply,
+partial starts, autonomous worker exit, reservation cancellation, actual calendar
+expiry and service stop. Evidence labels all radio behavior synthetic. `enabled`
+requires an actual direct route; do not silently substitute relay-only success.
+
+For `expiry`, optional `--expiry-observation FILE` announces a ten-second interval
+after the real deadline with no client RPC. During it, independently check empty
+hardware ownership, matching boot/root/scope identities and unpopulated cgroups.
+Empty scope metadata can remain until the next valid generic request or shutdown;
+this is bounded bookkeeping, not evidence that processes are still running.
+The client then checks typed expiry refusal and the next holder's native receive.
+
+For `shutdown`, supply fresh `--shutdown-ready FILE` and
+`--shutdown-confirmed FILE` paths. After readiness, stop the isolated unit while
+its application is running. Independently verify empty hardware/process journals,
+unit inactivity and absent cgroups, then restart the same clean configuration.
+Only after the service is online write confirmation with `journals_empty:true`,
+`unit_inactive:true` and `service_restarted:true`, plus measured observations.
+The client then cancels its booking. A confirmation file is external test evidence,
+not a recovery mechanism or permission to erase a fence. Preserve a failed run's
+records; never downgrade a real-radio inventory over unresolved ownership.
+
+Finally stop the canary, verify its final journals are empty, restore the original
+testlab, repeat baseline receive, remove temporary schema approval/network access,
+remove the dedicated account, disable all disposable canary configs and release
+the dev lease. Keep any failed synthetic state fenced and separate from restored
+inventory. None of these checks authorizes production activation or hardware use.

@@ -75,6 +75,15 @@ Integration refusals use the existing protocol-error envelope with a safe
 `request_conflict`, `overloaded` or `recovery_required`. Existing native errors
 keep their established behavior. Status never invokes adapter hooks or reads
 process logs; action execution and status refresh run on bounded workers.
+`RUNNING` and cached `ready` describe the last completed lifecycle/status check,
+not a continuous heartbeat. An adapter can mark a long-lived process
+`required_while_running=True`; its exit, including exit zero, independently
+reports `process_exited` and starts serialized cleanup without a follow-up RPC.
+Status remains cached: the supervisor records exits asynchronously and the
+runtime watcher reads only a nonblocking failure signal. The receive-only probe
+opts in. Finite jobs default to `False`; their exit alone does not stop the
+application or release its hardware lease. The declared `health` action remains
+available for adapter-specific checks beyond process liveness.
 
 ## Third-party adapter package
 
@@ -124,6 +133,12 @@ and `stop` services for owned children. Raw logs are local trusted data; redact
 secrets and expose only bounded summaries through the adapter. The runtime also
 attempts supervised cleanup if adapter stop raises. Only the runtime verifies
 release and returns the hardware lease; an adapter's success flag is not proof.
+Pass `required_while_running=True` only for a worker that must remain alive while
+the application runs. Detection does not wait for stdout/stderr EOF, so inherited
+pipes held by descendants cannot conceal the worker's exit. Cleanup still proves
+the entire owned cgroup empty; the exit signal itself never releases ownership.
+A failed process monitor also sets a cached failure and refuses further launches.
+It never substitutes for independently verified process/native release.
 
 Adapters are trusted operator-installed Python code. Threads do not contain a
 native crash, GIL stall or hung import/hook. Put incompatible native dependencies
@@ -218,12 +233,19 @@ Global schema approval is a separate gate and is not replaced by this receipt.
 package source/native/resource files, and installed dependency version metadata.
 Namespace packages are supported. Missing distribution metadata, symlinks,
 excessive scanning or changed files fail closed. `deployment.code_digest()` binds
-integration modules plus the server controller, Dynamic v2 and device-manager
-files supplied at bootstrap. Capture these exact digests from the build under
+integration modules plus the server controller, Dynamic v2, device-manager and
+server lifetime/transport (`grpc_server.py`) files supplied at bootstrap. Capture these exact digests from the build under
 test; do not substitute a package version or hash of an unrelated checkout.
 Startup caches these identities; the worker rechecks both before creating its
 work directory/cgroup or releasing native UHD. Package or framework changes
 invalidate the old qualification. Drain/restart for config or package upgrades.
+
+Main-thread server entry points handle SIGTERM through their normal startup/run
+cleanup and restore the previous handler afterward. Admission closes before
+transport drain. Repeated termination cannot interrupt cleanup, and termination
+during a pending restart suppresses re-execution. Embedded off-main-thread callers
+retain responsibility for process signals. Native crashes or GIL stalls still
+require process isolation; graceful signal handling does not contain them.
 
 ## Linux process support and recovery
 
@@ -261,13 +283,18 @@ Do not delete journals, kill a PID copied from a file, or remove an adapter to
 force reuse. Offline trusted recovery uses `CgroupSupervisor.describe/reopen`,
 identity-checked scope stop/release, and the ownership gate's positive verification;
 `reconcile_released` handles only its narrow verified-release crash window.
-There is no remote recovery RPC or production recovery CLI. Nonempty work
-directories are retained for review, not recursively deleted.
+There is no remote recovery RPC. The local-only operator CLI and its managed
+resource limits are documented in the [recovery runbook](../tools/qualification/README.md#offline-managed-resource-recovery).
+Nonempty work directories are retained for review, not recursively deleted.
 
-After session expiry, scope close runs on the shared bounded cleanup pool.
+Session expiry autonomously stops resources and releases the hardware lease only
+after verification. The next valid generic request or service shutdown schedules
+empty-scope metadata retirement on the shared bounded cleanup pool; bounded empty
+scope records can remain until then without retaining hardware or live processes.
 Rejected scheduling retains the owner for retry; failed cleanup remains recorded
 for operator reconciliation. Discovery never waits for filesystem cleanup.
-Controller shutdown waits at most 0.5 seconds for pending scope-close jobs, then
+Controller shutdown allows at most 0.5 seconds total for runtime stop work and
+subsequent scope-close jobs, then
 refuses completion if ownership/cleanup remains unresolved. No timeout is a
 release assertion. Roll back code only after resources and journals are resolved.
 
@@ -335,6 +362,14 @@ remain `Any`. Test raw client/server/host compatibility before publishing.
 
 The [Phase 1c evidence summary](qualification/phase1c-2026-11-09.md) links the
 recorded software, Linux-process and receive-only hardware results.
+
+The later [dev rollout verification](qualification/phase1c-dev-rollout-2026-11-09.md)
+adds deployed synthetic relay/direct routes, three published clients, actual
+calendar expiry, service stop/restart, restoration and measured process/runtime
+soaks. It also records the required-worker/monitor and SIGTERM cleanup fixes.
+Final suites passed core 248, server 1,017 and host 176 tests; documented opt-in
+skips remain. These newer lifecycle changes invalidate the older radio digest
+for activation: fresh exact-build physical-radio qualification is still required.
 
 Deterministic tests cover disabled/broken packages, raw request rejection before
 native construction, current authority and cross-session IDs, start/action

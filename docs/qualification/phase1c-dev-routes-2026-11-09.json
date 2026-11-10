@@ -1,0 +1,792 @@
+{
+  "checks": {
+    "after_restart": {
+      "checks": {
+        "autonomous_required_worker_exit": {
+          "error": "process_exited",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "describe": true,
+        "direct_reply_loss_relay_retry": {
+          "direct_dispatches": 1,
+          "fault_injected": true,
+          "same_operation": true
+        },
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": true,
+          "generation": 1,
+          "integrations": [
+            {
+              "actions": [
+                "echo",
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": true,
+              "id": "org.remoterf.dev_fixture",
+              "profiles": [
+                "test"
+              ],
+              "qualified_profiles": [
+                "test"
+              ],
+              "version": "0.1.3"
+            }
+          ],
+          "next_cursor": null,
+          "reason": null
+        },
+        "generic_direct_calls": {
+          "calls": 2,
+          "fixed": true
+        },
+        "independent_raw_rx_during_application": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_direct_fallback": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_relay": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "other_session_operation_refused": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        },
+        "owned_native_refusal": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "partial_start_failure": {
+          "error": "starting_failed",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "relay_action_retry": {
+          "result": {
+            "calls": 1,
+            "echo": {
+              "value": "generic-route-check"
+            },
+            "fixture": "NON_RADIO_TEST_FIXTURE"
+          }
+        },
+        "relay_start_retry": true,
+        "reserved_payload_refusal": {
+          "integration_code": "invalid_payload",
+          "type": "RemoteRFProtocolError"
+        },
+        "revoked_operation_refused": {
+          "integration_code": null,
+          "type": "RemoteRFReservationError"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274369.986454,
+      "mode": "enabled",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274361.482734
+    },
+    "disabled_broken_package": {
+      "checks": {
+        "disabled_start": {
+          "integration_code": "integration_disabled",
+          "type": "RemoteRFProtocolError"
+        },
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": false,
+          "generation": 1,
+          "integrations": [
+            {
+              "actions": [
+                "echo",
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": false,
+              "id": "org.remoterf.dev_fixture",
+              "profiles": [
+                "test"
+              ],
+              "qualified_profiles": [],
+              "version": "0.1.3"
+            }
+          ],
+          "next_cursor": null,
+          "reason": "integration_disabled"
+        },
+        "native_rx_after_disabled_refusal": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274174.890442,
+      "mode": "disabled",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274172.843888
+    },
+    "old_service_baseline_after_temporary_network_rule": {
+      "checks": {
+        "existing_sim_direct_rx": {
+          "calls": 2,
+          "fixed": true
+        },
+        "existing_sim_relay_rx": true
+      },
+      "client_version": "2.13.13.dev0",
+      "finished_at": 1794271956.098977,
+      "mode": "baseline",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794271955.110604
+    },
+    "real_expiry": {
+      "checks": {
+        "expired_session_refused": {
+          "real_calendar_end": 1794274440,
+          "type": "RemoteRFReservationError"
+        },
+        "first_post_expiry_rpc_at": 1794274451.006838,
+        "next_holder_native_rx": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "old_operation_hidden_from_next_holder": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        }
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274452.215408,
+      "mode": "expiry",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274384.789977
+    },
+    "restoration": {
+      "account_delete_required_activated_account_force": true,
+      "all_canary_configs_disabled": true,
+      "canary_units_absent": true,
+      "checked_at": 1794274667.0065799,
+      "dedicated_account_deleted": true,
+      "final_canary_cgroup_removed": true,
+      "final_canary_journals_empty": true,
+      "old_failed_synthetic_journals_preserved": true,
+      "original_integration_config_absent": true,
+      "original_inventory_sims_only": true,
+      "original_service_active": true,
+      "original_versions": {
+        "remoterf-device-core": "0.1.6",
+        "remoterf-federation-core": "0.22.0",
+        "remoterf-server": "1.7.22"
+      },
+      "restoration_account_reenrolled": true,
+      "restored_at": 1794274476.1388524,
+      "schema_approval_withdrawn": true,
+      "temporary_firewall_rule_absent": true,
+      "visible_reservations_before_delete": 0
+    },
+    "restored_original_policy_relay": {
+      "checks": {
+        "existing_sim_relay_rx": true
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274639.050236,
+      "mode": "baseline-relay",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274638.557624
+    },
+    "restored_original_relay_direct": {
+      "checks": {
+        "existing_sim_direct_rx": {
+          "calls": 2,
+          "fixed": true
+        },
+        "existing_sim_relay_rx": true
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274573.5084622,
+      "mode": "baseline",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274572.532483
+    },
+    "service_stop_restart": {
+      "checks": {
+        "service_shutdown": {
+          "cgroup_removed": true,
+          "journals_empty": true,
+          "observed_at": 1794274290.1714191,
+          "ownership_count": 0,
+          "restarted_at": 1794274351.857353,
+          "scope_count": 0,
+          "service_restarted": true,
+          "stop_seconds": 0.8014946560142562,
+          "unit_inactive": true,
+          "unit_result": "success"
+        }
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274352.159263,
+      "mode": "shutdown",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274272.935683
+    },
+    "unattended_expiry_observation": {
+      "boot_root_verified": true,
+      "observed_at": 1794274442.9348931,
+      "ownership_count": 0,
+      "scope_metadata_count": 1,
+      "scopes": [
+        {
+          "identity_verified": true,
+          "populated": 0,
+          "process_count": 0,
+          "record_state": "ready"
+        }
+      ],
+      "unknown_scopes": 0,
+      "window": {
+        "calendar_end": 1794274440,
+        "no_client_rpc_for_seconds": 10,
+        "observed_at": 1794274441.00248
+      }
+    }
+  },
+  "credentials_removed": true,
+  "failed_pre_fix_stop": {
+    "cause": "Default SIGTERM bypassed cleanup before the fix",
+    "config_disabled": true,
+    "ownership_count": 1,
+    "passed": false,
+    "physical_radio_involved": false,
+    "process_scope_count": 1,
+    "records_preserved": true,
+    "restored_inventory_overlaps_failed_synthetic_owner": false,
+    "unit_cgroup_removed": true,
+    "unit_result": "success"
+  },
+  "lease_released": true,
+  "offline_compatibility": {
+    "2.12.0": {
+      "checks": {
+        "current_schema_cache_no_rewrite": true,
+        "old_cached_schema_replaced_then_requires_reimport": true,
+        "usrp_phaser_v1_generated_source_compiles": true,
+        "usrp_phaser_v2_binder_and_six_plain_dict_methods": true,
+        "usrp_phaser_v2_generated_source_compiles": true,
+        "usrp_v1_generated_source_compiles": true,
+        "usrp_v2_binder_and_six_plain_dict_methods": true,
+        "usrp_v2_generated_source_compiles": true
+      },
+      "client_path": "/private/tmp/remoterf-phase1c-matrix-2.12.0/lib/python3.12/site-packages/remoterf/__init__.py",
+      "client_version": "2.12.0",
+      "hashes": {
+        "usrp-old-v2": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+        "usrp-v1": "sha256:b4483acb336adac00dd57c647fe50927a5ce4fee91ad7fa5d13c9f4195c8d19f",
+        "usrp-v2": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "usrp_phaser-v1": "sha256:d47556615f614e657792e5da820add2d6f69a337ea0ae84be966186886a96f74",
+        "usrp_phaser-v2": "sha256:61ba38ea1a9190f14c6bcfbfc6678ecc2538f99cb2a81168f8b4824c3074e4c0"
+      },
+      "scope": "OFFLINE_NON_RADIO_NO_NETWORK"
+    },
+    "2.13.12": {
+      "checks": {
+        "current_schema_cache_no_rewrite": true,
+        "old_cached_schema_replaced_then_requires_reimport": true,
+        "usrp_phaser_v1_generated_source_compiles": true,
+        "usrp_phaser_v2_binder_and_six_plain_dict_methods": true,
+        "usrp_phaser_v2_generated_source_compiles": true,
+        "usrp_v1_generated_source_compiles": true,
+        "usrp_v2_binder_and_six_plain_dict_methods": true,
+        "usrp_v2_generated_source_compiles": true
+      },
+      "client_path": "/private/tmp/remoterf-phase1c-matrix-2.13.12/lib/python3.12/site-packages/remoterf/__init__.py",
+      "client_version": "2.13.12",
+      "hashes": {
+        "usrp-old-v2": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+        "usrp-v1": "sha256:b4483acb336adac00dd57c647fe50927a5ce4fee91ad7fa5d13c9f4195c8d19f",
+        "usrp-v2": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "usrp_phaser-v1": "sha256:d47556615f614e657792e5da820add2d6f69a337ea0ae84be966186886a96f74",
+        "usrp_phaser-v2": "sha256:61ba38ea1a9190f14c6bcfbfc6678ecc2538f99cb2a81168f8b4824c3074e4c0"
+      },
+      "scope": "OFFLINE_NON_RADIO_NO_NETWORK"
+    },
+    "2.13.9": {
+      "checks": {
+        "current_schema_cache_no_rewrite": true,
+        "old_cached_schema_replaced_then_requires_reimport": true,
+        "usrp_phaser_v1_generated_source_compiles": true,
+        "usrp_phaser_v2_binder_and_six_plain_dict_methods": true,
+        "usrp_phaser_v2_generated_source_compiles": true,
+        "usrp_v1_generated_source_compiles": true,
+        "usrp_v2_binder_and_six_plain_dict_methods": true,
+        "usrp_v2_generated_source_compiles": true
+      },
+      "client_path": "/private/tmp/remoterf-phase1c-matrix-2.13.9/lib/python3.12/site-packages/remoterf/__init__.py",
+      "client_version": "2.13.9",
+      "hashes": {
+        "usrp-old-v2": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+        "usrp-v1": "sha256:b4483acb336adac00dd57c647fe50927a5ce4fee91ad7fa5d13c9f4195c8d19f",
+        "usrp-v2": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b",
+        "usrp_phaser-v1": "sha256:d47556615f614e657792e5da820add2d6f69a337ea0ae84be966186886a96f74",
+        "usrp_phaser-v2": "sha256:61ba38ea1a9190f14c6bcfbfc6678ecc2538f99cb2a81168f8b4824c3074e4c0"
+      },
+      "scope": "OFFLINE_NON_RADIO_NO_NETWORK"
+    }
+  },
+  "passed": true,
+  "production_changed": false,
+  "published_clients": {
+    "2.12.0": {
+      "checks": {
+        "autonomous_required_worker_exit": {
+          "error": "process_exited",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "describe": true,
+        "direct_reply_loss_relay_retry": {
+          "direct_dispatches": 1,
+          "fault_injected": true,
+          "same_operation": true
+        },
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": true,
+          "generation": 25,
+          "integrations": [
+            {
+              "actions": [
+                "echo",
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": true,
+              "id": "org.remoterf.dev_fixture",
+              "profiles": [
+                "test"
+              ],
+              "qualified_profiles": [
+                "test"
+              ],
+              "version": "0.1.3"
+            }
+          ],
+          "next_cursor": null,
+          "reason": null
+        },
+        "generic_direct_calls": {
+          "calls": 2,
+          "fixed": true
+        },
+        "independent_raw_rx_during_application": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_direct_fallback": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_relay": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "other_session_operation_refused": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        },
+        "owned_native_refusal": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "partial_start_failure": {
+          "error": "starting_failed",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "relay_action_retry": {
+          "result": {
+            "calls": 1,
+            "echo": {
+              "value": "generic-route-check"
+            },
+            "fixture": "NON_RADIO_TEST_FIXTURE"
+          }
+        },
+        "relay_start_retry": true,
+        "reserved_payload_refusal": {
+          "integration_code": "invalid_payload",
+          "type": "RemoteRFProtocolError"
+        },
+        "revoked_operation_refused": {
+          "integration_code": null,
+          "type": "RemoteRFReservationError"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.12.0",
+      "finished_at": 1794274246.341464,
+      "mode": "enabled",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274236.996136
+    },
+    "2.13.12": {
+      "checks": {
+        "autonomous_required_worker_exit": {
+          "error": "process_exited",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "describe": true,
+        "direct_reply_loss_relay_retry": {
+          "direct_dispatches": 1,
+          "fault_injected": true,
+          "same_operation": true
+        },
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": true,
+          "generation": 1,
+          "integrations": [
+            {
+              "actions": [
+                "echo",
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": true,
+              "id": "org.remoterf.dev_fixture",
+              "profiles": [
+                "test"
+              ],
+              "qualified_profiles": [
+                "test"
+              ],
+              "version": "0.1.3"
+            }
+          ],
+          "next_cursor": null,
+          "reason": null
+        },
+        "generic_direct_calls": {
+          "calls": 2,
+          "fixed": true
+        },
+        "independent_raw_rx_during_application": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_direct_fallback": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_relay": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "other_session_operation_refused": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        },
+        "owned_native_refusal": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "partial_start_failure": {
+          "error": "starting_failed",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "relay_action_retry": {
+          "result": {
+            "calls": 1,
+            "echo": {
+              "value": "generic-route-check"
+            },
+            "fixture": "NON_RADIO_TEST_FIXTURE"
+          }
+        },
+        "relay_start_retry": true,
+        "reserved_payload_refusal": {
+          "integration_code": "invalid_payload",
+          "type": "RemoteRFProtocolError"
+        },
+        "revoked_operation_refused": {
+          "integration_code": null,
+          "type": "RemoteRFReservationError"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.13.12",
+      "finished_at": 1794274226.49454,
+      "mode": "enabled",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274215.971744
+    },
+    "2.13.9": {
+      "checks": {
+        "autonomous_required_worker_exit": {
+          "error": "process_exited",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "describe": true,
+        "direct_reply_loss_relay_retry": {
+          "direct_dispatches": 1,
+          "fault_injected": true,
+          "same_operation": true
+        },
+        "discovery": {
+          "contract_version": "0.1",
+          "enabled": true,
+          "generation": 13,
+          "integrations": [
+            {
+              "actions": [
+                "echo",
+                "health"
+              ],
+              "compatible": true,
+              "configured": true,
+              "contract_version": "0.1",
+              "device_types": [
+                "usrp"
+              ],
+              "enabled": true,
+              "id": "org.remoterf.dev_fixture",
+              "profiles": [
+                "test"
+              ],
+              "qualified_profiles": [
+                "test"
+              ],
+              "version": "0.1.3"
+            }
+          ],
+          "next_cursor": null,
+          "reason": null
+        },
+        "generic_direct_calls": {
+          "calls": 3,
+          "fixed": true
+        },
+        "independent_raw_rx_during_application": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_direct_fallback": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_after_relay": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "native_rx_before": {
+          "finite": true,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "other_session_operation_refused": {
+          "integration_code": "unknown_operation",
+          "type": "RemoteRFProtocolError"
+        },
+        "owned_native_refusal": {
+          "integration_code": null,
+          "type": "RemoteRFNativeUHDError"
+        },
+        "partial_start_failure": {
+          "error": "starting_failed",
+          "health_action_called": false,
+          "native_rx_after": {
+            "finite": true,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "released": true
+        },
+        "relay_action_retry": {
+          "result": {
+            "calls": 1,
+            "echo": {
+              "value": "generic-route-check"
+            },
+            "fixture": "NON_RADIO_TEST_FIXTURE"
+          }
+        },
+        "relay_start_retry": true,
+        "reserved_payload_refusal": {
+          "integration_code": "invalid_payload",
+          "type": "RemoteRFProtocolError"
+        },
+        "revoked_operation_refused": {
+          "integration_code": null,
+          "type": "RemoteRFReservationError"
+        },
+        "schema_hash": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
+      },
+      "client_version": "2.13.9",
+      "finished_at": 1794274236.506969,
+      "mode": "enabled",
+      "origin": "https://dev.global.remoterf.net",
+      "passed": true,
+      "production_changed": false,
+      "radio_backend": "synthetic",
+      "started_at": 1794274226.9878988
+    }
+  },
+  "published_or_pushed": false,
+  "route_harness_sha256": "184a483ce09268a35dddb78ad1984cb0aa37d9e947e7ae46693f3253e9385ad3",
+  "scope": "dev Global synthetic routes and rollback; no physical radio qualification",
+  "source_identity": {
+    "fixture_hash": "9ab6fdfa4408171f0b035a64c00aa517f94c3d0cb157a8caa2b9c536ae7566d4",
+    "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+    "modules": {
+      "core/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+      "core/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+      "core/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+      "core/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+      "core/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+      "core/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+      "core/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+      "core/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+      "core/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+      "core/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+      "core/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+      "core/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+      "server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+      "server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+      "server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+      "server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81"
+    },
+    "physical_radio_qualification": false
+  },
+  "wheel_sha256": {
+    "remoterf_dev_integration_fixture-0.1.3-py3-none-any.whl": "d6e40fae028148dc1287a6ad091932d8078757d599ce3b1d0e5eeab1d017c716",
+    "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": "9d3b88258c7a6298c460f50468a6385bc59d64c72e763dcb21719d230e331d97",
+    "remoterf_server-1.7.23.dev0-py3-none-any.whl": "f9b382782d457bb7197c22b1bc77f310075d103ea5a688f9f4923d1249397d4e"
+  }
+}

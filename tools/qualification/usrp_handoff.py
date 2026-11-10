@@ -120,6 +120,8 @@ class PreparedScope:
         self.scope = self.supervisor.create(self.owner)
     def resources_released(self):
         return self.scope.resources_released() if self.scope is not None else not self.attempted
+    def resource_failure(self):
+        return self.scope.resource_failure() if self.scope is not None else None
     def launch(self, *args, **kwargs):
         if self.scope is None:
             raise RuntimeError('owned process scope has not been prepared')
@@ -231,7 +233,7 @@ def run_lifecycle(args, authority, evidence, *, orphan=False):
                 binding = manager.integration_binding(session.session_id, work_dir=scoped.work_dir,
                                                       resources_released=scoped.resources_released)
                 binding = replace(binding, selector={'serial': args.serial}, processes=scoped, prepare=scoped.prepare,
-                                  resource_owner=scoped.owner, finalize=scoped.stop)
+                                  resource_owner=scoped.owner, finalize=scoped.stop, resource_failure=scoped.resource_failure)
                 response = runtime.start(binding, manifest.integration_id, 'receive', settings, request_key=name)
                 return binding, scoped, response['operation_id']
             def running(binding, operation_id):
@@ -297,10 +299,9 @@ def run_lifecycle(args, authority, evidence, *, orphan=False):
             binding, scoped, operation_id = start_case('process-crash')
             running(binding, operation_id)
             fail_unless(scoped.stop(), 'could not inject supervised child termination')
-            action = runtime.call(binding, operation_id, 'health', {}, request_key='detect-crash')
             wait_for(lambda: runtime.drained(binding), authority=authority)
-            fail_unless(runtime.action_status(binding, operation_id, action['action_id'])['state'] == 'ERROR',
-                        'child exit was not detected')
+            fail_unless(runtime.status(binding, operation_id)['error'] == 'process_exited',
+                        'required child exit was not detected without a health action')
             evidence['checks']['process_exit_cleanup'] = stopped(binding, scoped, operation_id)
             evidence['checks']['rx_after_process_exit'] = receive_native(manager, session, settings, args.serial)
 

@@ -86,9 +86,13 @@ def test_lifecycle_orchestration_with_fake_processes_never_claims_hardware_proof
     class Scope:
         def __init__(self):
             self.alive = False
+            self.required = False
         def launch(self, *args, **kwargs):
             self.alive = True
+            self.required = kwargs.get('required_while_running', False)
             return 'fake-child'
+        def resource_failure(self):
+            return 'process_exited' if self.required and not self.alive else None
         def snapshot(self):
             return {'processes': [{'id': 'fake-child', 'returncode': None if self.alive else 1}]}
         def log_tail(self, *args):
