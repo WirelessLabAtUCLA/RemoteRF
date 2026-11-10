@@ -1,271 +1,425 @@
 # Application integrations: experimental contract 0.1
 
-Phases 1a and 1b implement the adapter contract and internal ownership runtime.
-The shared server/host native lifecycle now tracks in-flight calls, closing
-handles and workers through cleanup. This is a real change to existing runtime
-code and needs baseline verification even when no adapter is installed.
+Phase 1c adds a generic remote API, operator configuration, qualification checks
+and Linux process supervision to the Phase 1a/1b contract and ownership runtime.
+It is a real shared-runtime and schema change that requires UHD regression and
+schema-migration review. It adds no OAI dependency or application-specific RPC.
+Third parties implement the same public adapter contract in separate packages.
 
-Applications remain unavailable through normal configuration and RPC. Default
-inventory gates have no durable journal and reject application claims. There is
-no new public RPC, production activation, process supervisor or OAI dependency.
-Stock UHD drivers, schema hashes, codecs and client code are unchanged. Qualified
-physical identities, startup reconciliation, resource supervision and the generic
-remote API are activation gates for Phase 1c.
+**Existing deployments remain disabled by default.** A fresh deployment with no configuration or retained ownership state loads no
+adapters and opens no process supervisor or application ownership journal.
+Installing an adapter does not enable it. The server retains eager native UHD
+opening. Starts require explicit operator enablement and matching hardware
+qualification evidence; a caller cannot supply either through RPC. Implementation
+and deterministic tests are not deployment approval or hardware qualification.
 
-The contract lives in `remoterf_device_core.integrations`. Importing it does not
-import native drivers, UHD, NumPy or the device-schema registry. No adapter is
-discovered or enabled automatically. Adding it to a package does not activate it
-on existing deployments. Contract 0.1 is experimental, uses exact version
-matching, and may change before radio support is released.
+The current activation scope is one serial-addressed, lab-local plain `usrp`.
+Host-attached integrations return `unsupported_host`; Phaser and ambiguous or
+composite selectors cannot activate applications. Their existing native routes
+remain supported. OAI, user-submitted code, bulk artifacts and host integration
+execution are deferred.
 
-## Adapter package and operator metadata
+## Public API on the existing USRP root
 
-The separate `examples/integrations/counter` package demonstrates the public
-interface without OAI or hardware. Its JSON manifest declares:
+All six methods accept one required `request: dict` and return a plain dictionary.
+They use existing Dynamic v2 Invoke transport and the owning `MultiUSRP` session;
+there is no second token-taking root or independent application reservation.
 
-- a namespaced integration ID and adapter version;
-- the exact contract version, supported device types, profiles and actions;
-- an operator-controlled `module:factory` entry point.
+| Method | Request fields | Result |
+|---|---|---|
+| `integration_list` | Optional `cursor`, `limit` (1–8; default 8) | Contract version, current native `generation`, availability, metadata rows and `next_cursor`. |
+| `integration_describe` | `integration_id` | Manifest metadata and coarse availability; no factory path. |
+| `integration_start` | `integration_id`, `profile`, `configuration`, `request_key`, `generation` | Asynchronous operation snapshot with `operation_id`. |
+| `integration_status` | `operation_id`; optional `action_id` | Cached operation or action snapshot. |
+| `integration_stop` | `operation_id` | Cancellation/cleanup snapshot; acknowledgement is not release proof. |
+| `integration_call` | `operation_id`, `action`, `parameters`, `request_key` | Asynchronous action snapshot with `action_id`. |
 
-An operator supplies explicit manifest paths and a device-to-integration allow
-list when constructing a `Registry`. Metadata files are read without importing
-adapter code. Duplicate IDs, unknown enabled IDs, malformed manifests and
-oversized configuration fail with typed `IntegrationError` codes. Discovery
-returns copied metadata and enabled/compatible flags; it omits the factory path.
-Compatibility means the declared contract/device type match, not that dependencies
-or hardware have been qualified. Import and factory errors appear only on
-construction, with a safe client-facing message and the original local cause.
+Unknown fields are rejected. Configuration and parameters are objects. IDs,
+profiles, actions and request keys are nonempty strings of at most 128 characters;
+generation is a positive integer, not a boolean. Discovery distinguishes
+`configured`, `compatible`, `qualified_profiles` and `enabled`. A row is enabled
+only with matching profile evidence, operator enablement, supervision and a
+non-draining controller. The coarse `application_integrations` session capability
+is deliberately conservative; query `integration_list` for current availability.
 
-Use `Registry.validate_start()` or `validate_call()` to check enablement,
-compatibility, declared profiles/actions and input bounds before calling adapter
-code. `create()` lazily imports the factory after admission checks and creates a
-fresh instance for the supplied context. It does not grant a lease or start work.
-The registry is a configuration snapshot; deployment configuration replacement
-and package upgrade coordination remain in Phase 1c.
+For an already qualified and enabled radio, using an existing owning root:
 
-These methods are primitives for a trusted runtime. They are not authentication
-or a remote API: the binding derives device identity from reservation authority,
-constructs the context, and acquires ownership before starting resources. Remote
-call authorization and deployment wiring remain in Phase 1c.
-Never expose `create()` or the allow list directly to a remote caller.
+```python
+page = radio.integration_list({})
+request = {
+    "integration_id": "org.remoterf.usrp_probe",
+    "profile": "receive",
+    "configuration": {"rate": 1_000_000, "frequency": 100_000_000, "gain": 0},
+    "request_key": "receive-attempt-1",
+    "generation": page["generation"],
+}
+operation = radio.integration_start(request)
+status = radio.integration_status({"operation_id": operation["operation_id"]})
+# Poll with a bounded delay/deadline. Call declared actions only after RUNNING.
+# Keep the original request for a lost-reply retry; do not mint a second key.
+radio.integration_stop({"operation_id": operation["operation_id"]})
+```
 
-## Lifecycle contract
+Start and action retries with identical inputs attach to their recorded outcome;
+changed inputs under the same key fail with `request_conflict`. Operations are
+bound to the exact session/generation/physical radio. Knowing an operation ID
+never grants authority. Every remote call checks the current reservation/root.
+A completed handoff reports `native_generation`; released status also includes
+bounded refreshed `native_capabilities`, or `native_capabilities_truncated`.
+Refresh discovery before a new start after native reacquisition. Retry outcomes
+are retained until their owning session ends, so capacity exhaustion is explicit.
 
-The factory takes a frozen `Context` with device ID/type, generation, owned work
-directory and cancellation event. The context contains no bearer token or native
-UHD object. Hardware selectors, resource registration and supervision services
-remain activation gates for Phase 1c; the current binding accepts trusted runtime
-callbacks, not adapter-provided ownership assertions.
+Integration refusals use the existing protocol-error envelope with a safe
+`details.integration_code`, such as `integration_disabled`,
+`qualification_required`, `unsupported_host`, `device_busy`, `stale_owner`,
+`request_conflict`, `overloaded` or `recovery_required`. Existing native errors
+keep their established behavior. Status never invokes adapter hooks or reads
+process logs; action execution and status refresh run on bounded workers.
+
+## Third-party adapter package
+
+The public interface lives in `remoterf_device_core.integrations`. Importing the
+contract does not import UHD, NumPy or the device-schema registry. The operator
+supplies an explicit manifest path; there is no automatic package scan/import or
+client-controlled factory. A manifest example is:
+
+```json
+{
+  "id": "org.acme.receiver",
+  "version": "1.0.0",
+  "contract_version": "0.1",
+  "factory": "acme_receiver:create_adapter",
+  "device_types": ["usrp"],
+  "profiles": ["receive"],
+  "actions": ["health"]
+}
+```
+
+Ship this metadata as package data in an independently installed distribution.
+Discovery reads it without executing the adapter. Contract `0.1` matches exactly.
+IDs must be namespaced; profile/action/device-type names follow the manifest's
+identifier rules. Duplicate IDs, unsupported contracts/profiles/actions and
+malformed metadata fail with typed errors. Adding or upgrading an adapter alone
+does not modify stock USRP manifests, transport dispatch or client generation.
+
+`create_adapter(context)` returns an object implementing these synchronous hooks:
 
 | Hook | Responsibility |
 |---|---|
-| `validate(profile, configuration)` | Return normalized configuration without acquiring resources. |
-| `start(profile, configuration)` | Return after useful readiness, or raise on failure. |
-| `status()` | Return a bounded plain-data object. |
-| `call(action, parameters)` | Handle a declared action and return bounded plain data. |
+| `validate(profile, configuration)` | Return normalized plain data without acquiring resources. |
+| `start(profile, configuration)` | Return only after useful readiness, or raise. Observe cancellation. |
+| `status()` | Return a bounded, sanitized plain-data status object. |
+| `call(action, parameters)` | Perform a declared action and return bounded plain data. |
 | `stop()` | Release resources idempotently, including after partial startup. |
 
-Construction must be side-effect free. Hooks are synchronous. The internal
-`Runtime` schedules lifecycle work outside RPC/reservation locks, bounds queues
-and deadlines, and validates normalized configuration and cached status using
-`object_data()`. Generic action dispatch and remote request validation remain in
-Phase 1c. Direct Python calls to an adapter are not automatically wrapped.
+Construction must be side-effect free. Frozen `Context` supplies `device_id`,
+`device_type`, `generation`, an owned `work_dir`, cancellation event, trusted
+`selector` (currently the exact serial), and owner-bound `processes`. It contains
+no reservation token or native UHD object. Never take another device selector,
+executable, arbitrary environment or file path from an unvalidated remote input.
 
-Adapters are trusted operator-installed code. Catching an import exception does
-not contain a hung import, native crash or stuck call. Process supervision and
-dependency isolation remain necessary where those failure boundaries matter.
+Use `context.processes.launch(argv, env=..., cwd=context.work_dir)` with an
+absolute executable and explicit environment. Use its `snapshot`, `log_tail`
+and `stop` services for owned children. Raw logs are local trusted data; redact
+secrets and expose only bounded summaries through the adapter. The runtime also
+attempts supervised cleanup if adapter stop raises. Only the runtime verifies
+release and returns the hardware lease; an adapter's success flag is not proof.
 
-## Plain-data envelope
+Adapters are trusted operator-installed Python code. Threads do not contain a
+native crash, GIL stall or hung import/hook. Put incompatible native dependencies
+and crash-prone application work in supervised processes and keep callbacks
+bounded. Do not replace the server's working UHD/native libraries to install an
+adapter. External executables/images require separate recorded qualification;
+the package fingerprint does not hash arbitrary binaries outside the package.
 
-`object_data()` accepts a dictionary; `plain_data()` also accepts scalar/list
-values. Both validate and copy exact built-in JSON types: `None`, booleans, signed
-64-bit integers, finite floats, valid Unicode strings, lists, and dictionaries
-with string keys. They reject bytes, NumPy arrays, tuples, custom objects,
-non-finite numbers and recursively reserved protocol tags. They never stringify
-an unsupported object or invoke its conversion hooks.
+The independent [counter sample](../examples/integrations/counter) proves the
+package/contract path with `sim_sdr` and no radio. The independently packaged
+[receive-only USRP probe](../examples/integrations/usrp_probe/README.md) uses the
+same interface, supervised RX, and a `health` action; it never transmits. Neither
+package is installed or enabled automatically by the runtime.
 
-Limits are 64 KiB of encoded JSON, 16 levels of nesting and 4,096 value nodes.
-String-key bytes count toward the text/encoded budget. Manifest input is limited
-to 16 KiB, registry entries to 64, and per-device enabled IDs to 64. The reserved
-keys are `__remoterf_handle_arg__`, `__remoterf_handle__`, `__remoterf_type__`,
-`__uhd_type__`, `__remoterf_uhd_helper__`, `__remoterf_json_type__`, `__args__` and
-`__kwargs__`. This validation is separate from the existing UHD codec.
+## Operator configuration and qualification
 
-The envelope budget is not a complete RPC-frame budget. Discovery may need paging
-once exposed remotely. Bulk binary transfers, arrays and artifacts need their own
-bounded contract; they are not supported inside these envelopes. Integration
-validation must run before existing UHD helper/handle conversion when RPC wiring
-is added. This increment does not change that existing conversion path.
+The server reads `integrations.json` in its RemoteRF configuration root before
+opening native inventory. This example stays disabled and names no receipt:
 
-## Verification and installed-package example
-
-From the repository root, in a disposable test environment:
-
-```sh
-python -m pip install -e packages/remoterf-device-core pytest
-python -m pytest packages/remoterf-device-core/tests -q
-python -m pip wheel --no-deps packages/remoterf-device-core examples/integrations/counter --wheel-dir /tmp/rrf-integration-wheels
-python -m venv /tmp/rrf-integration-example
-/tmp/rrf-integration-example/bin/pip install --no-deps /tmp/rrf-integration-wheels/*.whl
-/tmp/rrf-integration-example/bin/python examples/integrations/counter/smoke.py
+```json
+{
+  "version": 1,
+  "enabled": false,
+  "manifests": ["integrations/acme_receiver.json"],
+  "devices": {
+    "7": {"serial": "EXACT_SERIAL", "integrations": ["org.acme.receiver"]}
+  },
+  "qualifications": [],
+  "cgroup_root": "/sys/fs/cgroup/operator-delegated/remoterf"
+}
 ```
 
-The wheel smoke uses distribution metadata to locate the manifest without
-importing the adapter. It verifies disabled discovery/construction, explicit
-enablement, validation, readiness, an action, cancellation and repeated cleanup. It also exercises the installed durable journal and
-asynchronous runtime with simulated native callbacks and retry-safe start/stop.
-It runs with no native dependencies installed. The sample uses simulated device
-type `sim_sdr` and cannot acquire a radio. This is a packaging/contract example,
-not proof of hardware handoff or the complete adapter conformance suite.
+Manifest and receipt paths are operator-controlled, relative to this config file
+or absolute. `cgroup_root` must be an absolute operator-created path. Config
+version must be the integer `1`; `true` and `1.0` are rejected. Missing/broken
+optional adapter metadata cannot import the adapter or release native hardware.
+Malformed optional configuration disables integrations. Unresolved hardware or
+process owners still block unsafe startup even if configuration/package files
+were removed. Disabled configuration with no unresolved owner adds no selector
+restrictions to existing raw inventories.
 
-CI now runs core contract tests, builds and exercises both wheels, installs the
-sample into the server test environment while leaving it disabled, and reruns
-the required client/server loopback. The loopback imports current `remoterf` and
-fails collection if that import breaks instead of silently skipping. Hardware
-tests also use the current namespace but still require their explicit hardware
-configuration.
+For activation, configured gids must match inventory serials. Every alias of a
+qualified physical serial shares one durable gate. Broad/address/composite or
+Phaser selectors are rejected while this mapping is active because overlap
+cannot be ruled out. Changes to the installed physical alias mapping require a
+drained restart; inventory reload cannot introduce an unfenced alias. An active
+native session, legacy inventory object, child handle, worker, opening alias or
+unfinished cleanup prevents handoff before existing UHD resources are released.
 
-## Phase 1b ownership and native lifetime
+Qualification is a trusted operator record, not a client flag, signature service
+or evidence generator. For **each physical serial and adapter profile**, the
+record must exactly match the adapter ID/version/hash, native session schema
+hash, UHD version and framework hash. Every required check must be the boolean
+`true`, `passed` must be `true`, and `run_id` must identify retained evidence.
+The following is deliberately a **non-approving template**:
 
-`integrations.ownership.Journal` takes a single-writer OS lock and persists
-bounded ownership records using atomic replacement and file/directory fsync.
-`Gate` represents one physical device. Aliases using the same identity and
-journal share the same gate; this primitive does not discover physical aliases.
-A qualified deployment must use one canonical journal and map every physical
-alias to it before allowing any native access. Default gid-based inventory gates
-are accounting only and cannot start applications.
+```json
+{
+  "qualification_version": 1,
+  "serial": "EXACT_SERIAL",
+  "integration_id": "org.acme.receiver",
+  "adapter_version": "1.0.0",
+  "adapter_hash": "REPLACE_WITH_RECORDED_ADAPTER_SHA256",
+  "profile": "receive",
+  "schema_hash": "REPLACE_WITH_QUALIFIED_SESSION_SCHEMA_HASH",
+  "uhd_version": "REPLACE_WITH_MEASURED_UHD_VERSION",
+  "framework_hash": "REPLACE_WITH_RECORDED_FRAMEWORK_SHA256",
+  "run_id": "REPLACE_WITH_REVIEWED_EVIDENCE_ID",
+  "passed": false,
+  "checks": {
+    "native_rx_before": false,
+    "application_rx": false,
+    "native_rx_after": false,
+    "explicit_stop": false,
+    "startup_failure": false,
+    "expired_start": false,
+    "expired_running": false,
+    "process_crash": false,
+    "cleanup_descendants": false,
+    "next_holder_rx": false
+  }
+}
+```
 
-A claim first fences admission in memory. Its worker persists the claim before
-releasing native hardware or constructing an adapter. Slow persistence does not
-hold the status/admission lock. Failed writes, corrupt/ambiguous records and
-unresolved records after restart refuse ownership. Restarting, disabling an
-adapter or removing its package never proves resource release.
+Do not turn these fields true without the corresponding hardware evidence.
+Review and install the receipt under an operator-protected path, then reference
+it in `qualifications`; enable only the explicitly qualified deployment/device.
+Global schema approval is a separate gate and is not replaced by this receipt.
 
-`integrations.runtime.Binding` connects trusted session authority, native
-release/reacquisition and independent application-resource verification to the
-runtime. It carries no bearer token into the adapter. The local-server binding
-currently supports only plain `usrp` with a deliberately injected durable gate;
-Phaser, composite/ambiguous radio selectors and host integrations cannot be
-enabled through it. Host bindings explicitly return `unsupported`.
+`integrations.fingerprint.adapter_digest(manifest)` returns the unprefixed
+64-character adapter SHA-256 without importing it. It binds manifest/factory,
+package source/native/resource files, and installed dependency version metadata.
+Namespace packages are supported. Missing distribution metadata, symlinks,
+excessive scanning or changed files fail closed. `deployment.code_digest()` binds
+integration modules plus the server controller, Dynamic v2 and device-manager
+files supplied at bootstrap. Capture these exact digests from the build under
+test; do not substitute a package version or hash of an unrelated checkout.
+Startup caches these identities; the worker rechecks both before creating its
+work directory/cgroup or releasing native UHD. Package or framework changes
+invalidate the old qualification. Drain/restart for config or package upgrades.
 
-Startup requires no active native calls, child handles, closing children or
-known failed child cleanup. A refused claim leaves existing UHD streams usable.
-Accepted startup drops the native root reference and verifies native release
-before loading/starting the adapter. Stop verifies application release before
-reacquiring a fresh native schema and refreshing metadata/root generation.
-Expired authority never authorizes reacquisition; expiry during reacquisition
-closes the newly created object. A handoff is reinitialization: radio settings
-and continuous timestamps are **not** preserved promises. Real hardware,
-preload/firmware assumptions and client metadata refresh still need qualification.
+## Linux process support and recovery
 
-Operation IDs and request keys are scoped to session generation and physical
-identity. Identical retries attach to the recorded outcome; changed inputs
-produce `request_conflict`. Outcomes consume capacity until the owning generation
-is retired; unresolved owners are never evicted to accept more work. Status is a
-cached bounded snapshot, including lifecycle phase and a safe error code. It does
-not call the adapter. Stop signals cancellation and never runs concurrently with
-unfinished start code. Separate cleanup workers reserve capacity for teardown.
-A deadline marks an error and retains ownership until actual completion/proof;
-it cannot kill Python/native code. Trusted authority callbacks must be fast,
-local bookkeeping and must not perform blocking network or driver operations.
+Application process ownership requires Linux cgroup v2, an exclusive delegated
+domain, `pids`/`memory` controllers and `cgroup.kill`. Missing prerequisites fail
+closed; there is no PID-name or process-group fallback. Children enter a pinned
+owned cgroup before target execution. The bootstrap gets an empty environment;
+the target gets only the explicit environment after admission. Descendants stay
+inside the owned domain, including double-fork/session-detach attempts covered
+by the Linux suite. This is supervision of trusted code, not an arbitrary-code
+sandbox or proof of cleanup for external interfaces/shared memory/files.
 
-| Default bound | Value |
+The durable process registry records boot, delegated-root and scope identities;
+hardware ownership records link the exact resource owner. Startup reconciles
+these records before inventory acquisition. Unknown, replaced or populated
+unlinked scopes block startup. Verified empty unlinked scopes may finish cleanup;
+uncertain scopes are never assumed gone because a service restarted.
+
+Native admission is fenced before durable ownership is written. Persistence,
+fingerprint rechecks, resource creation, native release, adapter hooks and
+reacquisition run outside RPC locks. Stop/expiry waits for active hooks to finish;
+timeout records failure without pretending code stopped. Native reacquisition
+occurs only for still-valid authority and refreshes metadata/root generation.
+Radio settings and continuous timestamps are **not** preserved promises.
+
+Close invalidates public native handles immediately but retains real resources
+until active calls/workers end. A refused handoff leaves ordinary UHD usable.
+Raw-only reopen after a completed close error remains supported; unfinished
+cleanup blocks reopen/reset/diagnostic/reload. This intentional compatibility
+change applies even with integrations disabled. Legacy paths, master access,
+new opens and diagnostics must honor the same physical gate.
+
+Stop new starts before shutdown or rollback. Keep unresolved owners unavailable.
+Do not delete journals, kill a PID copied from a file, or remove an adapter to
+force reuse. Offline trusted recovery uses `CgroupSupervisor.describe/reopen`,
+identity-checked scope stop/release, and the ownership gate's positive verification;
+`reconcile_released` handles only its narrow verified-release crash window.
+There is no remote recovery RPC or production recovery CLI. Nonempty work
+directories are retained for review, not recursively deleted.
+
+After session expiry, scope close runs on the shared bounded cleanup pool.
+Rejected scheduling retains the owner for retry; failed cleanup remains recorded
+for operator reconciliation. Discovery never waits for filesystem cleanup.
+Controller shutdown waits at most 0.5 seconds for pending scope-close jobs, then
+refuses completion if ownership/cleanup remains unresolved. No timeout is a
+release assertion. Roll back code only after resources and journals are resolved.
+
+## Wire and resource bounds
+
+The integration boundary validates raw JSON **before** the existing UHD
+helper/handle decoder on server and host Invoke entry points. It accepts exactly
+one named `request`, or the generated positional wire wrapper `__args__:[request]`,
+and overload `request` (or the legacy empty overload). No extra kwargs, duplicate
+arguments or duplicate JSON fields are accepted. Reserved tags are forbidden
+recursively inside request/result objects; native/binary DynamicValue variants
+are rejected. Normal UHD codecs and streaming remain on their existing paths.
+
+| Bound | Current default |
 |---|---|
-| Retained operations per runtime, including completed retry outcomes | 16; configurable up to 64 |
-| Application start workers / reserved cleanup workers | 4 / 4; each queue bounded by operation capacity |
-| Start deadline / separate cleanup deadline | 30 seconds each; monotonic, not force termination |
-| Cached adapter status JSON | 48 KiB; room remains for operation metadata |
-| Journal | 64 owners, 64 KiB; single writer, local durable filesystem |
-| Shared native cleanup pool | 4 daemon workers, queue 64, at most 8,192 retained jobs |
-| Host reservation hooks | At most 64 pending per device, ordered through the shared pool |
+| Full encoded protobuf Invoke request | 128 KiB, below the relay request cap |
+| Plain object payload/reply | 64 KiB; exact built-in JSON types, signed 64-bit integers, finite floats, valid Unicode |
+| Payload shape | 16 levels, 4,096 value nodes; lists are allowed; no bytes, NumPy/native arrays, tuples or conversion hooks |
+| Manifest / registry / device declarations / receipts | 16 KiB per manifest; 64 entries each; operator files 64 KiB |
+| Discovery | At most 8 rows and 48 KiB before envelope headroom; cursor pagination |
+| Cached adapter status / action result | 48 KiB each; native refresh metadata 12 KiB |
+| Retained controller bindings / runtime operations / action records | 16 / 16 / 64; completed retry outcomes still count |
+| Start/action workers / cleanup workers | 4 / 4, bounded queues; 30-second work/cleanup deadlines |
+| Process scopes / launched processes per scope | 64 / 4 retained launches |
+| Process scope kernel limits | 128 PIDs, 512 MiB memory, no sub-cgroups |
+| Process logs | 64 KiB tail per stdout/stderr stream, continuously drained; not a remote artifact API |
+| Journal / shared native cleanup | 64 owners, 64 KiB; 4 cleanup workers, queue 64, at most 8,192 retained jobs |
+| Adapter fingerprint scan | 4,096 entries, depth 32, 64 MiB/file, 128 MiB total, 16 roots, 256 distribution records |
 
-These are defensive software bounds, not measured deployment capacity or latency
-SLOs. One stuck task leaves other workers available; exhausting a fixed pool
-stops further cleanup without declaring the affected radios free. In-process
-code is trusted: a native crash or GIL-holding call is not contained by threads.
-Production process/resource supervision, dependency isolation, log/disk limits
-and process identity verification are still required before activation.
+Reserved keys are `__remoterf_handle_arg__`, `__remoterf_handle__`,
+`__remoterf_type__`, `__uhd_type__`, `__remoterf_uhd_helper__`,
+`__remoterf_json_type__`, `__args__` and `__kwargs__`. There is no bulk binary,
+chunk/artifact upload/download, unbounded log reader, or per-adapter disk quota.
+Do not use work directories for unbounded outputs. These are defensive software
+bounds, not measured production capacity, latency or isolation guarantees.
 
-### Shared UHD behavior and lock order
+## Version and schema migration gate
 
-Server and host hold a short admission ticket through native dispatch and child
-publication. Per-entry/control locks are taken before lifecycle bookkeeping;
-manager/state locks protect maps only. Native calls, adapter hooks, cleanup waits
-and journal I/O do not run under a manager/lifecycle/admission lock. RX/TX retain
-their existing separate streamer locks rather than a global session I/O lock.
-An operation queued behind a control lock revalidates authority before dispatch.
+Prepared development versions are core `0.1.7.dev0`, server `1.7.23.dev0`, host
+`1.3.9.dev0` and client `2.13.13.dev0`; server/host pin that core. They are not a
+claim of package publication. USRP driver `0.0.8` and Phaser driver `0.1.1` include
+the generic root methods in v2; no new protobuf method or OAI class is required.
+Both **v1 and v2 stock hashes change**, including the v1 version metadata:
 
-Close invalidates public handles immediately, signals workers and retains strong
-references/closing records until admitted calls and actual worker threads end.
-A late native child is disposed before the radio becomes available. RX prefetch
-uses a new stop event per worker and never replaces a still-running worker.
-Failed opens clear their opening slot even if secondary cleanup fails. Shutdown
-stops new session admission and attempts cleanup independently across devices;
-an in-process restart is refused while earlier native session work is pending.
-Inventory shutdown also uses the bounded pool rather than waiting indefinitely
-on one driver's close hook.
+| Driver | v1 | v2 |
+|---|---|---|
+| `usrp` | `sha256:b4483acb336adac00dd57c647fe50927a5ce4fee91ad7fa5d13c9f4195c8d19f` | `sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b` |
+| `usrp_phaser` | `sha256:d47556615f614e657792e5da820add2d6f69a337ea0ae84be966186886a96f74` | `sha256:61ba38ea1a9190f14c6bcfbfc6678ecc2538f99cb2a81168f8b4824c3074e4c0` |
 
-Reservation reset/preparation waits for opening/closing work and application
-ownership; stale holder preparation is discarded. Legacy/master paths, new
-opens, diagnostics (including force), availability and inventory reload honor
-ownership. Diagnostic tickets survive timed-out test workers. Reload refuses
-while native work/cleanup remains active and can be retried after it drains.
+Review regenerated `schemas.json`, client snapshot/stub and schema hashes
+against the exact release build. Obtain required Global hash approvals **before
+any rollout using these new stock hashes**, including a dev canary. Keep the raw
+UHD canary separate from application activation. Phaser schema inheritance does
+not mean Phaser applications are supported. Adapter-only upgrades leave these
+stock hashes unchanged but still invalidate adapter qualification as appropriate.
 
-**Intentional compatibility change:** a close acknowledgement is not proof that
-a hung native call has stopped. Reopening, reset, diagnostic access and reload
-wait/refuse while cleanup is still pending. Raw-only reopening after a completed
-close error and ordinary session replacement remain supported, with cleanup
-failure counters. Application leases use stricter positive release proof and
-stay fenced after cleanup failure. No new driver/UHD version gate is introduced.
+The prior client binder was checked against both new manifests: existing native
+methods and all six generic methods bind. Cached older schemas retain the
+existing explicit refresh/reimport-and-retry behavior; no cache bypass was added.
+This is focused compatibility evidence, not a released multi-version/live Global
+matrix. Generated stubs now annotate known primitives; unknown/native types
+remain `Any`. Test raw client/server/host compatibility before publishing.
 
-### Recovery and rollback for the experimental runtime
+## Verification and remaining release gates
 
-1. Stop admitting starts with `Runtime.shutdown()` and request cancellation;
-   inspect operation state/phase, gate ownership and native closing/failure counts.
-2. If a start/cleanup hook is still executing, retain the lease. A timeout,
-   cleared public handle or stop flag is insufficient. Do not delete the journal
-   to force access, kill an unverified PID, or start a replacement radio owner.
-3. After work has actually stopped, independently verify **all** native and
-   application resources are released, including supervised descendants and
-   interfaces/shared memory where applicable. `Runtime.recover()` accepts this
-   trusted operator proof and refuses recovery while hooks are still running.
-   Recovered journal-only owners use `Gate.release()` with the same proof.
-4. Keep uncertain owners unavailable. Preserve a corrupt journal for investigation;
-   rebuilding it requires independently reconciling every affected physical radio.
-   The journal stores lease/session/generation/integration identity, **not** enough
-   process identity for automatic orphan termination. Phase 1c must supply that
-   supervision and run reconciliation before inventory acquisition on startup.
-5. Only after all ownership is resolved may the runtime be closed, an adapter
-   removed or code rolled back. `close()` refuses unresolved work. Disabling
-   discovery does not stop children or undo shared native-lifetime changes.
+The [Phase 1c evidence summary](qualification/phase1c-2026-11-09.md) links the
+recorded software, Linux-process and receive-only hardware results.
 
-This is an internal operator API/runbook, not a shipped CLI or remote recovery
-endpoint. Normal installs cannot create application leases yet. No physical-radio
-handoff, automatic orphan recovery or production service-stop qualification is
-claimed by the current deterministic tests.
+Deterministic tests cover disabled/broken packages, raw request rejection before
+native construction, current authority and cross-session IDs, start/action
+retries, cancellation/expiry, journal failures, alias publication/reload races,
+metadata refresh, cleanup backpressure, hung/failed cleanup and startup orphans.
+Local generated-client gRPC, federation bridge, host refusal and loopback direct
+ICE/QUIC routes are exercised with fake radio/controller state. These do not
+establish deployed Global authorization, real calendar expiry or real-radio RF
+behavior. The [hardware harness](../tools/qualification/README.md) requires an
+explicit held reservation and produces evidence, never deployment enablement or
+a qualification approval.
 
-## Phases and remaining release gates
+Phase 1c regression runs recorded during implementation:
 
-1. **Regression repair:** required localhost loopback restored; hardware test
-   source discovery/imports corrected.
-2. **Contract foundation (implemented in 1a):** registry, payload rules, context,
-   independent non-radio sample, failure/limit tests and wheel proof.
-3. **Ownership runtime (internal implementation in 1b):** admitted native calls and handle publication, closing
-   worker tracking, reservation/diagnostic/reset coordination, bounded async
-   lifecycle, durable recovery and native reacquisition. Preserve raw-only
-   replacement/reopen-after-close-error behavior. Keep integrations unavailable
-   through all server/host routes until these protections are wired and tested.
-4. **Generic RPC and hardware sample:** stable schema surface and approvals,
-   retry-safe operation IDs, host unsupported-feature guard, old-client checks,
-   all-route tests and a separately packaged adapter proving real hardware
-   release/reacquisition. Then qualify optional OAI through the same contract.
+| Scope | Result |
+|---|---|
+| macOS shared core | 227 passed, 4 skips |
+| Linux installed-wheel shared core | 229 passed, 2 delegated-cgroup tests skipped |
+| macOS / Linux host | 176 passed on each |
+| macOS client | 634 passed, 1 optional skip |
+| Linux installed-wheel server | 988 passed, 5 opt-in historical legacy-pipeline skips |
+| Final macOS non-hardware server, completed source | 996 passed, 5 historical legacy skips; 97 subtests; 77.52 seconds |
+| Required socket client/server loopback | 1 passed, no skips |
+| Startup-abort cleanup | 8 cases passed: certificate/inventory/transport/direct-path failures, with and without cleanup failures |
+| CI-box affected startup/lifecycle/controller group | 66 passed |
 
-Do not treat this increment as completion of Phase 1 in the implementation plan.
-Deterministic tests cover cancellation, expiry and journal recovery primitives;
-production startup reconciliation, process containment, load/soak limits and
-real-radio compatibility remain unqualified. No package has been published and no
-deployment has been upgraded. Version bumps and server/host dependency pin
-updates are required when a shared-core release is prepared.
+Focused controller/routes/native-lifetime tests also passed (83); earlier client
+schema/binder/schema-review tests passed (45 and 4 subtests). These runs are not
+the complete deployed release matrix. CI also builds and smoke
+tests independent sample wheels and runs the required client/server loopback
+with samples installed but disabled. Run core, server, host and client suites
+in separate processes/environments where their driver-registry/dependency
+fixtures differ; use fresh test configuration directories. Startup-abort tests
+exercise the real journal writer lock with fake hardware/transports: admission
+stops, independent cleanup is attempted, the original failure (including an
+interrupt) is preserved, and an idle journal can be reopened immediately.
+Uncertain ownership still blocks completion. The cleanup retry test waits for
+the worker's completion marker, not just the fake scope's earlier `closed` flag.
+
+### Isolated UCLA receive-only evidence — November 9, 2026
+
+The [recorded hardware run](qualification/phase1c-ucla-2026-11-09.json) passed
+16:23:55–16:24:42 PST on UCLA USRP00, gid 40, serial `32C78EE`, under approved
+booking 1020. It used UHD `4.10.0.main-release`, core `0.1.7.dev0`, server
+`1.7.23.dev0` and the independently installed probe `0.1.0`; exact source digests
+are retained in the report. RX used channel 0, 1 MS/s, 100 MHz, 0 dB and finite
+4,096-sample checks. No TX was performed.
+
+Native RX → supervised application RX → native RX passed, including partial
+startup failure after RX, process exit, a delayed stop retaining ownership past
+its deadline, injected local expiry during startup/running, and next local-holder
+RX. Abrupt test-process death left a surviving application; restart refused native
+acquisition until identity-verified cgroup cleanup, after which native RX passed.
+
+This exercised an **isolated local SessionManager/Runtime**, with a cached view
+of a real held reservation and injected local revocation. It did not exercise
+the deployed generic RPC controller/receipt gate, Global relay/direct fallback,
+actual calendar expiry, another hardware profile, Phaser, multi-radio aliases,
+OAI, load/soak or production service shutdown. The raw evidence is not an
+activation receipt and cannot be installed as one: its structured observations
+and check names differ from the exact approval format above. It changed no
+activation setting or schema approval.
+
+After that cleanup, a [separate raw-UHD check](qualification/phase1c-ucla-global-rx-2026-11-09.json)
+used branch client `2.13.13.dev0` through the unchanged deployed Global/UCLA
+service with direct routing disabled. Native open took 2.58 seconds; exact serial
+verification, tuning and 4,096 finite RX samples passed, and streamer/root closed.
+It used deployed schema
+`sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144`.
+This is old-server/client compatibility and post-cleanup native proof, **not**
+deployment or qualification of the new generic API; no TX was performed.
+
+Keep activation disabled until the exact deployment build, controller/authority
+routes and required hardware checks are reviewed and an explicit matching
+operator receipt and rollout approvals exist. The isolated pass supplies real
+handoff evidence for its recorded radio/profile; it does not waive the remaining
+gates. Service death/restart, process recovery, retained settings,
+metadata/timebase assumptions, installed-package behavior, supported older-client
+routes and measured load/soak still require applicable deployment evidence.
+No OAI, host execution, artifacts or production readiness is inferred from this
+increment. Schema approval, release publication and deployment activation remain
+separate pending decisions.
+
+The following historical sections describe earlier increments only; their
+statements about absent features apply to those recorded versions.
 
 ## Phase 1a evidence from November 9, 2026
 

@@ -25,6 +25,7 @@ jobs:
               - 'server/**'
               - 'packages/**'
               - 'examples/integrations/**'
+              - 'tools/qualification/**'
               - '.github/workflows/ci.yml'
             host:
               - 'host/**'
@@ -66,7 +67,8 @@ jobs:
             server)
               pip install $core -e . pytest
               pytest tests --ignore-glob='*hardware*' -q
-              pytest ../packages/remoterf-device-core/tests -q ;;
+              pytest ../packages/remoterf-device-core/tests -q
+              pytest ../examples/integrations/usrp_probe/tests ../tools/qualification/tests -q ;;
             host)
               pip install $core -e . pytest pyjwt # tests/test_direct_host.py imports jwt
               PYTHONPATH=src pytest tests -q ;;
@@ -81,12 +83,14 @@ jobs:
           XDG_CONFIG_HOME: ${{ runner.temp }}/integration-cfg
           XDG_DATA_HOME: ${{ runner.temp }}/integration-data
         run: |
-          pip wheel --no-deps ../packages/remoterf-device-core ../examples/integrations/counter --wheel-dir "$RUNNER_TEMP/integration-wheels"
+          pip wheel --no-deps ../packages/remoterf-device-core ../examples/integrations/counter ../examples/integrations/usrp_probe --wheel-dir "$RUNNER_TEMP/integration-wheels"
           python -m venv "$RUNNER_TEMP/integration-wheel-env"
           "$RUNNER_TEMP/integration-wheel-env/bin/pip" install --no-deps "$RUNNER_TEMP"/integration-wheels/*.whl
           "$RUNNER_TEMP/integration-wheel-env/bin/python" ../examples/integrations/counter/smoke.py
+          "$RUNNER_TEMP/integration-wheel-env/bin/python" ../examples/integrations/usrp_probe/smoke.py
           pip install --no-deps "$RUNNER_TEMP"/integration-wheels/remoterf_example_counter-*.whl
-          pytest tests/test_usrp_client_server_localhost.py -q
+          pip install --no-deps "$RUNNER_TEMP"/integration-wheels/remoterf_example_usrp_probe-*.whl
+          pytest tests/test_usrp_client_server_localhost.py tests/test_integration_routes.py -q
 
   # The one check the main ruleset requires: green when every package that changed passed
   # (test is skipped when no package, integration example or workflow changed).
