@@ -1,0 +1,111 @@
+{
+  "format": "remoterf-normal-auth-cold-restoration-1",
+  "global_rx_before": {
+    "route": "deployed_global_device_plane",
+    "client": "2.13.13.dev0",
+    "deployed_schema_hash": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+    "transmit": false,
+    "purpose": "baseline_before_normal_auth_cold_checks",
+    "open_seconds": 2.7020254170056432,
+    "received": 4096,
+    "serial": "32C78EE",
+    "rate": 1000000.0,
+    "uhd_version": "4.10.0.main-release",
+    "passed": true,
+    "closed": true
+  },
+  "global_rx_after": {
+    "route": "deployed_global_device_plane",
+    "client": "2.13.13.dev0",
+    "deployed_schema_hash": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144",
+    "transmit": false,
+    "purpose": "deployed_native_receive_after_normal_auth_cold_checks",
+    "open_seconds": 2.707074207952246,
+    "received": 4096,
+    "serial": "32C78EE",
+    "rate": 1000000.0,
+    "uhd_version": "4.10.0.main-release",
+    "passed": true,
+    "closed": true,
+    "observed_at": 1794287060.081305
+  },
+  "production_before": {
+    "service_pid": "359991",
+    "versions": {
+      "remoterf-server": "1.7.21",
+      "remoterf-device-core": "0.1.6"
+    },
+    "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+    "integration_config_present": false
+  },
+  "final_state": {
+    "passed": true,
+    "checked_at": 1794287060.8174133,
+    "production": {
+      "service_pid": "359991",
+      "versions": {
+        "remoterf-server": "1.7.21",
+        "remoterf-device-core": "0.1.6"
+      },
+      "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+      "integration_config_present": false
+    },
+    "production_unchanged": true,
+    "test_units": {
+      "remoterf-phase1c-cold-normal-20261109.service": {
+        "MainPID": "0",
+        "Result": "success",
+        "ControlGroup": "",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      },
+      "remoterf-phase1c-cold-limited-20261109.service": {
+        "MainPID": "0",
+        "Result": "success",
+        "ControlGroup": "",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      }
+    },
+    "all_guarded_cgroups_absent": true,
+    "usb_device_node": "/dev/bus/usb/003/015",
+    "usb_owner_count": 0,
+    "exact_installed_files_matched": {
+      "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": {
+        "main_package": 79,
+        "all_packaged_files": 79
+      },
+      "remoterf_server-1.7.23.dev0-py3-none-any.whl": {
+        "main_package": 122,
+        "all_packaged_files": 127
+      },
+      "remoterf_example_usrp_probe-0.1.0-py3-none-any.whl": {
+        "main_package": 3,
+        "all_packaged_files": 3
+      }
+    },
+    "integrations_enabled": false,
+    "production_push_or_publication": false
+  },
+  "reservation_release": {
+    "cancel": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"cancelled\": true,\n  \"reservation_id\": \"52ae81ca-fd98-4e4c-8819-38cffa86247b:1022\"\n}"
+        }
+      ],
+      "isError": false
+    },
+    "reservations_after": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"reservations\": [],\n  \"notes\": []\n}"
+        }
+      ],
+      "isError": false
+    },
+    "observed_at": "2026-11-10 05:04:57 UTC"
+  }
+}

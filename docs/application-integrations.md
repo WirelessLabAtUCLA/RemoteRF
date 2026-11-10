@@ -377,6 +377,16 @@ verified cleanup and its diagnostic limits. This is not a production activation
 receipt, deployed generic-radio RPC test, real-radio calendar-expiry test or
 extended RF soak; the remaining gates in that report still apply.
 
+The [normal-auth cold-process follow-up](qualification/phase1c-cold-auth-2026-11-09.md)
+passed 12 real-radio first opens with no test-only warmup and unmodified local
+account/calendar/token validation, including six under a one-CPU ceiling. All
+opens took 4.709–4.933 seconds and received successfully. CI verified valid slow
+opens plus actual private-calendar expiry/cancellation refusal and next-holder
+reuse. This closes that narrow cold-process concern for the tested exact build;
+the original harness failure's precise cause remains unproven. Public new-server
+startup/Global routes, physical power-cycle starts and broader production gates
+remain separate.
+
 Deterministic tests cover disabled/broken packages, raw request rejection before
 native construction, current authority and cross-session IDs, start/action
 retries, cancellation/expiry, journal failures, alias publication/reload races,

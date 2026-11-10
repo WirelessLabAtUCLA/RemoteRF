@@ -1,0 +1,2730 @@
+{
+  "format": "remoterf-normal-auth-cold-radio-bundle-1",
+  "normal": {
+    "passed": true,
+    "started_at": 1794286878.8278432,
+    "booking": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+    "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+    "serial": "32C78EE",
+    "transmit": false,
+    "external_guard_patches_auth": false,
+    "case_count": 6,
+    "case_deadline_seconds": 240,
+    "native_open_max_seconds": 120,
+    "parent_cgroup": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service",
+    "parent_cpu_max": "200000 100000",
+    "parent_memory_max": "1073741824",
+    "parent_pids_max": "192",
+    "guardian_sha256": "a7437ccd927d2ce1c5e1fab3892965e05848302d95eb89ff57421047ca267850",
+    "cases": [
+      {
+        "index": 0,
+        "started_at": 1794286878.9429295,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-normal-00",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "58e7a83c11c543a68c0c1ef8e60f28b2",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 927,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.08436594717204571,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286879.107111,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7349725738167763,
+              "observed_at": 1794286879.7577178,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.8406893080100417,
+              "observed_at": 1794286879.8634343,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8509145039133728,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286879.8736594,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.851540279109031,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286879.874285,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.615188147872686,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286884.6379333,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.622689466923475,
+              "observed_at": 1794286884.6454346,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.844432262238115,
+              "observed_at": 1794286884.867177,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286884.8671885,
+          "first_open_seconds": 4.763417704962194,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              483787
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service/rrf-646dd24afc004062951e4e0751db2ae9"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286879.0635998,
+          "transmit": false
+        },
+        "finished_at": 1794286885.000399
+      },
+      {
+        "index": 1,
+        "started_at": 1794286885.0495336,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-normal-01",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "76e20ad2361f4858ab574486cd1b246f",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 927,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.07993445405736566,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286885.207651,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7108723809942603,
+              "observed_at": 1794286885.838589,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.816641366109252,
+              "observed_at": 1794286885.9443579,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8269074130803347,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286885.9546237,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.8275372451171279,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286885.9552536,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.580435838084668,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286890.7081525,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.587832096964121,
+              "observed_at": 1794286890.7155492,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.821992470882833,
+              "observed_at": 1794286890.9497087,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286890.949719,
+          "first_open_seconds": 4.752713956870139,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              483830
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service/rrf-bd919a7c57ca421e9cb16179d99bb0ec"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286885.1647038,
+          "transmit": false
+        },
+        "finished_at": 1794286891.0936842
+      },
+      {
+        "index": 2,
+        "started_at": 1794286891.1460989,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-normal-02",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "8509c8ee009a41f7870653d833729b62",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 927,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.07998705701902509,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286891.2992458,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7290662210434675,
+              "observed_at": 1794286891.9483252,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.8333488712087274,
+              "observed_at": 1794286892.0526078,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8427871190942824,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286892.0620458,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.8433703710325062,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286892.0626287,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.596648660954088,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286896.8159075,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.604433548171073,
+              "observed_at": 1794286896.823693,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.841300192289054,
+              "observed_at": 1794286897.0605588,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286897.06057,
+          "first_open_seconds": 4.753025676589459,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              483873
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service/rrf-28d40e9bd42444da80f43caa9641c322"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286891.2561183,
+          "transmit": false
+        },
+        "finished_at": 1794286897.2056644
+      },
+      {
+        "index": 3,
+        "started_at": 1794286897.2531579,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-normal-03",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "7e34654321c048eaa3722debb9b9d4cb",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 927,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.08012843411415815,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286897.411288,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7173601561225951,
+              "observed_at": 1794286898.0485198,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.821251770015806,
+              "observed_at": 1794286898.1524117,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8311238894239068,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286898.1622834,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.8316690484061837,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286898.1628284,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.540466242004186,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286902.871626,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.547898161225021,
+              "observed_at": 1794286902.8790588,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.778284606989473,
+              "observed_at": 1794286903.1094441,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286903.1094549,
+          "first_open_seconds": 4.7085639061406255,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              483966
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service/rrf-afd72b8d977c401eb01aa7f6a4b9adb0"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286897.3680718,
+          "transmit": false
+        },
+        "finished_at": 1794286903.261693
+      },
+      {
+        "index": 4,
+        "started_at": 1794286903.3106606,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-normal-04",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "62744da0092a48cf9761a086290306cd",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 927,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.08072558604180813,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286903.4710786,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.6553905680775642,
+              "observed_at": 1794286904.045744,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.7590825911611319,
+              "observed_at": 1794286904.1494358,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.7686973111703992,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286904.1590502,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.7693045530468225,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286904.1596575,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.480163133237511,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286908.8705165,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.487538258079439,
+              "observed_at": 1794286908.877892,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.715050207916647,
+              "observed_at": 1794286909.1054032,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286909.105414,
+          "first_open_seconds": 4.710666359867901,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484009
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service/rrf-e5c296e7bc2c491c9933d8827a4d4691"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286903.426892,
+          "transmit": false
+        },
+        "finished_at": 1794286909.2518063
+      },
+      {
+        "index": 5,
+        "started_at": 1794286909.2987869,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-normal-05",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "6e7973c0676c4db4aa5c4ca52fe50ba4",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 927,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.08026875415816903,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286909.4502397,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.6925851590931416,
+              "observed_at": 1794286910.0625565,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.7956745480187237,
+              "observed_at": 1794286910.1656456,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8052289872430265,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286910.1751997,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.80582490330562,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286910.1757958,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.5354127562604845,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286914.9053838,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.543004229199141,
+              "observed_at": 1794286914.9129755,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.773249472025782,
+              "observed_at": 1794286915.1432204,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286915.1432443,
+          "first_open_seconds": 4.729369800072163,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484052
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-normal-20261109.service/rrf-ec6b892dc1a44362b194cae2d6666cde"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286909.4068224,
+          "transmit": false
+        },
+        "finished_at": 1794286915.3006768
+      }
+    ],
+    "authority_queries": 44,
+    "serial_lock_held": true,
+    "usb_before": {
+      "device_node": "/dev/bus/usb/003/015",
+      "owner_count": 0
+    },
+    "usb_after": {
+      "device_node": "/dev/bus/usb/003/015",
+      "owner_count": 0
+    },
+    "finished_at": 1794286915.3716478
+  },
+  "cpu_limited": {
+    "passed": true,
+    "started_at": 1794286945.9638553,
+    "booking": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+    "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+    "serial": "32C78EE",
+    "transmit": false,
+    "external_guard_patches_auth": false,
+    "case_count": 6,
+    "case_deadline_seconds": 240,
+    "native_open_max_seconds": 120,
+    "parent_cgroup": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service",
+    "parent_cpu_max": "100000 100000",
+    "parent_memory_max": "1073741824",
+    "parent_pids_max": "192",
+    "guardian_sha256": "a7437ccd927d2ce1c5e1fab3892965e05848302d95eb89ff57421047ca267850",
+    "cases": [
+      {
+        "index": 0,
+        "started_at": 1794286946.08744,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-limited-00",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "1315ff960a5246939861c2f051af9c97",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 934,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.13053319323807955,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286946.3010695,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.8232826772145927,
+              "observed_at": 1794286946.9938195,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.932047454174608,
+              "observed_at": 1794286947.102584,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.9442953891120851,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286947.114832,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.9461021893657744,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286947.1166384,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.842290680389851,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286952.0128272,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.849827012047172,
+              "observed_at": 1794286952.0203638,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 6.089244082104415,
+              "observed_at": 1794286952.2597802,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286952.2597904,
+          "first_open_seconds": 4.896512562874705,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484288
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service/rrf-752d0bd1b12943d2ac67f4973fb6a5ba"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286946.2300694,
+          "transmit": false
+        },
+        "finished_at": 1794286952.409384
+      },
+      {
+        "index": 1,
+        "started_at": 1794286952.4598765,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-limited-01",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "554662322ef04c948c1b1ec77e64ac4d",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 934,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.12984454119578004,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286952.6656692,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.8518349188379943,
+              "observed_at": 1794286953.3876598,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.9546753061003983,
+              "observed_at": 1794286953.4904997,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.9640642767772079,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286953.4998887,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.9645366659387946,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286953.500361,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.824340722989291,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286958.3601656,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.831899243872613,
+              "observed_at": 1794286958.367724,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 6.067163222003728,
+              "observed_at": 1794286958.6029875,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286958.6029975,
+          "first_open_seconds": 4.859415795188397,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484531
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service/rrf-83f032375d074ed18fd7a8a4a936c81f"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286952.6226506,
+          "transmit": false
+        },
+        "finished_at": 1794286958.7336283
+      },
+      {
+        "index": 2,
+        "started_at": 1794286958.7837534,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-limited-02",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "a4e66812021e4b1ca52af578d12df4df",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 934,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.09370678896084428,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286958.9625793,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.8322065779939294,
+              "observed_at": 1794286959.7010794,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.9358310238458216,
+              "observed_at": 1794286959.8047035,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.9453532448969781,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286959.8142254,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.9459168422035873,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286959.814789,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.879456417169422,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286964.748329,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.886978249065578,
+              "observed_at": 1794286964.7558513,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 6.117382044903934,
+              "observed_at": 1794286964.9862547,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286964.9862664,
+          "first_open_seconds": 4.9333180002868176,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484574
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service/rrf-352a1cbb831f43ba8dddcda5d778880a"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286958.9196327,
+          "transmit": false
+        },
+        "finished_at": 1794286965.1154597
+      },
+      {
+        "index": 3,
+        "started_at": 1794286965.1671557,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-limited-03",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "b4cad297b01a4bdc93277a42d93db4f1",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 934,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.13724799174815416,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286965.3665538,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7459890148602426,
+              "observed_at": 1794286965.9752953,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.8528014398179948,
+              "observed_at": 1794286966.0821075,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8634296879172325,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286966.0927355,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.8640575050376356,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286966.0933633,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.721217562910169,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286970.9505236,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.728731690905988,
+              "observed_at": 1794286970.9580386,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.952957487665117,
+              "observed_at": 1794286971.1822634,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286971.1822739,
+          "first_open_seconds": 4.856914326082915,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484617
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service/rrf-8565116beae844f9b0a7e064d81697c4"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286965.3138902,
+          "transmit": false
+        },
+        "finished_at": 1794286971.319308
+      },
+      {
+        "index": 4,
+        "started_at": 1794286971.3692567,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-limited-04",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "bfb98f8405c74cc5992bce4ec34b8b7d",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 934,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.10835171304643154,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286971.5595915,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7393589708954096,
+              "observed_at": 1794286972.190599,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.8427782887592912,
+              "observed_at": 1794286972.2940183,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8529783301055431,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286972.3042178,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.8534739958122373,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286972.3047137,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.7197828409262,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286977.171023,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.727062217891216,
+              "observed_at": 1794286977.178303,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.95530450809747,
+              "observed_at": 1794286977.4065442,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286977.4065552,
+          "first_open_seconds": 4.866077441256493,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484660
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service/rrf-07d5c0dd2f24448c89291cb94bf6eadf"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286971.5161371,
+          "transmit": false
+        },
+        "finished_at": 1794286977.516796
+      },
+      {
+        "index": 5,
+        "started_at": 1794286977.566311,
+        "passed": true,
+        "returncode": 0,
+        "normal_scope_release": true,
+        "scope_snapshot": {
+          "owner_id": "cold-limited-05",
+          "accepting": false,
+          "launching": 0,
+          "closed": false,
+          "failure": null,
+          "processes": [
+            {
+              "id": "319b834439a54623b9fa579cdccf8df5",
+              "returncode": 0,
+              "required_while_running": false,
+              "stdout_bytes": 934,
+              "stderr_bytes": 0,
+              "stdout_truncated": false,
+              "stderr_truncated": false,
+              "logs_drained": true,
+              "log_error": false
+            }
+          ]
+        },
+        "usb_after": {
+          "device_node": "/dev/bus/usb/003/015",
+          "owner_count": 0
+        },
+        "child": {
+          "backend": "usrp",
+          "calendar_errors": [],
+          "calendar_interval_seconds": 1.0,
+          "calendar_updates": 3,
+          "case": "valid",
+          "cleanup_after_first_attempt": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "cleanup_final": {
+            "active_native": 0,
+            "cleanup_pending": false,
+            "closing_sessions": 0,
+            "deferred_native_hooks": 0,
+            "fake_native_instances_closed": null,
+            "hardware_owner": null,
+            "inventory_native_owners": 0,
+            "opening_devices": 0,
+            "sessions": 0
+          },
+          "device_id": 40,
+          "epoch_before_first_open": 0,
+          "events": [
+            {
+              "elapsed_seconds": 0.10811338713392615,
+              "initial_native_modules": {
+                "numpy": false,
+                "uhd": false
+              },
+              "observed_at": 1794286977.75764,
+              "phase": "normal_server_imports_started"
+            },
+            {
+              "elapsed_seconds": 0.7339996830560267,
+              "observed_at": 1794286978.3835263,
+              "phase": "normal_server_imports_complete"
+            },
+            {
+              "elapsed_seconds": 0.8370550260879099,
+              "observed_at": 1794286978.4865818,
+              "phase": "private_account_created"
+            },
+            {
+              "elapsed_seconds": 0.8467620420269668,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286978.4962885,
+              "phase": "normal_calendar_authorized",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 0.8473747842945158,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286978.496901,
+              "phase": "first_native_open_started",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.725541749037802,
+              "four_second_authority_cache_used": false,
+              "match_function_agrees": true,
+              "observed_at": 1794286983.3750684,
+              "phase": "first_native_open_complete",
+              "resolver_unmodified": true,
+              "token_matches": true
+            },
+            {
+              "elapsed_seconds": 5.733060431201011,
+              "observed_at": 1794286983.382588,
+              "phase": "first_receive_complete"
+            },
+            {
+              "elapsed_seconds": 5.967466664034873,
+              "observed_at": 1794286983.616993,
+              "phase": "complete"
+            }
+          ],
+          "external_booking_after": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "external_booking_before": {
+            "device_id": 40,
+            "expires_at": 1794290400.0,
+            "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1022",
+            "serial": "32C78EE"
+          },
+          "finished_at": 1794286983.6170025,
+          "first_open_seconds": 4.877883456181735,
+          "first_receive": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "format": "remoterf-normal-auth-cold-start-1",
+          "global_calendar_or_rpc_qualified": false,
+          "guarded_scope": {
+            "identity": [
+              29,
+              484703
+            ],
+            "kernel_membership_verified": true,
+            "limits": {
+              "memory.max": 536870912,
+              "pids.max": 128
+            },
+            "scope": "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/remoterf-phase1c-cold-limited-20261109.service/rrf-5040566639a443f9a2ca696f32caf06e"
+          },
+          "integrations_enabled": false,
+          "invalid_token_refused": true,
+          "native_startup": {
+            "native_modules_after_normal_imports": {
+              "numpy": true,
+              "uhd": true
+            },
+            "ordinary_preload_enabled": true,
+            "preloaded_entries_after_normal_imports": 0,
+            "test_only_prewarm": false
+          },
+          "normal_auth_final": {
+            "four_second_authority_cache_used": false,
+            "match_function_agrees": true,
+            "resolver_unmodified": true,
+            "token_matches": true
+          },
+          "passed": true,
+          "phase": "complete",
+          "private_calendar_empty": true,
+          "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+          "serial": "32C78EE",
+          "source_identity": {
+            "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+            "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+            "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+            "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+            "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+            "module_sha256": {
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+              "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+            },
+            "versions": {
+              "remoterf-device-core": "0.1.7.dev0",
+              "remoterf-example-usrp-probe": "0.1.0",
+              "remoterf-server": "1.7.23.dev0"
+            }
+          },
+          "started_at": 1794286977.7140496,
+          "transmit": false
+        },
+        "finished_at": 1794286983.765974
+      }
+    ],
+    "authority_queries": 44,
+    "serial_lock_held": true,
+    "usb_before": {
+      "device_node": "/dev/bus/usb/003/015",
+      "owner_count": 0
+    },
+    "usb_after": {
+      "device_node": "/dev/bus/usb/003/015",
+      "owner_count": 0
+    },
+    "finished_at": 1794286983.8332846
+  },
+  "normal_independent_cleanup": {
+    "passed": true,
+    "observed_at": 1794286934.6903503,
+    "empty_process_registry": true,
+    "root_identity_verified": true,
+    "owned_scopes": 0,
+    "usb_device_node": "/dev/bus/usb/003/015",
+    "usb_owner_count": 0,
+    "production_unchanged": true,
+    "production": {
+      "service_pid": "359991",
+      "versions": {
+        "remoterf-server": "1.7.21",
+        "remoterf-device-core": "0.1.6"
+      },
+      "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+      "integration_config_present": false
+    }
+  },
+  "limited_independent_cleanup": {
+    "passed": true,
+    "observed_at": 1794287014.7871299,
+    "empty_process_registry": true,
+    "root_identity_verified": true,
+    "owned_scopes": 0,
+    "usb_device_node": "/dev/bus/usb/003/015",
+    "usb_owner_count": 0,
+    "production_unchanged": true,
+    "production": {
+      "service_pid": "359991",
+      "versions": {
+        "remoterf-server": "1.7.21",
+        "remoterf-device-core": "0.1.6"
+      },
+      "inventory_sha256": "2c6871e89eea591d58595bc606dd70cba0503e9a6c9f6babaf6f2bf78d516855",
+      "integration_config_present": false
+    }
+  },
+  "artifacts_before": {
+    "verified_at": 1794286873.534842,
+    "wheels": {
+      "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": {
+        "sha256": "9d3b88258c7a6298c460f50468a6385bc59d64c72e763dcb21719d230e331d97",
+        "installed_files_matched": 79
+      },
+      "remoterf_server-1.7.23.dev0-py3-none-any.whl": {
+        "sha256": "f9b382782d457bb7197c22b1bc77f310075d103ea5a688f9f4923d1249397d4e",
+        "installed_files_matched": 127
+      },
+      "remoterf_example_usrp_probe-0.1.0-py3-none-any.whl": {
+        "sha256": "e6894b585afcf6a769ec8f9112f60a509eb18521568820fa21907780b152c784",
+        "installed_files_matched": 3
+      }
+    },
+    "passed": true
+  },
+  "operator_guardian": {
+    "source": "\"\"\"Private operator guardian; external booking guard never replaces child auth.\"\"\"\nfrom pathlib import Path\nimport hashlib,importlib.util,json,os,subprocess,sys,time,traceback\nfrom remoterf_device_core.integrations.supervision import CgroupSupervisor\nBASE=Path('/tmp/remoterf-phase1c-cold-auth-20261109')\nENV=Path('/tmp/remoterf-phase1c-radio-final-20261109/env/bin/python')\nBOOKING='52ae81ca-fd98-4e4c-8819-38cffa86247b:1022'\nFRAMEWORK='8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a'\nname=sys.argv[1];assert name in {'normal','limited'}\nrelative=Path('/proc/self/cgroup').read_text().strip().split('::',1)[1]\nmanager=Path('/sys/fs/cgroup')/relative.lstrip('/')\nassert manager.name=='manager' and manager.parent.name=='remoterf-phase1c-cold-'+name+'-20261109.service'\nroot=manager.parent;(root/'cgroup.subtree_control').write_text('+pids +memory')\nstate=BASE/name;state.mkdir(mode=0o700)\nspec=importlib.util.spec_from_file_location('cold_guardian_lock',BASE/'usrp_handoff.py');helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)\nradio_lock=None\nresult={'passed':False,'started_at':time.time(),'booking':BOOKING,'framework_hash':FRAMEWORK,'serial':'32C78EE','transmit':False,'external_guard_patches_auth':False,'case_count':6,'case_deadline_seconds':240,'native_open_max_seconds':120,'parent_cgroup':str(root),'parent_cpu_max':(root/'cpu.max').read_text().strip(),'parent_memory_max':(root/'memory.max').read_text().strip(),'parent_pids_max':(root/'pids.max').read_text().strip(),'guardian_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'cases':[],'authority_queries':0}\ndef write():\n (state/'guardian-evidence.json').write_text(json.dumps(result,indent=2)+'\\n')\ndef authority():\n result['authority_queries']+=1\n r=subprocess.run([str(BASE/'authority'),'--reservation-id',BOOKING,'--device-id','40','--serial','32C78EE'],capture_output=True,timeout=2)\n assert r.returncode==0 and len(r.stdout)<4096,'external booking provider failed'\n v=json.loads(r.stdout)\n assert v['active'] is True and (v['reservation_id'],v['device_id'],v['serial'],v['expires_at'])==(BOOKING,40,'32C78EE',1794290400),'external booking inactive'\n assert time.time()<v['expires_at'],'external booking ended'\n return v\n\ndef usb_free():\n devices=[]\n for serial in Path('/sys/bus/usb/devices').glob('*/serial'):\n  try:\n   if serial.read_text().strip()=='32C78EE':devices.append(serial.parent)\n  except OSError:pass\n assert len(devices)==1,'reserved USB serial not unique'\n d=devices[0];node=Path('/dev/bus/usb')/('%03d'%int((d/'busnum').read_text()))/('%03d'%int((d/'devnum').read_text()))\n assert node.exists(),'reserved USB node unavailable'\n r=subprocess.run(['fuser',str(node)],capture_output=True,timeout=2)\n assert r.returncode==1 and not r.stdout.strip() and not r.stderr.strip(),'USB owner remains'\n return {'device_node':str(node),'owner_count':0}\nsupervisor=None;scope=None\ntry:\n radio_lock=helper.acquire_radio_lock('32C78EE')\n result['serial_lock_held']=True\n authority();assert time.time()<1794290400-300\n result['usb_before']=usb_free()\n supervisor=CgroupSupervisor(root,state/'processes',max_scopes=2,max_processes=1,max_pids=128,memory_bytes=512*1024*1024)\n for index in range(6):\n  authority();assert time.time()<1794290400-300\n  case=state/('case-%02d'%index)\n  record={'index':index,'started_at':time.time(),'passed':False};result['cases'].append(record);write()\n  owner='cold-%s-%02d'%(name,index)\n  scope=supervisor.create(owner)\n  scope_path=root/supervisor.describe()['owners'][owner]['name']\n  command=[str(ENV),'-I',str(BASE/'usrp_cold_start.py'),'--backend','usrp','--guarded-scope',str(scope_path),'--case','valid','--serial','32C78EE','--device-id','40','--state-dir',str(case),'--evidence',str(case/'evidence.json'),'--expected-framework-hash',FRAMEWORK,'--authority-command',str(BASE/'authority'),'--reservation-id',BOOKING]\n  env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','HOME':str(Path.home()),'LANG':'C.UTF-8','LC_ALL':'C.UTF-8','XDG_CONFIG_HOME':str(case/'config'),'XDG_DATA_HOME':str(case/'data'),'XDG_CACHE_HOME':str(case/'cache'),'REMOTERF_CONFIG_DIR':str(case/'config/remoterf'),'GRPC_PORT':'50051','CERT_PORT':'50052','REMOTERF_BIND_HOST':'127.0.0.1'}\n  proc=scope.launch(command,env=env,cwd=BASE)\n  deadline=time.monotonic()+240;last_check=0\n  while True:\n   if time.monotonic()-last_check>=1:authority();last_check=time.monotonic()\n   snapshot=scope.snapshot();rows=[v for v in snapshot['processes'] if v['id']==proc];assert len(rows)==1\n   code=rows[0]['returncode']\n   if code is not None:break\n   assert time.monotonic()<deadline,'cold case exceeded 240 second deadline'\n   time.sleep(.05)\n  record['returncode']=code\n  # Normal exit must independently release all descendants; otherwise preserve\n  # a failure, kill only this identity-verified scope and do not run another case.\n  until=time.monotonic()+5\n  while not scope.resources_released() and time.monotonic()<until:time.sleep(.05)\n  record['normal_scope_release']=scope.resources_released()\n  record['scope_snapshot']=scope.snapshot()\n  for stream in ('stdout','stderr'):\n   (state/('case-%02d-%s.log'%(index,stream))).write_bytes(scope.log_tail(proc,stream))\n  assert record['normal_scope_release'],'descendant survived normal child exit'\n  scope.close();scope=None\n  record['usb_after']=usb_free()\n  child=json.loads((case/'evidence.json').read_text());record['child']=child\n  assert code==0 and child['passed'] is True,'cold child failed'\n  assert child['first_open_seconds']<=120,'native open exceeded standard local client open budget'\n  record.update(passed=True,finished_at=time.time());write()\n assert supervisor.describe()['owners']=={}\n supervisor.close();supervisor=None\n result['usb_after']=usb_free();authority()\n result.update(passed=True,finished_at=time.time())\nexcept BaseException as exc:\n result['failure']={'type':type(exc).__name__,'frames':[{'file':Path(f.filename).name,'line':f.lineno,'function':f.name} for f in traceback.extract_tb(exc.__traceback__)[-8:]]}\n result['failed_at']=time.time()\n try:\n  if scope is not None:\n   result['failure_scope_stop_verified']=scope.stop(timeout=5)\n   if result['failure_scope_stop_verified']:\n    scope.close();scope=None\n  if supervisor is not None and supervisor.describe()['owners']=={}:\n   supervisor.close();supervisor=None\n except BaseException as cleanup_error:\n  result['cleanup_failure_type']=type(cleanup_error).__name__\nfinally:\n try:write()\n except BaseException as evidence_error:\n  result['evidence_write_failure_type']=type(evidence_error).__name__\n  print('Evidence write failed; guardian retained for independent reconciliation.',file=sys.stderr,flush=True)\n# Root stays alive after success/failure until the coordinator checks persisted\n# identities, empty scopes, actual USB release and unchanged production state.\nwhile not (state/'guardian.release').exists():time.sleep(.25)\nassert json.loads((state/'processes/scopes.json').read_text())['scopes']=={}\nassert not [p for p in root.iterdir() if p.is_dir() and p.name!='manager']\nassert usb_free()['owner_count']==0\nif radio_lock is not None:os.close(radio_lock)\nraise SystemExit(0 if result['passed'] else 1)\n",
+    "sha256": "a7437ccd927d2ce1c5e1fab3892965e05848302d95eb89ff57421047ca267850",
+    "radio_scope": "USRP_00@ucla reservation1022 only; expired script is retained evidence"
+  },
+  "external_booking_verifier": {
+    "source": "#!/home/prod-remoterf/miniconda3/envs/serverrf/bin/python\nimport argparse\nimport datetime\nimport json\nfrom pathlib import Path\nimport sqlite3\nimport time\nfrom zoneinfo import ZoneInfo\nimport yaml\n\np = argparse.ArgumentParser()\np.add_argument('--reservation-id', required=True)\np.add_argument('--device-id', required=True, type=int)\np.add_argument('--serial', required=True)\na = p.parse_args()\nexpected = '52ae81ca-fd98-4e4c-8819-38cffa86247b:1022'\nassert (a.reservation_id, a.device_id, a.serial) == (expected, 40, '32C78EE')\nroot = Path.home() / '.config/remoterf'\nrows = yaml.safe_load((root / 'devices.yml').read_text())['devices']\ndevices = [r for r in rows if r.get('device_id') == a.device_id]\nassert len(devices) == 1 and devices[0]['device_type'] == 'usrp'\nassert devices[0]['init'] == {'profile': 'usrp2901', 'type': 'b200', 'serial': a.serial}\nwith sqlite3.connect('file:' + str(root / 'db/reservations.db') + '?mode=ro', uri=True, timeout=0.5) as db:\n    rows = db.execute('SELECT username,device_id,start_time,end_time FROM Reservations WHERE res_id=?', (1022,)).fetchall()\nassert len(rows) == 1\nowner, gid, start, end = rows[0]\nassert owner == 'ethange' and gid == a.device_id\ndef epoch(value):\n    return datetime.datetime.strptime(value, '%Y-%m-%d %H:%M:%S').replace(tzinfo=ZoneInfo('America/Los_Angeles')).timestamp()\nstart, end = epoch(start), epoch(end)\nassert (start, end) == (1794286800, 1794290400)\nprint(json.dumps({'active': start <= time.time() < end, 'reservation_id': expected,\n                  'device_id': gid, 'serial': a.serial, 'expires_at': end}))\n",
+    "sha256": "a009589cdc3e31c69a1fa7cdc390a49a91e2638fdcbd887ecd464836f25dfda5",
+    "read_only": true,
+    "raw_token_read": false
+  },
+  "local_harness_regression": {
+    "python": "3.12.10",
+    "command": "/tmp/remoterf-phase1-python312/bin/python -m pytest -q tools/qualification/tests/test_usrp_cold_start.py tools/qualification/tests/test_usrp_handoff.py tools/qualification/tests/test_usrp_service_stop.py",
+    "passed": 36,
+    "skipped": 0,
+    "seconds": 15.46,
+    "source": "Observed combined terminal result; recorded as result metadata, not a reconstructed log."
+  }
+}

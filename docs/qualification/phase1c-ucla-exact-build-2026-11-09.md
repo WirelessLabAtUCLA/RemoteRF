@@ -6,6 +6,12 @@ before and after testing. All test ownership/process state was independently
 verified empty before releasing reservation 1021 at approximately 20:35 Pacific.
 **Production integrations remain disabled. Nothing was pushed or published.**
 
+The later [normal-auth cold-process follow-up](phase1c-cold-auth-2026-11-09.md)
+passed 12 fresh-process real-radio opens on these same artifacts without the
+harness's four-second auth cache or extra warmup. It addresses the narrow normal
+local-auth concern raised by the initial supplement failure; its precise original
+cause remains unproven, and broader release limits still apply.
+
 ## Build and reservation
 
 USRP_00@ucla is device 40, serial `32C78EE`, with inventory profile
@@ -85,7 +91,7 @@ with an active receiver. Stop timings are observations for these runs, not
 production deadlines or capacity promises.
 
 The **first supplement attempt remains recorded as failed**. Its child passed
-real SIGTERM cleanup, but the parent's first native reopen was rejected with
+real SIGTERM cleanup, but the parent's follow-up native open/receive was rejected with
 `RemoteRFSessionExpiredError`. The live external reservation remained valid.
 Independent inspection proved empty hardware/process journals, no owned scopes
 and no USB owner before releasing that failed test's guardian. No journal was

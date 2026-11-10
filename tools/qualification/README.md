@@ -324,3 +324,13 @@ It keeps the deployed service unchanged and requires an independent guardian,
 verified reservation and empty-state proof before releasing the delegated root.
 The [exact-build UCLA report](../../docs/qualification/phase1c-ucla-exact-build-2026-11-09.md)
 records the tested build, retained failed attempt, successful follow-up and scope.
+
+## Fresh-process checks with normal authorization
+
+Use the [normal-auth cold-process harness](usrp_cold_start.md) to test new Python
+processes through ordinary private account enrollment, calendar reservations and
+unmodified token validation. It preserves normal driver preload and requires
+a supervised hardware scope plus an independently checked external reservation.
+The [recorded CI/UCLA follow-up](../../docs/qualification/phase1c-cold-auth-2026-11-09.md)
+separates fake-native calendar fault checks from twelve real receive attempts,
+retains cleanup/build evidence and identifies the remaining production gates.
