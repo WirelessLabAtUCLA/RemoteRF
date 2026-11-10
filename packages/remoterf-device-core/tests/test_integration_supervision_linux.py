@@ -170,3 +170,67 @@ raise SystemExit(main(sys.argv[1:]))
     assert json.loads((state / 'ownership' / 'ownership.json').read_text()) == {}
     assert json.loads((state / 'processes' / 'scopes.json').read_text())['scopes'] == {}
     assert not any(path.name.startswith('rrf-') for path in root.iterdir())
+
+
+@pytest.mark.parametrize('exit_code', [0, 7])
+def test_required_idle_child_exit_cleans_actual_descendant_without_health_action(tmp_path, monkeypatch, exit_code):
+    from remoterf_device_core.integrations import Manifest, Registry
+    from remoterf_device_core.integrations.ownership import Gate, Journal
+    from remoterf_device_core.integrations.runtime import Binding, Runtime
+    supervisor = mod.CgroupSupervisor(Path(ROOT), tmp_path / 'processes')
+    scope = supervisor.create('required-health')
+    journal = Journal(tmp_path / 'ownership')
+    gate = Gate('qualification:fake-native', journal)
+    native = {'held': True}
+    marker = tmp_path / 'exit-now'
+    program = '''
+import pathlib, subprocess, sys, time
+subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(60)'], start_new_session=True)
+print('READY', flush=True)
+while not pathlib.Path(sys.argv[1]).exists():
+    time.sleep(0.01)
+raise SystemExit(int(sys.argv[2]))
+'''
+    class Adapter:
+        def validate(self, profile, config):
+            return config
+        def start(self, profile, config):
+            process = scope.launch([sys.executable, '-I', '-S', '-c', program, str(marker), str(exit_code)],
+                                   env={}, cwd=tmp_path, required_while_running=True)
+            wait_for(lambda: b'READY' in scope.log_tail(process, 'stdout'))
+        def status(self):
+            return {'ready': True}
+        def call(self, *args):
+            raise AssertionError('no adapter health action is required to detect process exit')
+        def stop(self):
+            assert scope.stop(timeout=5)
+    definition = Manifest.from_dict(dict(id='org.example.required_health', version='1.0.0', contract_version='0.1',
+        factory='fixture_only:create', device_types=['usrp'], profiles=['test'], actions=[]))
+    registry = Registry([definition], enabled={'1': [definition.integration_id]})
+    monkeypatch.setattr(registry, 'create', lambda *args: Adapter())
+    binding = Binding(gate, '1', 'usrp', 'fake-session', 1, tmp_path, lambda: True,
+        lambda: native.update(held=False), lambda: not native['held'], lambda: native.update(held=True),
+        scope.resources_released, resource_owner='required-health', resource_failure=scope.resource_failure)
+    runtime = Runtime(registry, workers=1, capacity=1)
+    try:
+        operation = runtime.start(binding, definition.integration_id, 'test', {}, request_key='start')['operation_id']
+        wait_for(lambda: runtime.status(binding, operation)['state'] == 'RUNNING')
+        assert gate.snapshot()['blocked'] and not native['held']
+        marker.touch()  # Child exits itself; its setsid descendant keeps running.
+        wait_for(lambda: runtime.drained(binding))
+        status = runtime.status(binding, operation)
+        assert status['error'] == 'process_exited' and status['released']
+        assert scope.snapshot()['processes'][0]['returncode'] == exit_code
+        assert scope.resources_released() and native['held'] and journal.records() == {}
+        with gate.native():
+            pass
+    finally:
+        marker.touch()
+        runtime.shutdown()
+        wait_for(lambda: runtime.drained(binding))
+        runtime.close()
+        assert scope.stop(timeout=5)
+        scope.close()
+        supervisor.close()
+        journal.close()
+    assert not any(path.name.startswith('rrf-') for path in Path(ROOT).iterdir())

@@ -262,6 +262,140 @@ def test_launch_limit_and_release_seal_are_enforced(fake_cgroups, tmp_path):
     assert caught.value.code == 'cancelled'
 
 
+@pytest.mark.parametrize('required,exit_code', [(False, 0), (False, 7), (True, 0), (True, 7)])
+def test_required_exit_monitor_preserves_optional_finite_jobs(fake_cgroups, tmp_path, required, exit_code):
+    create, root, state = fake_cgroups
+    supervisor = create()
+    scope = supervisor.create('health')
+    scope.launch([sys.executable, '-I', '-S', '-c', f'raise SystemExit({exit_code})'],
+                 env={}, cwd=tmp_path, required_while_running=required)
+    wait_for(lambda: scope.snapshot()['processes'][0]['logs_drained'])
+    if required:
+        wait_for(lambda: scope.resource_failure() == 'process_exited')
+    else:
+        assert scope.resource_failure() is None
+    assert scope.snapshot()['processes'][0]['required_while_running'] is required
+    assert scope.snapshot()['processes'][0]['returncode'] == exit_code
+    assert scope.resources_released()
+    scope.close()
+    supervisor.close()
+
+
+def test_required_exit_detected_before_inherited_log_pipes_close(fake_cgroups, tmp_path):
+    create, root, state = fake_cgroups
+    scope = create().create('health')
+    program = '''
+import subprocess, sys
+subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(0.7)'])
+'''
+    scope.launch([sys.executable, '-I', '-S', '-c', program], env={}, cwd=tmp_path, required_while_running=True)
+    wait_for(lambda: scope.resource_failure() == 'process_exited')
+    assert not scope.snapshot()['processes'][0]['logs_drained']
+    wait_for(lambda: scope.snapshot()['processes'][0]['logs_drained'])
+
+
+def test_cached_health_probe_never_waits_for_cleanup_scope_lock(fake_cgroups):
+    from threading import Event, Thread
+    create, root, state = fake_cgroups
+    scope = create().create('health')
+    done, observed = Event(), []
+    def probe():
+        observed.append(scope.resource_failure())
+        done.set()
+    with scope._lock:
+        scope._required_exit.set()
+        thread = Thread(target=probe)
+        thread.start()
+        assert done.wait(0.5), 'shared watcher blocked behind scope cleanup'
+    thread.join(1)
+    assert observed == ['process_exited']
+
+
+def test_required_flag_rejects_non_boolean_without_launch(fake_cgroups, tmp_path, monkeypatch):
+    create, root, state = fake_cgroups
+    scope = create().create('health')
+    monkeypatch.setattr(mod.subprocess, 'Popen', Mock(side_effect=AssertionError('must not launch')))
+    with pytest.raises(IntegrationError) as caught:
+        scope.launch([sys.executable], env={}, cwd=tmp_path, required_while_running='true')
+    assert caught.value.code == 'invalid_process'
+
+
+def test_selector_failure_latches_for_all_scopes_and_retains_unverified_logs(fake_cgroups, tmp_path, monkeypatch):
+    create, root, state = fake_cgroups
+    supervisor = create()
+    required = supervisor.create('required')
+    optional = supervisor.create('optional')
+    required.launch([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(60)'],
+                    env={}, cwd=tmp_path, required_while_running=True)
+    with supervisor._logs.lock:
+        monkeypatch.setattr(supervisor._logs.selector, 'select', Mock(side_effect=OSError('selector failed')))
+    wait_for(lambda: not supervisor._logs.thread.is_alive())
+    assert supervisor._logs.failed.is_set()
+    assert required.resource_failure() == optional.resource_failure() == 'resource_monitor_failed'
+    assert all(row['log_error'] for row in required._processes.values())
+    assert not required.resources_released()
+    assert supervisor.describe()['owners']
+
+
+def test_launch_after_monitor_failure_is_refused_before_process_creation(fake_cgroups, tmp_path, monkeypatch):
+    create, root, state = fake_cgroups
+    supervisor = create()
+    with supervisor._logs.lock:
+        monkeypatch.setattr(supervisor._logs.selector, 'select', Mock(side_effect=OSError('selector failed')))
+    wait_for(lambda: supervisor._logs.failed.is_set())
+    scope = supervisor.create('created-after-monitor-failure')
+    popen = Mock(side_effect=AssertionError('must not create an unmonitored process'))
+    monkeypatch.setattr(mod.subprocess, 'Popen', popen)
+    with pytest.raises(IntegrationError) as caught:
+        scope.launch([sys.executable], env={}, cwd=tmp_path)
+    assert caught.value.code == 'resource_monitor_failed'
+    assert scope.resource_failure() == 'resource_monitor_failed'
+    assert not scope._processes and scope._launching == 0
+    popen.assert_not_called()
+    scope.close()
+    supervisor.close()
+
+
+@pytest.mark.parametrize('failure_point', ['registration', 'bootstrap_ready'])
+def test_monitor_failure_during_launch_never_grants_target_exec(fake_cgroups, tmp_path, monkeypatch, failure_point):
+    create, root, state = fake_cgroups
+    supervisor = create()
+    scope = supervisor.create('launch-race')
+    marker = tmp_path / 'target-executed'
+    if failure_point == 'registration':
+        original = supervisor._logs.add
+        def fail(record):
+            supervisor._logs.failed.set()
+            return original(record)
+        monkeypatch.setattr(supervisor._logs, 'add', fail)
+    else:
+        original = mod._wait_readable
+        def fail(fd, timeout):
+            ready = original(fd, timeout)
+            supervisor._logs.failed.set()
+            return ready
+        monkeypatch.setattr(mod, '_wait_readable', fail)
+    with pytest.raises(IntegrationError) as caught:
+        scope.launch([sys.executable, '-I', '-S', '-c',
+                      'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(marker)],
+                     env={}, cwd=tmp_path, required_while_running=True)
+    assert caught.value.code == 'resource_monitor_failed'
+    assert len(scope._processes) == 1 and scope._launching == 0
+    record = next(iter(scope._processes.values()))
+    wait_for(lambda: record['popen'].poll() is not None)
+    assert not marker.exists()
+    if failure_point == 'registration':
+        assert record['log_error'] and record['open_logs'] == 0
+        assert not scope.resources_released()
+
+
+def test_orderly_monitor_close_does_not_report_failure():
+    monitor = mod._LogDrainer(1024)
+    monitor.close()
+    monitor.thread.join(timeout=1)
+    assert not monitor.thread.is_alive() and not monitor.failed.is_set()
+
+
 @pytest.mark.parametrize('spec', [
     (['relative-program'], {}),
     ([sys.executable, '\0'], {}),

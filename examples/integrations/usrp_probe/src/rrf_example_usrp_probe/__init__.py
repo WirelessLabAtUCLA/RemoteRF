@@ -76,7 +76,7 @@ class Probe:
              "--serial", serial, "--configuration", json.dumps(value, separators=(",", ":"))],
             env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "OPENBLAS_NUM_THREADS": "1",
                  "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
-            cwd=Path(self._context.work_dir).absolute())
+            cwd=Path(self._context.work_dir).absolute(), required_while_running=True)
         deadline = time.monotonic() + value["startup_timeout"]
         while time.monotonic() < deadline:
             if self._context.cancelled.is_set():

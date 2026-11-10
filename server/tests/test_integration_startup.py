@@ -1,5 +1,6 @@
 """Failed server startup releases idle ownership without touching real radios."""
 import json
+import signal
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -10,11 +11,13 @@ from remoterf_device_core.integrations import IntegrationError
 from remoterf_device_core.integrations.ownership import Journal
 
 
-@pytest.mark.parametrize('stage', ['certificate', 'inventory', 'transport', 'direct_path'])
+@pytest.mark.parametrize('stage', ['certificate', 'inventory', 'transport', 'direct_path', 'control'])
 @pytest.mark.parametrize('cleanup_fails', [False, True])
-def test_failed_startup_closes_real_ownership_lock_and_preserves_error(tmp_path, monkeypatch, stage, cleanup_fails):
+@pytest.mark.parametrize('sigterm', [False, True])
+def test_failed_startup_closes_real_ownership_lock_and_preserves_error(tmp_path, monkeypatch, stage, cleanup_fails, sigterm):
     from remoteRF_server.server import grpc_server as server
     from remoteRF_server.server import device_manager, integration_controller, startup_check, remote_admin_ssh
+    from remoteRF_server.server import control
     from remoteRF_server.server.federation import legacy_state, runtime as federation
 
     # Exercise real integration initialization and its OS writer lock, while
@@ -52,16 +55,22 @@ def test_failed_startup_closes_real_ownership_lock_and_preserves_error(tmp_path,
     monkeypatch.setattr(server, 'start_cert_provider', Mock(return_value=(cert, None)))
     monkeypatch.setattr(server, 'stop_cert_provider', Mock())
     monkeypatch.setattr(startup_check, 'run', Mock())
+    controller_socket = Mock()
+    monkeypatch.setattr(control, 'ControlServer', Mock(return_value=controller_socket))
     original = KeyboardInterrupt('startup interrupted') if stage == 'inventory' else RuntimeError('startup failed')
 
     def fail(*args, **kwargs):
         with pytest.raises(IntegrationError) as caught:
             Journal(tmp_path / 'db' / 'integrations' / 'ownership')
         assert caught.value.code == 'journal_busy'
+        if sigterm:
+            signal.raise_signal(signal.SIGTERM)
+            pytest.fail('SIGTERM did not unwind startup')
         raise original
 
     {'certificate': server.start_cert_provider, 'inventory': startup_check.run,
-     'transport': transport.start, 'direct_path': direct.start_listener}[stage].side_effect = fail
+     'transport': transport.start, 'direct_path': direct.start_listener,
+     'control': controller_socket.start}[stage].side_effect = fail
 
     def close_inventory():
         events.append('inventory')
@@ -76,11 +85,19 @@ def test_failed_startup_closes_real_ownership_lock_and_preserves_error(tmp_path,
         server.stop_cert_provider.side_effect = RuntimeError('certificate cleanup failed')
     permissions = Mock()
     try:
-        with pytest.raises(type(original)) as caught:
-            server.start_server_runtime(bind_host='127.0.0.1', grpc_port=54321, certificate_port=54322,
+        def start():
+            return server.start_server_runtime(bind_host='127.0.0.1', grpc_port=54321, certificate_port=54322,
                 cert_dir=tmp_path, include_host_tunnel=False, run_reservation_updates=False,
                 home_federation_permissions=permissions)
-        assert caught.value is original
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        if sigterm:
+            with server._service_lifetime():
+                start()
+        else:
+            with pytest.raises(type(original)) as caught:
+                start()
+            assert caught.value is original
+        assert signal.getsignal(signal.SIGTERM) is previous_handler
         manager.close_all.assert_called_once_with(stop_admission=True)
         assert events == ['sessions', 'inventory']
         assert manager.integrations._stopping
@@ -94,5 +111,7 @@ def test_failed_startup_closes_real_ownership_lock_and_preserves_error(tmp_path,
         writer.close.assert_called_once()
         if stage != 'certificate':
             server.stop_cert_provider.assert_called_once_with(cert)
+        if stage == 'control':
+            controller_socket.stop.assert_called_once()
     finally:
         manager.integrations.close()

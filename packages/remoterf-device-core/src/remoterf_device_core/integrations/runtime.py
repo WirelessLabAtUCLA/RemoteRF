@@ -51,6 +51,8 @@ class Binding:
     stays held across that call. resources_released verifies adapter resources
     after stop (e.g. a supervised process group exited); stop returning is not
     sufficient evidence. authority checks the exact reservation generation.
+    resource_failure is an optional trusted, cache-only nonblocking probe. It
+    must not call adapter/native code, wait for cleanup locks or perform IO.
     """
     gate: Gate
     device_id: str
@@ -69,6 +71,7 @@ class Binding:
     prepare: object = None
     resource_owner: str | None = None
     finalize: object = None
+    resource_failure: object = None
 
 
 class Runtime:
@@ -250,6 +253,25 @@ class Runtime:
     def _check(self, op):
         if op["cancelled"].is_set() or not op["binding"].authority():
             raise IntegrationError("cancelled", "application operation was cancelled")
+        failure = self._resource_failure(op)
+        if failure is not None:
+            raise IntegrationError(failure, "a required application resource failed")
+
+    @staticmethod
+    def _resource_failure(op):
+        # Binding supplies a trusted cached/nonblocking probe, never an adapter
+        # hook. Do not call Scope.snapshot, read logs or inspect cgroup files on
+        # the shared watcher. A broken monitor is itself a cancellation reason.
+        probe = op['binding'].resource_failure
+        if probe is None:
+            return None
+        try:
+            failure = probe()
+        except BaseException:
+            return 'resource_monitor_failed'
+        if failure is None:
+            return None
+        return 'process_exited' if type(failure) is str and failure == 'process_exited' else 'resource_monitor_failed'
 
     def _start(self, op):
         try:
@@ -390,9 +412,15 @@ class Runtime:
                 valid = op["binding"].authority()
             except BaseException:
                 valid = False
+            failure = self._resource_failure(op)
             with self._lock:
                 if op["released"]:
                     continue
+                if failure is not None and not op['cancelled'].is_set():
+                    op.update(state='ERROR', error=failure)
+                    op['cancelled'].set()
+                    self._cancel_action(op)
+                    self._schedule_cleanup(op)
                 timed_out = (op["active"] or op["cleanup"]) and self.clock() >= op["deadline"]
                 if not valid or timed_out or self._draining:
                     op["cancelled"].set()

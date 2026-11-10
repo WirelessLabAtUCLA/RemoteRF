@@ -123,13 +123,26 @@ class _LogDrainer:
         self.limit = limit
         self.lock = Lock()
         self.streams = {}
+        self.processes = {}
         self.selector = selectors.DefaultSelector()
         self.exit = Event()
+        self.failed = Event()
         self.thread = Thread(target=self._run, name="remoterf-process-logs", daemon=True)
         self.thread.start()
 
     def add(self, process):
         with self.lock:
+            if self.failed.is_set() or self.exit.is_set():
+                # The child is already tracked by its Scope, but has not
+                # received its bootstrap grant. Never claim undrained logs.
+                process['log_error'] = True
+                for name in ('stdout', 'stderr'):
+                    try:
+                        getattr(process['popen'], name).close()
+                    finally:
+                        process['open_logs'] -= 1
+                raise IntegrationError('resource_monitor_failed', 'process monitor is unavailable')
+            self.processes[process['id']] = process
             for name in ("stdout", "stderr"):
                 pipe = getattr(process["popen"], name)
                 os.set_blocking(pipe.fileno(), False)
@@ -137,10 +150,36 @@ class _LogDrainer:
                 self.streams[pipe.fileno()] = (pipe, process, name)
 
     def _run(self):
+        try:
+            self._drain()
+        except BaseException:
+            # A selector/pipe failure must not silently disable health checks
+            # for every owner. The shared latch also covers scopes created
+            # later; their cache-only probe does not need this thread to run.
+            self.failed.set()
+            with self.lock:
+                for _pipe, process, _name in self.streams.values():
+                    process['log_error'] = True
+
+    def _drain(self):
         while not self.exit.wait(0.01):
             with self.lock:
                 if self.exit.is_set():
                     return
+                # WNOHANG polling does not wait for a process or log EOF. A
+                # detached descendant may keep both pipes open after its
+                # required parent exits. Never acquire a Scope/runtime lock.
+                for process_id, process in tuple(self.processes.items()):
+                    try:
+                        exited = process['popen'].poll() is not None
+                    except BaseException:
+                        if process.get('required_while_running', False):
+                            process['monitor_failed'].set()
+                        exited = True
+                    if exited:
+                        if process.get('required_while_running', False):
+                            process['required_exit'].set()
+                        self.processes.pop(process_id, None)
                 ready = self.selector.select(timeout=0)
             for key, _events in ready:
                 fd = key.fd
@@ -176,6 +215,7 @@ class _LogDrainer:
                 process["open_logs"] -= 1
                 process["log_error"] = True
             self.streams.clear()
+            self.processes.clear()
             self.selector.close()
 
     def closed(self, process):
@@ -185,6 +225,7 @@ class _LogDrainer:
     def describe(self, process):
         with self.lock:
             return {"id": process["id"], "returncode": process["popen"].poll(),
+                    "required_while_running": process.get('required_while_running', False),
                     "stdout_bytes": process["stdout_bytes"], "stderr_bytes": process["stderr_bytes"],
                     "stdout_truncated": process["stdout_bytes"] > self.limit,
                     "stderr_truncated": process["stderr_bytes"] > self.limit,
@@ -471,6 +512,8 @@ class Scope:
         self._closed = False
         self._failure = None
         self._detached = False
+        self._required_exit = Event()
+        self._monitor_failed = Event()
 
     def _verify_identity(self):
         row = self._supervisor._records.get(self.owner_id)
@@ -482,7 +525,14 @@ class Scope:
         if [current.st_dev, current.st_ino] != row["identity"]:
             raise _recovery()
 
-    def launch(self, argv, *, env, cwd, timeout=3.0):
+    def launch(self, argv, *, env, cwd, timeout=3.0, required_while_running=False):
+        """Launch an owned child; finite jobs are allowed by default.
+
+        A trusted adapter can declare a long-lived worker required. Any exit,
+        including exit zero, then sets the cached resource_failure signal. The
+        runtime handles it through serialized cleanup; this is not a PID kill
+        or an assertion that descendant/native resources have been released.
+        """
         if (type(argv) not in (list, tuple) or not 1 <= len(argv) <= 128
                 or any(type(arg) is not str or "\0" in arg or len(arg) > 4096 for arg in argv)
                 or not Path(argv[0]).is_absolute() or sum(len(arg) for arg in argv) > 32768
@@ -491,9 +541,12 @@ class Scope:
                        or "\0" in key + value or len(key) + len(value) > 4096 for key, value in env.items())
                 or sum(len(key) + len(value) for key, value in env.items()) > 32768
                 or type(cwd) not in (str, Path) and not isinstance(cwd, Path)
-                or not Path(cwd).is_absolute() or type(timeout) not in (int, float) or not 0 < timeout <= 30):
+                or not Path(cwd).is_absolute() or type(timeout) not in (int, float) or not 0 < timeout <= 30
+                or type(required_while_running) is not bool):
             raise IntegrationError("invalid_process", "invalid bounded process launch specification")
         with self._lock:
+            if self._supervisor._logs.failed.is_set():
+                raise IntegrationError('resource_monitor_failed', 'process monitor is unavailable')
             self._verify_identity()
             if not self._accepting:
                 raise IntegrationError("cancelled", "process owner is draining or recovered")
@@ -521,7 +574,9 @@ class Scope:
                     close_fds=True, pass_fds=(self._fd, ready_write, grant_read, env_file.fileno()),
                     env={}, cwd=cwd, start_new_session=True)
             record = {"id": uuid4().hex, "popen": process, "stdout": bytearray(), "stderr": bytearray(),
-                      "stdout_bytes": 0, "stderr_bytes": 0, "open_logs": 2, "log_error": False}
+                      "stdout_bytes": 0, "stderr_bytes": 0, "open_logs": 2, "log_error": False,
+                      "required_while_running": required_while_running, "required_exit": self._required_exit,
+                      "monitor_failed": self._monitor_failed}
             with self._lock:
                 self._processes[record["id"]] = record
             self._supervisor._logs.add(record)
@@ -535,6 +590,8 @@ class Scope:
                 self._verify_identity()
                 if not self._accepting:
                     raise IntegrationError("cancelled", "process owner is draining")
+                if self._supervisor._logs.failed.is_set():
+                    raise IntegrationError('resource_monitor_failed', 'process monitor is unavailable')
                 os.write(grant_write, b"G")
             return record["id"]
         except BaseException:
@@ -550,8 +607,14 @@ class Scope:
     def snapshot(self):
         with self._lock:
             return {"owner_id": self.owner_id, "accepting": self._accepting, "launching": self._launching,
-                    "closed": self._closed, "failure": self._failure,
+                    "closed": self._closed, "failure": self.resource_failure() or self._failure,
                     "processes": [self._supervisor._logs.describe(row) for row in self._processes.values()]}
+
+    def resource_failure(self):
+        """Trusted cached probe: no Scope lock, process/log read, or filesystem IO."""
+        if self._supervisor._logs.failed.is_set() or self._monitor_failed.is_set():
+            return 'resource_monitor_failed'
+        return 'process_exited' if self._required_exit.is_set() else None
 
     def log_tail(self, process_id, stream):
         """Local trusted reader only; raw logs must not be exposed by remote status."""

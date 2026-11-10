@@ -33,6 +33,11 @@ class DeferredScope:
             return True
         return self.scope is not None and self.scope.resources_released()
 
+    def resource_failure(self):
+        # A cache-only trusted watcher hook; preparation and cleanup may be
+        # blocked on IO, so this must never acquire their locks or inspect files.
+        return self.scope.resource_failure() if self.scope is not None else None
+
     def close(self):
         if self.scope is not None:
             self.scope.close()
@@ -222,7 +227,7 @@ class Controller:
                                                               resources_released=scope.resources_released)
                         binding = replace(binding, selector={'serial': self.config.devices[session.gid]['serial']},
                                           processes=scope, prepare=prepare, resource_owner=owner,
-                                          finalize=scope.stop_if_prepared)
+                                          finalize=scope.stop_if_prepared, resource_failure=scope.resource_failure)
                         self._bindings[binding_key] = (binding, scope)
                         created_binding = True
                 if self._runtime is None:
@@ -285,13 +290,24 @@ class Controller:
         # jobs, and an uncertain or failed cleanup retains its resource owner.
         with self._lock:
             self._stopping = True
-        self._reap()
-        with self._lock:
-            pending = tuple(self._pending_closes.values())
         deadline = time.monotonic() + 0.5
-        for job in pending:
-            job.done.wait(max(0.0, deadline - time.monotonic()))
-        self._reap()
+        while True:
+            self._reap()
+            with self._lock:
+                if not self._bindings and not self._pending_closes:
+                    break
+                pending = tuple(self._pending_closes.values())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # The same shutdown-only grace covers ordinary runtime stop work
+            # followed by scope cleanup. RPC discovery still never waits here.
+            # A hung hook cannot extend this total deadline or release a fence.
+            incomplete = next((job for job in pending if not job.done.is_set()), None)
+            if incomplete is None:
+                time.sleep(min(0.01, remaining))
+            else:
+                incomplete.done.wait(min(0.01, remaining))
         with self._lock:
             if self._bindings or self._pending_closes:
                 raise IntegrationError('recovery_required', 'application resource cleanup has not completed')
@@ -349,7 +365,8 @@ def initialize(manager, access, records, root):
                     # A crash after hardware release can leave a verified-empty
                     # scope. It is safe to finish removing that resource record.
                     orphan.close()
-        extra = [Path(__file__), Path(__file__).with_name('dynamic_v2.py'), Path(__file__).with_name('device_manager.py')]
+        extra = [Path(__file__), Path(__file__).with_name('dynamic_v2.py'),
+                 Path(__file__).with_name('device_manager.py'), Path(__file__).with_name('grpc_server.py')]
         manager.integrations = Controller(configuration, state_dir=state, journal=journal, supervisor=supervisor,
                                           framework_hash=code_digest(extra), unavailable=config_error, framework_paths=extra,
                                           installed_mapping=mapping)

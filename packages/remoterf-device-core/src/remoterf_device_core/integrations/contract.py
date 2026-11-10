@@ -24,6 +24,9 @@ class Context:
     selector comes from qualified operator inventory, never caller configuration.
     processes is an owner-bound supervision service; it grants no access to
     other owners, reservation credentials or the server's environment.
+    Its launch(..., required_while_running=True) declares a long-lived worker
+    whose exit must cancel the application. The default False permits finite
+    jobs. Monitoring is cached and never calls an adapter hook from status RPCs.
     """
 
     device_id: str

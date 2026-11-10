@@ -25,6 +25,8 @@ class Scope:
         self.closed = False
     def resources_released(self):
         return True
+    def resource_failure(self):
+        return None
     def stop(self):
         self.stops += 1
         return True
@@ -476,6 +478,31 @@ def test_server_shutdown_closes_application_runtime_even_when_inventory_fails(mo
     runtime.stop()
     manager.close_all.assert_called_once_with(stop_admission=True)
     manager.integrations.close.assert_called_once()
+
+
+def test_shutdown_grace_covers_ordinary_application_stop_before_scope_reap(controlled):
+    rig = controlled
+    running(rig)
+    entered, finish = Event(), Event()
+    def stop():
+        entered.set()
+        assert finish.wait(2)
+    rig.adapter.stop.side_effect = stop
+    rig.manager.close(rig.session.session_id, wait=False)
+    assert entered.wait(1)
+    def complete():
+        time.sleep(0.05)
+        finish.set()
+    thread = Thread(target=complete)
+    thread.start()
+    started = time.monotonic()
+    try:
+        rig.controller.close()
+        assert time.monotonic() - started < 0.8
+        assert rig.supervisor.closed and not rig.journal.records()
+    finally:
+        finish.set()
+        thread.join(2)
 
 
 def test_reload_rejects_new_physical_alias_before_inventory_acquisition(tmp_path, monkeypatch):

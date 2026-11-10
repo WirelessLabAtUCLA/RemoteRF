@@ -44,6 +44,7 @@ def test_probe_launch_is_explicit_receive_only_and_cleanup_is_repeatable(tmp_pat
     assert '--serial' in argv and 'ABC123' in argv
     assert kwargs['env'] == {'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'OPENBLAS_NUM_THREADS': '1',
                              'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1'}
+    assert kwargs['required_while_running'] is True
     assert adapter.call('health', {})['ready']
     adapter.stop()
     adapter.stop()
