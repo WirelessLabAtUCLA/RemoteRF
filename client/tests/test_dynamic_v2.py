@@ -355,7 +355,7 @@ class DynamicV2Tests(unittest.TestCase):
     def test_packaged_usrp_schema_advertises_qualified_profiles(self):
         from remoterf.drivers.usrp import usrp_remote
 
-        self.assertEqual(usrp_remote._SCHEMA["driver_version"], "0.0.7")
+        self.assertEqual(usrp_remote._SCHEMA["driver_version"], "0.0.8")
         self.assertIn("n210", usrp_remote._SCHEMA["hardware_profiles"])
         self.assertIn("usrp2", usrp_remote._SCHEMA["hardware_profiles"])
         self.assertIn("b205mini", usrp_remote._SCHEMA["hardware_profiles"])

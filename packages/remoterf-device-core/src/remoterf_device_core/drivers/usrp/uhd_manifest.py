@@ -27,6 +27,7 @@ from typing import Iterable
 
 from ...idl.v2 import build_schema, method, object_type, overload, parameter
 from .profiles import advertised_profile_names, profile_definitions
+from ...integrations.wire import INTEGRATION_METHODS, INTEGRATION_OVERLOAD
 
 TARGET_UHD_VERSION = "4.10.0.0"
 TARGET_API_FAMILY = "uhd-python"
@@ -1545,7 +1546,7 @@ CAPABILITY_FIELDS = (
     "supported_otw_formats", "stream_format_capabilities",
     "maximum_remote_payload_bytes",
     "supported_streaming_protocol_versions",
-    "remote_resource_limits", "advanced_interfaces",
+    "remote_resource_limits", "advanced_interfaces", "application_integrations",
 )
 
 ERRORS = (
@@ -1557,7 +1558,7 @@ ERRORS = (
 )
 
 
-def build_usrp_schema_v2(driver_version: str = "0.0.7") -> dict:
+def build_usrp_schema_v2(driver_version: str = "0.0.8") -> dict:
     signatures = _signatures()
     for additions in (
         _control_signatures(),
@@ -1590,6 +1591,16 @@ def build_usrp_schema_v2(driver_version: str = "0.0.7") -> dict:
             if name in signatures
             else "deferred"
         )
+
+    # Stable generic control surface; installed adapter IDs/actions are runtime
+    # metadata and never affect this stock manifest or its schema hash.
+    for name in INTEGRATION_METHODS:
+        methods.append(method(
+            name, "uhd.usrp.MultiUSRP",
+            [overload(INTEGRATION_OVERLOAD, [parameter("request", "dict")], returns="dict")],
+            doc="Generic application integration control. Requires operator qualification and enablement; accepts bounded plain JSON.",
+        ))
+        coverage[f"uhd.usrp.MultiUSRP.{name}"] = "implemented_with_documented_remote_difference"
 
     for item in _streamer_methods():
         methods.append(item)

@@ -61,15 +61,15 @@
  },
  {
   "device_type": "usrp",
-  "driver_version": "0.0.7",
-  "v1": "sha256:344c8be1a727c32a50ea7691e72e9d78f9d10cf3baece31c4d5c83df3f3d45bf",
-  "v2": "sha256:69159a5e174635038b732093f12b78f412c422e281bf2855935f8d121f8c7144"
+  "driver_version": "0.0.8",
+  "v1": "sha256:b4483acb336adac00dd57c647fe50927a5ce4fee91ad7fa5d13c9f4195c8d19f",
+  "v2": "sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b"
  },
  {
   "device_type": "usrp_phaser",
-  "driver_version": "0.1.0",
-  "v1": "sha256:a9f6771afe0421c2339c26440e63282dd85f9997f8f777fc56b1b6cf6dda65f0",
-  "v2": "sha256:95ef16ed451ac9c97182f79d4a0c0b4fc7d97605c8e065dba6639ac7265d2b26"
+  "driver_version": "0.1.1",
+  "v1": "sha256:d47556615f614e657792e5da820add2d6f69a337ea0ae84be966186886a96f74",
+  "v2": "sha256:61ba38ea1a9190f14c6bcfbfc6678ecc2538f99cb2a81168f8b4824c3074e4c0"
  },
  {
   "device_type": "wifi",

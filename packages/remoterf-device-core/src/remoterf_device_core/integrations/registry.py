@@ -44,16 +44,18 @@ class Manifest:
         value = object_data(value, max_bytes=MAX_MANIFEST_BYTES)
         if set(value) != _FIELDS:
             raise IntegrationError("invalid_manifest", "integration manifest fields do not match the contract")
-        for field, pattern in (("id", _ID), ("version", _VERSION), ("factory", _FACTORY)):
-            if type(value[field]) is not str or not pattern.fullmatch(value[field]):
+        for field, pattern, limit in (("id", _ID, 128), ("version", _VERSION, 128), ("factory", _FACTORY, 512)):
+            if (type(value[field]) is not str or len(value[field]) > limit
+                    or not pattern.fullmatch(value[field])):
                 raise IntegrationError("invalid_manifest", f"invalid integration {field}")
-        if type(value["contract_version"]) is not str or not re.fullmatch(r"\d+\.\d+", value["contract_version"]):
+        if (type(value["contract_version"]) is not str or len(value["contract_version"]) > 16
+                or not re.fullmatch(r"\d+\.\d+", value["contract_version"])):
             raise IntegrationError("invalid_manifest", "invalid contract version")
         for field in ("device_types", "profiles", "actions"):
             names = value[field]
             if (type(names) is not list or len(names) > 64
                     or (not names and field != "actions")
-                    or any(type(name) is not str or not _NAME.fullmatch(name) for name in names)
+                    or any(type(name) is not str or len(name) > 128 or not _NAME.fullmatch(name) for name in names)
                     or len(names) != len(set(names))):
                 raise IntegrationError("invalid_manifest", f"invalid integration {field}")
         return cls(value["id"], value["version"], value["contract_version"], value["factory"],

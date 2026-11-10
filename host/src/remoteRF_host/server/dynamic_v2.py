@@ -28,6 +28,8 @@ import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from remoterf_device_core.native_lifetime import Activity, submit_cleanup
+from remoterf_device_core.integrations import IntegrationError
+from remoterf_device_core.integrations.wire import INTEGRATION_METHODS, decode_request, validate_arguments, validate_result
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -708,6 +710,7 @@ class SessionManager:
                     self._opening_gids.discard(gid)
             raise
 
+        capabilities["application_integrations"] = {"contract_version": "0.1", "enabled": False, "reason": "unsupported_host"}
         session_id = _opaque_id("sess")
         root_handle = _opaque_id("dev")
         session = DeviceSession(
@@ -1192,6 +1195,19 @@ class SessionManager:
         return len(session_ids)
 
     def invoke(self, session_id, handle, method_name, args, *, positional_args=None, overload_id=""):
+        if method_name in INTEGRATION_METHODS:
+            try:
+                request = validate_arguments(args, positional_args, overload_id=overload_id)
+                session = self.get(session_id)
+                entry = self.get_handle(session, handle)
+                if handle != session.root_handle or entry.type_id != "uhd.usrp.MultiUSRP":
+                    raise IntegrationError("unsupported_device", "integration methods require the owning USRP root")
+                if not any(item['owner'] == entry.type_id and item['name'] == method_name
+                           for item in session.schema_v2['methods']):
+                    raise IntegrationError("unsupported", "generic integration API is not declared by this driver")
+                raise IntegrationError("unsupported_host", "application integrations are not supported on host radios")
+            except IntegrationError as exc:
+                raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=method_name) from None
         session = self.get(session_id)
         entry = self.get_handle(session, handle)
         lock = session.control_lock if entry.type_id == "uhd.usrp.MultiUSRP" else entry.lock
@@ -1457,6 +1473,14 @@ class DynamicControlV2Servicer(grpc_pb2_grpc.DynamicControlV2Servicer):
 
     def Invoke(self, request, context):
         try:
+            if request.method in INTEGRATION_METHODS:
+                try:
+                    application_request = decode_request(request)
+                except IntegrationError as exc:
+                    raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=request.method) from None
+                result, _ = session_manager.invoke(request.session_id, request.handle, request.method,
+                                                   {"request": application_request}, overload_id=request.overload_id)
+                return grpc_pb2.InvokeResponse(result=encode_value(result))
             args = {}
             for item in request.args:
                 if not item.name or item.name in args:

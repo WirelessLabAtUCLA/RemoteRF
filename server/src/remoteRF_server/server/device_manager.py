@@ -1537,8 +1537,9 @@ _reload_lock = threading.Lock()
 
 def _reload_devices_locked(on_device=None) -> None:
     from .dynamic_v2 import session_manager
+    session_manager.integrations.validate_inventory(_load_device_records())
     with _state_lock:
-        gids = [gid for gid, st in _devices.items() if st.origin == "local"]
+        gids = [gid for gid, st in _devices.items() if st.origin == "local" and st.dev is not None]
     with hardware_access.maintenance(gids):
         for gid in gids:
             session_manager.close_gid(gid)
@@ -1582,7 +1583,10 @@ def _reload_devices_unfenced(on_device=None) -> None:
 
         if on_device is not None:
             on_device(int(gid), name)
-        dev, ident2, dtype2 = _connect_from_record(rec)
+        if hardware_access.gate(gid).snapshot()['owner'] is not None:
+            dev, ident2, dtype2 = _connect_from_record(rec, connect=False)
+        else:
+            dev, ident2, dtype2 = _connect_from_record(rec)
 
         tmp_info[int(gid)] = name
         if ident:

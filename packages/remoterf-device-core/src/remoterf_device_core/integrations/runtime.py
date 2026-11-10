@@ -1,4 +1,4 @@
-"""Bounded application lifecycle, deliberately not exposed by device RPC yet.
+"""Bounded application lifecycle and actions for the generic integration API.
 
 Bindings are trusted runtime callbacks, not adapter-supplied functions. They
 must fence every physical alias/access route and verify native release. Hooks
@@ -64,19 +64,28 @@ class Binding:
     restore_native: object
     resources_released: object
     claim: object = None
+    selector: dict | None = None
+    processes: object = None
+    prepare: object = None
+    resource_owner: str | None = None
+    finalize: object = None
 
 
 class Runtime:
-    def __init__(self, registry, *, capacity=16, workers=4, timeout=30.0, clock=time.monotonic):
-        if not 1 <= workers <= capacity <= 64 or not 0 < timeout < 3600:
+    def __init__(self, registry, *, capacity=16, workers=4, action_capacity=64,
+                 timeout=30.0, clock=time.monotonic):
+        if (not 1 <= workers <= capacity <= 64 or not 1 <= action_capacity <= 256
+                or not 0 < timeout < 3600):
             raise ValueError("invalid runtime bounds")
         self.registry = registry
         self.capacity = capacity
+        self.action_capacity = action_capacity
         self.timeout = timeout
         self.clock = clock
         self._lock = RLock()
         self._operations = {}
         self._keys = {}
+        self._actions = {}
         self._draining = False
         self._closed = False
         self._work = _Pool(workers, capacity, "remoterf-integration")
@@ -95,10 +104,10 @@ class Runtime:
         return (binding.session_id, binding.generation, binding.gate.physical_id)
 
     def start(self, binding: Binding, integration_id: str, profile: str, configuration: dict, *, request_key: str):
-        if type(request_key) is not str or not 1 <= len(request_key) <= 128:
-            raise IntegrationError("invalid_request_key", "a bounded request key is required")
+        self._validate_request_key(request_key)
         configuration = self.registry.validate_start(integration_id, device_id=binding.device_id,
             device_type=binding.device_type, profile=profile, configuration=configuration)
+        selector = object_data(binding.selector) if binding.selector is not None else None
         fingerprint = sha256(json.dumps([integration_id, profile, configuration], sort_keys=True).encode()).hexdigest()
         key = (*self._scope(binding), request_key)
         # Authority is never evaluated while holding the runtime lock.
@@ -116,7 +125,7 @@ class Runtime:
             # A maximum of capacity operations means queue submission cannot
             # overflow: each operation has at most one work and one cleanup task.
             claim = lambda: binding.gate.reserve(session=binding.session_id, generation=binding.generation,
-                                                 integration=integration_id)
+                                                 integration=integration_id, resources=binding.resource_owner)
             # A binding may add a short, nonblocking native-resource admission
             # check around claim. It must not call native/adapter code here.
             lease = binding.claim(claim) if binding.claim is not None else claim()
@@ -125,13 +134,118 @@ class Runtime:
                       integration=integration_id, profile=profile, configuration=configuration,
                       fingerprint=fingerprint, key=key, cancelled=cancelled, adapter=None,
                       active=True, cleanup=False, cleanup_attempted=False, released=False,
+                      active_action=None, actions={}, action_keys={},
                       release_attempted=False, native_released=False, deadline=self.clock() + self.timeout,
                       context=Context(binding.device_id, binding.device_type, binding.generation,
-                                      binding.work_dir, cancelled), details={})
+                                      binding.work_dir, cancelled, selector=selector,
+                                      processes=binding.processes), details={})
             self._operations[op["id"]] = op
             self._keys[key] = op["id"]
             self._work.queue.put_nowait(lambda: self._start(op))
             return self._snapshot(op)
+
+    @staticmethod
+    def _validate_request_key(request_key):
+        if type(request_key) is not str or not 1 <= len(request_key) <= 128:
+            raise IntegrationError("invalid_request_key", "a bounded request key is required")
+
+    def call(self, binding, operation_id, action, parameters, *, request_key):
+        """Admit one asynchronous action; retries return the same bounded record.
+
+        Adapter calls are serialized per owner. There is no unbounded per-owner
+        queue: another action must wait for the active one to finish. Completed
+        results remain until retire(), so capacity exhaustion cannot erase the
+        retry history of an operation which might have changed hardware.
+        """
+        self._validate_request_key(request_key)
+        if not binding.authority():
+            raise IntegrationError("expired", "reservation authority ended")
+        with self._lock:
+            op = self._owned(binding, operation_id)
+            integration = op["integration"]
+        parameters = self.registry.validate_call(integration, device_id=binding.device_id,
+            device_type=binding.device_type, action=action, parameters=parameters)
+        fingerprint = sha256(json.dumps([action, parameters], sort_keys=True).encode()).hexdigest()
+        with self._lock:
+            # Recheck after validation: retire/shutdown can run concurrently.
+            op = self._owned(binding, operation_id)
+            previous = op["action_keys"].get(request_key)
+            if previous:
+                record = op["actions"][previous]
+                if record["fingerprint"] != fingerprint:
+                    raise IntegrationError("request_conflict", "request key was reused with different inputs")
+                return self._action_snapshot(op, record)
+            if self._draining or len(self._actions) >= self.action_capacity:
+                raise IntegrationError("overloaded", "integration action capacity is full or draining")
+            if op["released"] or op["state"] != "RUNNING" or op["cancelled"].is_set():
+                raise IntegrationError("invalid_state", "application is not running")
+            if op["active"] or op["cleanup"]:
+                raise IntegrationError("operation_busy", "application already has work in progress")
+            record = dict(id=uuid4().hex, action=action, fingerprint=fingerprint, state="QUEUED",
+                          error=None, result={}, parameters=parameters)
+            op["actions"][record["id"]] = record
+            op["action_keys"][request_key] = record["id"]
+            self._actions[record["id"]] = record
+            op.update(active=True, active_action=record["id"], deadline=self.clock() + self.timeout)
+            # At most one start/action per retained operation uses this queue.
+            self._work.queue.put_nowait(lambda: self._call(op, record))
+            return self._action_snapshot(op, record)
+
+    def _call(self, op, record):
+        try:
+            self._check(op)
+            with self._lock:
+                if op["cancelled"].is_set():
+                    raise IntegrationError("cancelled", "application operation was cancelled")
+                record["state"] = "RUNNING"
+            result = object_data(op["adapter"].call(record["action"], record["parameters"]),
+                                 max_bytes=48 * 1024)
+            self._check(op)
+            # Refresh cached status while still serializing adapter hooks. A
+            # stuck status hook is an active action and cannot race stop().
+            details = object_data(op["adapter"].status(), max_bytes=48 * 1024)
+            self._check(op)
+            with self._lock:
+                if op["cancelled"].is_set():
+                    raise IntegrationError("cancelled", "application operation was cancelled")
+                record.update(state="SUCCEEDED", result=result)
+                op["details"] = details
+        except BaseException as exc:
+            code = exc.code if isinstance(exc, IntegrationError) else "action_failed"
+            with self._lock:
+                # A late return cannot erase a timeout or publish success after
+                # cancellation. Results stay empty when completion is uncertain.
+                if record["state"] not in {"ERROR", "CANCELLED"}:
+                    record.update(state="CANCELLED" if code == "cancelled" else "ERROR", error=code)
+            self._fail(op, IntegrationError(code, "application action failed"))
+        finally:
+            with self._lock:
+                record.pop("parameters", None)
+                op.update(active=False, active_action=None)
+                if op["cancelled"].is_set():
+                    self._schedule_cleanup(op)
+
+    @staticmethod
+    def _action_snapshot(op, record):
+        return {"operation_id": op["id"], "action_id": record["id"], "state": record["state"],
+                "error": record["error"], "generation": op["binding"].generation,
+                "result": object_data(record["result"])}
+
+    def action_status(self, binding, operation_id, action_id):
+        with self._lock:
+            op = self._owned(binding, operation_id)
+            record = op["actions"].get(action_id)
+            if record is None:
+                raise IntegrationError("unknown_action", "action does not belong to this operation")
+            return self._action_snapshot(op, record)
+
+    @staticmethod
+    def _cancel_action(op, *, timed_out=False):
+        if op["active_action"] is not None:
+            record = op["actions"][op["active_action"]]
+            if record["state"] in {"QUEUED", "RUNNING"} or (timed_out and record["state"] == "CANCELLED"):
+                record.update(state="ERROR" if timed_out else "CANCELLED",
+                              error="timeout" if timed_out else "cancelled")
 
     def _check(self, op):
         if op["cancelled"].is_set() or not op["binding"].authority():
@@ -145,6 +259,10 @@ class Runtime:
             op["binding"].gate.persist(op["lease"])
             self._check(op)
             binding = op["binding"]
+            if binding.prepare is not None:
+                self._phase(op, "preparing_resources")
+                binding.prepare()
+                self._check(op)
             self._phase(op, "releasing_native")
             op["release_attempted"] = True
             binding.release_native()
@@ -181,6 +299,8 @@ class Runtime:
     def _fail(self, op, exc):
         with self._lock:
             code = exc.code if isinstance(exc, IntegrationError) else f"{op['phase']}_failed"
+            if code == "cancelled" and op["error"] is not None:
+                code = op["error"]
             op.update(state="ERROR", error=code)
             op["cancelled"].set()
 
@@ -197,10 +317,16 @@ class Runtime:
         try:
             binding = op["binding"]
             self._phase(op, "stopping")
-            if op["release_attempted"] and not op["native_released"]:
-                raise IntegrationError("recovery_required", "native release failed; explicit recovery is required")
-            if op["adapter"] is not None:
-                op["adapter"].stop()
+            try:
+                if op["release_attempted"] and not op["native_released"]:
+                    raise IntegrationError("recovery_required", "native release failed; explicit recovery is required")
+                if op["adapter"] is not None:
+                    op["adapter"].stop()
+            finally:
+                # A raised adapter error must not skip the trusted supervisor's
+                # cleanup attempt. A still-running adapter hook is never raced.
+                if binding.finalize is not None:
+                    binding.finalize()
             self._phase(op, "verifying_release")
             if binding.resources_released() is not True:
                 raise IntegrationError("recovery_required", "application resources remain owned")
@@ -236,6 +362,7 @@ class Runtime:
     def _snapshot(op):
         return {"operation_id": op["id"], "state": op["state"], "phase": op["phase"], "error": op["error"],
                 "generation": op["binding"].generation, "released": op["released"],
+                "active_action_id": op["active_action"],
                 "details": object_data(op["details"])}
 
     def status(self, binding, operation_id):
@@ -249,6 +376,7 @@ class Runtime:
             if op["released"]:
                 return self._snapshot(op)
             op["cancelled"].set()
+            self._cancel_action(op)
             if op["state"] != "ERROR":
                 op["state"] = "STOPPING"
             self._schedule_cleanup(op)
@@ -268,6 +396,7 @@ class Runtime:
                 timed_out = (op["active"] or op["cleanup"]) and self.clock() >= op["deadline"]
                 if not valid or timed_out or self._draining:
                     op["cancelled"].set()
+                    self._cancel_action(op, timed_out=timed_out)
                     op.update(state="ERROR" if timed_out or op["error"] else "STOPPING",
                               error="timeout" if timed_out else op["error"])
                     self._schedule_cleanup(op)
@@ -282,8 +411,28 @@ class Runtime:
             if any(not op["released"] or op["active"] or op["cleanup"] for op in owned):
                 raise IntegrationError("recovery_required", "session still owns resources")
             for op in owned:
+                for action_id in op["actions"]:
+                    self._actions.pop(action_id)
                 self._keys.pop(op["key"])
                 self._operations.pop(op["id"])
+
+    def operations(self, binding=None):
+        """Trusted controller inspection; snapshots never invoke adapter code.
+
+        Without a binding this can span owners and must not be exposed directly
+        to a remote caller. Controllers retain the original Binding for the
+        retry horizon even if native reacquisition advances its root generation.
+        """
+        with self._lock:
+            return [self._snapshot(op) for op in self._operations.values()
+                    if binding is None or self._scope(op["binding"]) == self._scope(binding)]
+
+    def drained(self, binding=None):
+        """Whether a scope may be retired without losing work or ownership."""
+        with self._lock:
+            return all(op["released"] and not op["active"] and not op["cleanup"]
+                       for op in self._operations.values()
+                       if binding is None or self._scope(op["binding"]) == self._scope(binding))
 
     def recover(self, binding, operation_id, *, verify):
         """Trusted operator reconciliation after failure; never a caller flag.

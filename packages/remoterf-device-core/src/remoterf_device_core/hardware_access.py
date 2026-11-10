@@ -29,6 +29,27 @@ class AccessTable:
     def blocked(self, gid):
         return self.gate(gid).snapshot()["blocked"]
 
+    def aliases(self, gate):
+        with self._lock:
+            return tuple(gid for gid, candidate in self._gates.items() if candidate is gate)
+
+    def configure(self, mapping, journal):
+        """Install canonical aliases before inventory/native acquisition.
+
+        Live reconfiguration is unsupported: a caller must first drain the
+        runtime. Existing fenced gates are never replaced or discarded.
+        """
+        from .integrations.payload import IntegrationError
+        with self._lock:
+            replacements = {int(gid): Gate(physical, journal) for gid, physical in mapping.items()}
+            for gid, replacement in replacements.items():
+                old = self._gates.get(gid)
+                if old is not None and old is not replacement:
+                    state = old.snapshot()
+                    if state['blocked'] or state['active_native']:
+                        raise IntegrationError('device_busy', 'hardware mapping cannot change while owned')
+            self._gates.update(replacements)
+
     @contextmanager
     def maintenance(self, gids):
         with ExitStack() as stack:

@@ -253,6 +253,7 @@ class ServerRuntime:
             cleanup("native sessions", lambda: session_manager.close_all(stop_admission=True))
             cleanup("host sessions", host_session_proxy.close_all)
             cleanup("inventory devices", close_local_devices)
+            cleanup("application runtime", session_manager.integrations.close)
             if self.cert_server is not None:
                 cleanup("certificate provider", lambda: stop_cert_provider(self.cert_server))
             if (
@@ -430,6 +431,11 @@ def start_server_runtime(
     stop_event = threading.Event()
     update_thread = None
     try:
+        session_manager.resume_admission()
+        from .integration_controller import initialize as initialize_integrations
+        from . import device_manager as integration_devices
+        initialize_integrations(session_manager, integration_devices.hardware_access,
+                                integration_devices._load_device_records(), integration_devices.get_remoterf_root())
         cert_server, _cert_thread = start_cert_provider(
             host=bind_host,
             port=certificate_port,
@@ -445,7 +451,6 @@ def start_server_runtime(
         from . import startup_check
 
         startup_check.run(open_devices)
-        session_manager.resume_admission()
         server.start()
         if direct_path is not None:
             direct_path.start_listener()
@@ -463,18 +468,29 @@ def start_server_runtime(
             start_usergroup_cleanup_loop(interval_sec=60)
     except BaseException:  # Ctrl-C during the startup check too: close_local_devices powers Plutos down
         stop_event.set()
-        server.stop(0)
-        session_manager.close_all()
-        host_session_proxy.close_all()
-        close_local_devices()
+        def cleanup(name, action):
+            try:
+                action()
+            except BaseException:
+                # Preserve the startup exception, including Ctrl-C. A failed
+                # native close must not skip other radios or ownership locks.
+                logger.exception("startup cleanup failed: %s", name)
+
+        cleanup("transport", lambda: server.stop(0))
+        if direct_path is not None:
+            cleanup("direct paths", direct_path.shutdown)
+        cleanup("native sessions", lambda: session_manager.close_all(stop_admission=True))
+        cleanup("host sessions", host_session_proxy.close_all)
+        cleanup("inventory devices", close_local_devices)
+        cleanup("application runtime", session_manager.integrations.close)
         if cert_server is not None:
-            stop_cert_provider(cert_server)
+            cleanup("certificate provider", lambda: stop_cert_provider(cert_server))
         close_permissions = getattr(home_federation_permissions, "close", None)
         if close_permissions is not None:
-            close_permissions()
+            cleanup("permissions", close_permissions)
         if home_federation_devices is not None:
-            home_federation_devices.close()
-        writer_lock.close()
+            cleanup("federation devices", home_federation_devices.close)
+        cleanup("writer lock", writer_lock.close)
         raise
 
     from .control import ControlServer

@@ -28,6 +28,8 @@ import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from remoterf_device_core.native_lifetime import Activity, submit_cleanup
+from remoterf_device_core.integrations import IntegrationError
+from remoterf_device_core.integrations.wire import INTEGRATION_METHODS, decode_request, validate_arguments, validate_result
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Any
@@ -561,6 +563,8 @@ class SessionManager:
         self._epochs = {}
         self._stopping = False
         self._cleanup_failures = 0
+        from .integration_controller import Controller
+        self.integrations = Controller()
 
     def _next_generation(self) -> int:
         with self._lock:
@@ -576,6 +580,10 @@ class SessionManager:
     def cleanup_pending(self, gid):
         with self._lock:
             return int(gid) in self._opening_gids or any(s.gid == int(gid) for s in self._closing_sessions.values())
+
+    @staticmethod
+    def integration_gate(gid):
+        return hardware_access.gate(gid)
 
     def integration_binding(self, session_id, *, work_dir, resources_released):
         """Internal binding for qualified, durably fenced lab-local USRPs.
@@ -599,6 +607,9 @@ class SessionManager:
             return not session.closed and token_matches_device(session.token, session.gid)
 
         def claim(acquire):
+            aliases = set(hardware_access.aliases(gate))
+            schemas = [context['schema'] for gid in aliases
+                       if (context := get_local_device_context(gid)) is not None]
             # Never wait behind a long root call on the startup/RPC thread.
             if not session.control_lock.acquire(blocking=False):
                 raise IntegrationError("device_busy", "native control is active")
@@ -613,7 +624,13 @@ class SessionManager:
                     if (session.closing_handles or len(session.handles) != 1
                             or not session.activity.idle() or root.value is None):
                         raise IntegrationError("device_busy", "close all native child handles before handoff")
-                    return acquire()
+                    with self._lock, gate.transition():
+                        others = list(self._sessions.values()) + list(self._closing_sessions.values())
+                        if (any(other is not session and other.gid in aliases for other in others)
+                                or self._opening_gids.intersection(aliases)
+                                or any(getattr(schema, 'device', None) is not None for schema in schemas)):
+                            raise IntegrationError("device_busy", "another physical alias still owns native resources")
+                        return acquire()
             finally:
                 session.control_lock.release()
 
@@ -634,6 +651,7 @@ class SessionManager:
                         if not authority():
                             raise IntegrationError("expired", "reservation ended during native reacquisition")
                         metadata["remote_resource_limits"] = session.capabilities.get("remote_resource_limits", {})
+                        metadata["application_integrations"] = self.integrations.capabilities()
                         session.schema = live
                         session.capabilities = metadata
                         root.value = live.device
@@ -807,6 +825,7 @@ class SessionManager:
                     self._opening_gids.discard(gid)
             raise
 
+        capabilities["application_integrations"] = self.integrations.capabilities()
         session_id = _opaque_id("sess")
         root_handle = _opaque_id("dev")
         session = DeviceSession(
@@ -1213,6 +1232,13 @@ class SessionManager:
                 entry.stop_event.set()
                 entry.rx_prefetch_stop.set()
 
+        try:
+            self.integrations.session_closed(session_id)
+        except Exception:
+            # The independent runtime authority watcher still cancels closed
+            # sessions; a notification failure cannot skip native cleanup.
+            session.cleanup_error = True
+
         def ready():
             with session.lifecycle_lock:
                 return (session.activity.idle() and not session.closing_handles
@@ -1277,6 +1303,8 @@ class SessionManager:
         with self._lock:
             self._stopping = self._stopping or stop_admission
             session_ids = list(self._sessions)
+        if stop_admission:
+            self.integrations.shutdown()
         for session_id in session_ids:
             try:
                 self.close(session_id, wait=False)
@@ -1293,6 +1321,24 @@ class SessionManager:
         return len(session_ids)
 
     def invoke(self, session_id, handle, method_name, args, *, positional_args=None, overload_id=""):
+        if method_name in INTEGRATION_METHODS:
+            try:
+                request = validate_arguments(args, positional_args, overload_id=overload_id)
+                session = self.get(session_id)
+                entry = self.get_handle(session, handle)
+                if handle != session.root_handle or entry.type_id != "uhd.usrp.MultiUSRP":
+                    raise IntegrationError("unsupported_device", "integration methods require the owning USRP root")
+                if not any(item['owner'] == entry.type_id and item['name'] == method_name
+                           for item in session.schema_v2['methods']):
+                    raise IntegrationError("unsupported", "generic integration API is not declared by this driver")
+                context = get_local_device_context(session.gid)
+                if not context or context['dtype'] != 'usrp':
+                    raise IntegrationError("unsupported_device", "integrations require a qualified plain USRP")
+                # Application control must remain reachable while the native
+                # gate is owned. Never interpret these arguments/results as UHD.
+                return validate_result(self.integrations.dispatch(self, session, method_name, request)), []
+            except IntegrationError as exc:
+                raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=method_name) from None
         session = self.get(session_id)
         entry = self.get_handle(session, handle)
         lock = session.control_lock if entry.type_id == "uhd.usrp.MultiUSRP" else entry.lock
@@ -1562,6 +1608,16 @@ class DynamicControlV2Servicer(grpc_pb2_grpc.DynamicControlV2Servicer):
 
     def Invoke(self, request, context):
         try:
+            if request.method in INTEGRATION_METHODS:
+                try:
+                    application_request = decode_request(request)
+                except IntegrationError as exc:
+                    raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=request.method) from None
+                if host_session_proxy.is_remote_session(request.session_id):
+                    return host_session_proxy.invoke(request)
+                result, _ = session_manager.invoke(request.session_id, request.handle, request.method,
+                                                   {"request": application_request}, overload_id=request.overload_id)
+                return grpc_pb2.InvokeResponse(result=encode_value(result))
             if host_session_proxy.is_remote_session(request.session_id):
                 return host_session_proxy.invoke(request)
             args = {}

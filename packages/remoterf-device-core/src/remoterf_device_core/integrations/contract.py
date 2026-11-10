@@ -1,8 +1,8 @@
 """Experimental adapter contract; no reservation or hardware ownership policy.
 
-Only a future authenticated runtime may supply Context and invoke hooks after
+Only the authenticated runtime supplies Context and invokes hooks after
 acquiring a device lease. Hooks are synchronous: the runtime, not the adapter,
-will provide bounded asynchronous execution, operation IDs and cancellation.
+provides bounded asynchronous execution, operation IDs and cancellation.
 """
 from __future__ import annotations
 
@@ -20,8 +20,10 @@ class Context:
     """Session-scoped data supplied by the runtime, never by an RPC caller.
 
     No bearer/session token or native UHD object is passed to an adapter. The
-    work directory must be provisioned/owned by the runtime. Device selectors
-    and resource supervision will be added with the hardware lease phase.
+    work directory is provisioned by the runtime before adapter construction.
+    selector comes from qualified operator inventory, never caller configuration.
+    processes is an owner-bound supervision service; it grants no access to
+    other owners, reservation credentials or the server's environment.
     """
 
     device_id: str
@@ -29,6 +31,8 @@ class Context:
     generation: int
     work_dir: Path
     cancelled: Event
+    selector: dict | None = None
+    processes: object = None
 
 
 class Adapter(Protocol):

@@ -58,11 +58,14 @@ class Journal:
                 if len(self._records) > limit:
                     raise ValueError("too many owners")
                 for key, row in self._records.items():
-                    if not key or set(row) != {"lease", "session", "generation", "integration"}:
+                    required = {"lease", "session", "generation", "integration"}
+                    if not key or not required <= set(row) or set(row) - required - {"resources"}:
                         raise ValueError("invalid ownership record")
                     if (any(type(row[name]) is not str or not row[name] for name in ("lease", "session", "integration"))
                             or type(row["generation"]) is not int or row["generation"] < 1):
                         raise ValueError("invalid ownership identity")
+                    if 'resources' in row and (type(row['resources']) is not str or not 1 <= len(row['resources']) <= 128):
+                        raise ValueError("invalid resource owner")
         except BaseException:
             self._file.close()
             raise IntegrationError("recovery_required", "ownership journal could not be read safely") from None
@@ -174,11 +177,23 @@ class Gate:
             return {"active_native": self._active, "blocked": self._owner is not None or self._maintenance,
                     "owner": dict(self._owner) if self._owner else None}
 
-    def reserve(self, *, session: str, generation: int, integration: str):
+    @contextmanager
+    def transition(self):
+        """Atomically inspect native references and reserve memory ownership.
+
+        Trusted runtime bookkeeping only: no disk, callbacks, native calls or
+        waits. Take manager locks before this lock, never inside it.
+        """
+        with self._lock:
+            yield
+
+    def reserve(self, *, session: str, generation: int, integration: str, resources: str | None = None):
         """Fence admission immediately; the worker must persist before side effects."""
         if (type(session) is not str or not session or type(generation) is not int or generation < 1
                 or type(integration) is not str or not integration):
             raise IntegrationError("invalid_owner", "invalid application owner identity")
+        if resources is not None and (type(resources) is not str or not 1 <= len(resources) <= 128):
+            raise IntegrationError("invalid_owner", "invalid resource owner identity")
         with self._lock:
             if self.journal is None:
                 raise IntegrationError("unsupported", "durable ownership has not been configured")
@@ -188,6 +203,8 @@ class Gate:
                 raise IntegrationError("device_busy", "native work is still in progress")
             record = object_data({"lease": uuid4().hex, "session": session, "generation": generation,
                                   "integration": integration})
+            if resources is not None:
+                record['resources'] = resources
             self._owner = record
             return record["lease"]
 
