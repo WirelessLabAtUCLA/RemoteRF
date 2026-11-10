@@ -368,8 +368,14 @@ adds deployed synthetic relay/direct routes, three published clients, actual
 calendar expiry, service stop/restart, restoration and measured process/runtime
 soaks. It also records the required-worker/monitor and SIGTERM cleanup fixes.
 Final suites passed core 248, server 1,017 and host 176 tests; documented opt-in
-skips remain. These newer lifecycle changes invalidate the older radio digest
-for activation: fresh exact-build physical-radio qualification is still required.
+skips remain. The later [exact-build UCLA verification](qualification/phase1c-ucla-exact-build-2026-11-09.md)
+qualifies isolated receive-only handoff, autonomous worker cleanup, positive
+surviving-process recovery and actual SIGTERM cleanup on that same framework.
+Deployed raw UHD receive passed afterward; production remained unchanged and the
+reservation was released. An initial failed follow-up receive is retained with
+verified cleanup and its diagnostic limits. This is not a production activation
+receipt, deployed generic-radio RPC test, real-radio calendar-expiry test or
+extended RF soak; the remaining gates in that report still apply.
 
 Deterministic tests cover disabled/broken packages, raw request rejection before
 native construction, current authority and cross-session IDs, start/action

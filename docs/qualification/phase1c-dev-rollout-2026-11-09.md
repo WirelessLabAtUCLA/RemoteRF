@@ -177,10 +177,15 @@ bypass a physical-radio ownership fence.
 ## Remaining activation gates
 
 The [earlier UCLA receive-only evidence](phase1c-2026-11-09.md) remains valid for
-its recorded source. It does **not** qualify these worker-monitoring and server
-lifetime changes. Exact release-build physical-radio handoff, failure, expiry,
-crash, descendant cleanup, service stop and next-holder checks remain required,
-along with matching operator qualification and exact production schema approval.
+its recorded source. The later [exact-build UCLA run](phase1c-ucla-exact-build-2026-11-09.md)
+now records real receive handoff, failure cleanup, local injected expiry,
+autonomous required-worker exit, positive surviving-process recovery, actual
+isolated service termination and next-holder receive on this final build.
+Production stayed unchanged and the reservation was released. That internal
+radio test does not cover deployed generic RPC/receipt startup, actual calendar
+expiry on hardware or independently killing a radio worker's parent while
+retaining its descendants. Matching operator qualification, exact production
+schema approval and applicable deployment-specific checks remain required.
 
 Production aggregate memory/tasks/CPU budgets, native UHD responsiveness under
 those budgets, extended RF load/soak, supported hardware/profile coverage and

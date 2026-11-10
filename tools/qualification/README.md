@@ -315,3 +315,12 @@ testlab, repeat baseline receive, remove temporary schema approval/network acces
 remove the dedicated account, disable all disposable canary configs and release
 the dev lease. Keep any failed synthetic state fenced and separate from restored
 inventory. None of these checks authorizes production activation or hardware use.
+
+## Real-radio service lifetime supplement
+
+After the handoff checks, use the [isolated service termination supplement](usrp_service_stop.md)
+for actual SIGTERM cleanup and suppression of a pending restart with real receive.
+It keeps the deployed service unchanged and requires an independent guardian,
+verified reservation and empty-state proof before releasing the delegated root.
+The [exact-build UCLA report](../../docs/qualification/phase1c-ucla-exact-build-2026-11-09.md)
+records the tested build, retained failed attempt, successful follow-up and scope.

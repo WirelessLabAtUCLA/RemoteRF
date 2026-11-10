@@ -420,6 +420,32 @@ def run_lifecycle(args, authority, evidence, *, orphan=False):
             raise RuntimeError('qualification cleanup remained unresolved')
 
 
+def observe_scope_population(scope):
+    """Read positive kernel population evidence from the verified pinned scope.
+
+    This is an observation, never release proof or permission to signal a PID.
+    Persist only the count; cleanup still uses the independently verified cgroup.
+    An empty or unreadable scope must not be described as a surviving process.
+    """
+    from remoterf_device_core.integrations.supervision import _read_control
+    with scope._lock:
+        scope._verify_identity()
+        events = {}
+        for line in _read_control(scope._fd, 'cgroup.events').splitlines():
+            fields = line.split()
+            if len(fields) != 2 or fields[0] in events or not fields[1].isdecimal():
+                raise RuntimeError('invalid bounded cgroup population observation')
+            events[fields[0]] = fields[1]
+        if events.get('populated') not in {'0', '1'}:
+            raise RuntimeError('missing or invalid kernel population observation')
+        processes = _read_control(scope._fd, 'cgroup.procs').splitlines()
+        if any(not pid.isdecimal() or int(pid) <= 0 for pid in processes):
+            raise RuntimeError('invalid bounded cgroup process observation')
+        scope._verify_identity()
+        return {'scope_identity_verified': True, 'kernel_populated': int(events['populated']),
+                'process_count': len(set(processes))}
+
+
 def run_restart(args, authority, evidence):
     """Crash an owned harness child, then reconcile actual surviving processes."""
     from remoterf_device_core.integrations.ownership import Journal
@@ -455,7 +481,19 @@ def run_restart(args, authority, evidence):
         radio_owner = next(iter(owners.values()))
         fail_unless(radio_owner.get('resources') == owner, 'radio and process owner identities did not match')
         scope = supervisor.reopen(owner)
-        was_alive = not scope.resources_released()
+        # A refusal of release can also mean uncertainty; it is not positive
+        # proof that an application survived the controller crash. Observe the
+        # matching kernel scope separately, but always attempt verified cleanup
+        # even if this extra evidence read fails.
+        observation = {'scope_identity_verified': False, 'kernel_populated': None, 'process_count': None}
+        try:
+            observation = observe_scope_population(scope)
+        except BaseException as exc:
+            observation['observation_error'] = type(exc).__name__
+        was_alive = (observation['scope_identity_verified'] is True
+                     and observation['kernel_populated'] == 1 and observation['process_count'] > 0)
+        restart_evidence = {'scope_before_cleanup': observation, 'surviving_process_detected': was_alive}
+        evidence['checks']['abrupt_restart_recovery'] = restart_evidence
         with ExitStack() as stack:
             manager, local, gate = configure_local(args, authority, stack, journal)
             expected_refusal(lambda: manager.open(local['token']))
@@ -465,6 +503,8 @@ def run_restart(args, authority, evidence):
             fail_unless(scope.resources_released(), 'recovered scope still owns a process')
             gate.release(radio_owner['lease'], verify=scope.resources_released)
             scope.close()
+            restart_evidence.update(startup_native_open_refused=True,
+                verified_cgroup_cleanup=True, journal_cleared=journal.records() == {})
             session = manager.open(local['token'])
             settings = configuration('receive', {'rate': args.rate, 'frequency': args.frequency, 'gain': args.gain})
             evidence['checks']['rx_after_abrupt_restart'] = receive_native(manager, session, settings, args.serial)
@@ -474,9 +514,6 @@ def run_restart(args, authority, evidence):
             fail_unless(result == 71 and (state / 'orphan-ready.json').is_file(),
                         'orphan child did not confirm real receive readiness before abrupt exit')
             fail_unless(was_alive, 'no surviving process remained to exercise restart cleanup')
-            evidence['checks']['abrupt_restart_recovery'] = {
-                'surviving_process_detected': was_alive, 'startup_native_open_refused': True,
-                'verified_cgroup_cleanup': True, 'journal_cleared': journal.records() == {}}
     finally:
         if manager is not None:
             manager.close_all(stop_admission=True)

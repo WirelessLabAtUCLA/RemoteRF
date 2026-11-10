@@ -72,6 +72,121 @@ def test_serial_lock_refuses_another_owner_and_accepts_inherited_descriptor():
     os.close(replacement)
 
 
+@pytest.mark.parametrize('events,processes,expected', [
+    ('populated 1\nfrozen 0\n', '123\n456\n', (1, 2)),
+    ('populated 0\nfrozen 0\n', '', (0, 0)),
+])
+def test_positive_scope_population_is_read_only_and_omits_pids(tmp_path, events, processes, expected):
+    import os
+    from threading import RLock
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    (tmp_path / 'cgroup.events').write_text(events)
+    (tmp_path / 'cgroup.procs').write_text(processes)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    verify = Mock()
+    try:
+        scope = SimpleNamespace(_fd=fd, _lock=RLock(), _verify_identity=verify)
+        observed = harness.observe_scope_population(scope)
+        assert observed == {'scope_identity_verified': True, 'kernel_populated': expected[0],
+                            'process_count': expected[1]}
+        assert verify.call_count == 2
+        assert (tmp_path / 'cgroup.events').read_text() == events
+        assert (tmp_path / 'cgroup.procs').read_text() == processes
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize('events,processes', [
+    ('frozen 0\n', '123\n'), ('populated 2\n', '123\n'),
+    ('populated 1\npopulated 0\n', '123\n'), ('populated 1\n', 'not-a-pid\n'),
+    ('populated 1\n', '0\n'), ('populated 1\n', '1\n' * 3000),
+])
+def test_unverified_population_cannot_be_positive_process_evidence(tmp_path, events, processes):
+    import os
+    from threading import RLock
+    from types import SimpleNamespace
+    from remoterf_device_core.integrations import IntegrationError
+    (tmp_path / 'cgroup.events').write_text(events)
+    (tmp_path / 'cgroup.procs').write_text(processes)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        scope = SimpleNamespace(_fd=fd, _lock=RLock(), _verify_identity=lambda: None)
+        with pytest.raises((RuntimeError, IntegrationError)):
+            harness.observe_scope_population(scope)
+    finally:
+        os.close(fd)
+
+
+def test_scope_population_refuses_identity_failure_before_reading(monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from remoterf_device_core.integrations import supervision
+    read = Mock(side_effect=AssertionError('unverified cgroup must not be read'))
+    monkeypatch.setattr(supervision, '_read_control', read)
+    scope = SimpleNamespace(_fd=-1, _lock=RLock(),
+                            _verify_identity=Mock(side_effect=RuntimeError('identity changed')))
+    with pytest.raises(RuntimeError, match='identity changed'):
+        harness.observe_scope_population(scope)
+    read.assert_not_called()
+
+
+def test_restart_observation_failure_still_cleans_verified_scope(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from remoterf_device_core.integrations import supervision
+    from remoterf_device_core.integrations.ownership import Gate, Journal
+    root = HARNESS.parents[2]
+    monkeypatch.syspath_prepend(str(root / 'examples/integrations/usrp_probe/src'))
+    state = tmp_path / 'restart-case'
+    state.mkdir()
+    (state / 'orphan-ready.json').write_text('{}')
+    journal = Journal(state / 'radio-owners')
+    journal.claim('fake:serial', dict(lease='lease', session='old', generation=1,
+                                    integration='org.remoterf.usrp_probe', resources='owner'))
+    journal.close()
+    stopped = []
+    scope = SimpleNamespace(stop=lambda **kwargs: stopped.append('verified-stop') or True,
+                            resources_released=lambda: bool(stopped), close=lambda: stopped.append('scope-close'))
+    class Supervisor:
+        def __init__(self, *a, **k): pass
+        def describe(self): return {'owners': {'owner': {}}}
+        def reopen(self, owner): assert owner == 'owner'; return scope
+        def close(self): assert stopped
+    monkeypatch.setattr(supervision, 'CgroupSupervisor', Supervisor)
+    monkeypatch.setattr(harness.subprocess, 'Popen', lambda *a, **k: SimpleNamespace(wait=lambda **kwargs: 71))
+    monkeypatch.setattr(harness, 'observe_scope_population', Mock(side_effect=OSError('read failed')))
+    def configure(args, authority, stack, journal):
+        gate = Gate('fake:serial', journal)
+        class Manager:
+            def open(self, token):
+                with gate.native():
+                    assert stopped
+                    return object()
+            def close_all(self, **kwargs): pass
+            def cleanup_pending(self, gid): return False
+        return Manager(), {'token': 'fake-token'}, gate
+    monkeypatch.setattr(harness, 'configure_local', configure)
+    monkeypatch.setattr(harness, 'receive_native', lambda *a, **k: {'received': 4096, 'fake_hardware': True})
+    args = SimpleNamespace(state_dir=tmp_path, cgroup_root=tmp_path, serial='FAKE123', device_id=40,
+        reservation_id='booking', authority_command=tmp_path / 'authority', profile='usrp2901',
+        rate=1e6, frequency=100e6, gain=0, _lock_fd=0)
+    evidence = {'checks': {}}
+    with pytest.raises(RuntimeError, match='no surviving process'):
+        harness.run_restart(args, SimpleNamespace(active=lambda: True), evidence)
+    assert stopped == ['verified-stop', 'scope-close']
+    proof = evidence['checks']['abrupt_restart_recovery']
+    assert proof['verified_cgroup_cleanup'] and proof['journal_cleared']
+    assert proof['surviving_process_detected'] is False
+    assert proof['scope_before_cleanup']['observation_error'] == 'OSError'
+    check = Journal(state / 'radio-owners')
+    try:
+        assert check.records() == {}
+    finally:
+        check.close()
+
+
 def test_lifecycle_orchestration_with_fake_processes_never_claims_hardware_proof(tmp_path, monkeypatch):
     """Exercise every normal/fault branch; mocks are explicitly not qualification."""
     from types import SimpleNamespace
