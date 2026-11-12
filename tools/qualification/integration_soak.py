@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Bounded, fake-radio scheduling soak; never a hardware/activation receipt.
+"""Bounded, fake-radio scheduling soak; never hardware evidence or activation.
 
 Uses real SessionManager, Controller, Runtime, native admission and durable
-ownership journals. Radio methods, reservation authority, adapter qualification
+ownership journals. Radio methods, reservation authority, operator enablement
 and process scopes are explicit in-memory fixtures. Run only in an isolated
 process/environment: the fixture replaces module-local authority callbacks.
 """
@@ -192,8 +192,7 @@ class Rig:
         import numpy as np
         from remoterf_device_core.hardware_access import AccessTable
         from remoterf_device_core.integrations import Manifest, Registry
-        from remoterf_device_core.integrations import deployment
-        from remoterf_device_core.integrations.deployment import Configuration, REQUIRED_CHECKS
+        from remoterf_device_core.integrations.deployment import Configuration
         from remoterf_device_core.integrations.ownership import Journal
         from remoteRF_server.server import dynamic_v2 as v2, integration_controller as control
         from remoteRF_server.drivers.usrp.uhd_manifest import build_usrp_schema_v2
@@ -218,19 +217,11 @@ class Rig:
             factory='soak_fixture:create', device_types=['usrp'], profiles=['fake'], actions=['stats', 'hold', 'fail']))
         self.definition = definition
         registry = Registry([definition], enabled={str(gid): [definition.integration_id] for gid in (2, 3)})
-        # Explicit fake test receipts, held in memory only; never written to an
-        # activation file or represented as hardware evidence.
-        receipts = tuple(dict(qualification_version=1, serial=f'SOAK{gid}', integration_id=definition.integration_id,
-            adapter_version=definition.version, adapter_hash='a' * 64, profile='fake',
-            schema_hash=self.raw_sessions[0].schema_v2['schema_hash'], uhd_version='SOAK_FAKE', framework_hash='fake',
-            passed=True, checks={key: True for key in REQUIRED_CHECKS}, run_id='FAKE-SOAK-NOT-QUALIFICATION') for gid in (2, 3))
         config = Configuration(registry=registry, enabled=True,
-            devices={gid: {'serial': f'SOAK{gid}', 'physical_id': f'usrp:serial:SOAK{gid}'} for gid in (2, 3)},
-            receipts=receipts, adapter_hashes={definition.integration_id: 'a' * 64})
-        self.stack.enter_context(patch.object(deployment, 'adapter_digest', lambda _: 'a' * 64))
+            devices={gid: {'serial': f'SOAK{gid}', 'physical_id': f'usrp:serial:SOAK{gid}'} for gid in (2, 3)})
         self.supervisor = Supervisor()
         self.controller = control.Controller(config, state_dir=directory, journal=self.journal,
-                                             supervisor=self.supervisor, framework_hash='fake')
+                                             supervisor=self.supervisor)
         self.manager.integrations = self.controller
         def create(integration, context):
             adapter = Adapter(context)
@@ -518,7 +509,7 @@ def run(directory, *, seconds=600, baseline_seconds=30, raw_rate=100):
                          Path(runtime.__file__).with_name('contract.py'),
                          Path(dynamic_v2.__file__).with_name('grpc_server.py')])
     report = {'passed': False, 'hardware_qualification': False, 'activation_changed': False,
-        'scope': 'in-process production controller/runtime with fake radios, authority, qualification and process scopes',
+        'scope': 'in-process production controller/runtime with fake radios, authority, operator enablement and process scopes',
         'not_covered': ['physical UHD performance', 'network/Global routes', 'real reservation expiry', 'kernel process containment'],
         'python': platform.python_version(), 'versions': {name: version(name) for name in ('remoterf-device-core', 'remoterf-server')},
         'sources': {str(path): sha256(path.read_bytes()).hexdigest() for path in source_paths},

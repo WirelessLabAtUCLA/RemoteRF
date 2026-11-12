@@ -5,7 +5,7 @@ production package/wheel. It never imports native UHD or opens radio hardware.
 It supplies in-memory UHD-shaped helpers/streams and a benign supervised Python
 child so the unchanged generic controller, schema gate, reservation authority,
 relay/direct routing and cleanup paths can be exercised together on dev Global.
-No authentication, receipt validation or ownership gate is bypassed in core.
+No authentication, enablement or ownership gate is bypassed in core.
 
 The launcher refuses unless all are true:
 
@@ -39,12 +39,8 @@ Never run this simultaneously with the original same-identity/port testlab.
 `REMOTERF_DEV_INTEGRATION_ENABLE=0` is the default. With
 `REMOTERF_DEV_INTEGRATION_BROKEN=1`, the disabled manifest names a missing package.
 With explicit enablement `1`, the guarded launcher uses its delegated parent to
-prepare `apps`, creates a clearly labelled **synthetic, non-radio** receipt bound
-to the exact package/framework/schema and fake UHD version
-`dev-fixture-no-hardware`, and enables gid 401 only. Gid 402 remains raw-only.
-These synthetic assertions exercise the receipt format; they are not evidence
-that any physical-radio check passed and must never become deployment approval.
-All generated files stay in the cloned config; runtime authority remains real.
+prepare `apps` and enables gid 401 only. Gid 402 remains raw-only. This is not
+evidence that any physical-radio check passed. All generated files stay in the cloned config; runtime authority remains real.
 
 Adapter `org.remoterf.dev_fixture`, profile `test`, actions:
 

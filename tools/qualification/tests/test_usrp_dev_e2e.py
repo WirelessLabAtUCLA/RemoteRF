@@ -114,10 +114,10 @@ def test_filesystem_only_observation_wait_requires_exact_fresh_proof(tmp_path, m
     assert h.observe_without_rpc(value, request) == proof
 
 
-def test_missing_receipt_never_creates_owner_and_native_still_receives(tmp_path, monkeypatch):
+def test_disabled_start_never_creates_owner_and_native_still_receives(tmp_path, monkeypatch):
     calls = []
     class Rejected(Exception):
-        details = {'integration_code': 'qualification_required'}
+        details = {'integration_code': 'integration_disabled'}
     class Radio:
         def integration_list(self, request):
             calls.append('list')
@@ -141,9 +141,9 @@ def test_missing_receipt_never_creates_owner_and_native_still_receives(tmp_path,
     bookings = SimpleNamespace(reserve=lambda: {'token': 'private', 'reservation_id': 'one'},
                                cancel=lambda rid: calls.append('cancel'))
     checks = {}
-    h.lifecycle('receipt-missing', bookings, checks, 'retry-key')
+    h.lifecycle('disabled', bookings, checks, 'retry-key')
     assert calls == ['rx', 'list', 'describe', 'start-denied', 'rx', 'close', 'cancel']
-    assert checks['unqualified_start_refused']['integration_code'] == 'qualification_required'
+    assert checks['disabled_start_refused']['integration_code'] == 'integration_disabled'
 
 
 def test_calendar_no_device_calls_or_new_booking_until_independent_release(tmp_path, monkeypatch):

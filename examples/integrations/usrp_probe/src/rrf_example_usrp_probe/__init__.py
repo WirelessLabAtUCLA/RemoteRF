@@ -1,7 +1,7 @@
-"""Receive-only qualification adapter; native UHD imports stay in the child.
+"""Receive-only example adapter; native UHD imports stay in the child.
 
 This package installs no UHD version and grants no hardware access by itself.
-The operator supplies a qualified serial selector and the runtime supplies an
+The operator supplies an exact serial selector and the runtime supplies an
 owner-bound process scope. Neither caller configuration nor actions select an
 executable, environment, path, device address or transmit operation.
 """

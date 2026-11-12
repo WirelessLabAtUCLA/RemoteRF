@@ -101,16 +101,11 @@ def _write(path, value):
 
 
 def configure_fixture(config, cgroup_root=None):
-    """Synthetic receipt is valid only for guarded DEV serial/fake UHD identity."""
+    """Operator enablement for the guarded DEV serial only."""
     _root, expected_config = guard()
     if Path(config).resolve() != expected_config:
-        raise RuntimeError('receipt/config must remain in the guarded dev clone')
-    from remoterf_device_core.integrations.deployment import REQUIRED_CHECKS, code_digest
-    from remoterf_device_core.integrations.fingerprint import adapter_digest
+        raise RuntimeError('config must remain in the guarded dev clone')
     from remoterf_device_core.integrations.registry import Manifest
-    from remoterf_device_core.drivers.usrp.uhd_manifest import build_usrp_schema_v2
-    from remoteRF_server.server import integration_controller
-    from .backend import UHD_VERSION
     definition = Manifest.from_file(Path(__file__).with_name('integration.json'))
     enabled = os.environ.get('REMOTERF_DEV_INTEGRATION_ENABLE', '0') == '1'
     broken = os.environ.get('REMOTERF_DEV_INTEGRATION_BROKEN', '0') == '1'
@@ -118,22 +113,9 @@ def configure_fixture(config, cgroup_root=None):
     if broken:
         manifest['factory'] = 'rrf_dev_missing_adapter:create_adapter'
     _write(config / 'integrations' / 'dev-fixture-manifest.json', manifest)
-    controller_file = Path(integration_controller.__file__)
-    framework_hash = code_digest([controller_file, controller_file.with_name('dynamic_v2.py'),
-                                  controller_file.with_name('device_manager.py'),
-                                  controller_file.with_name('grpc_server.py')])
-    receipt = {'qualification_version': 1, 'serial': EXPECTED_SERIALS[401],
-        'integration_id': definition.integration_id, 'adapter_version': definition.version,
-        'adapter_hash': adapter_digest(definition), 'profile': 'test',
-        'schema_hash': build_usrp_schema_v2()['schema_hash'], 'uhd_version': UHD_VERSION,
-        'framework_hash': framework_hash, 'run_id': 'NON_RADIO_TEST_FIXTURE_20261109',
-        'passed': enabled, 'checks': {name: enabled for name in REQUIRED_CHECKS},
-        'evidence_kind': 'NON_RADIO_TEST_FIXTURE', 'physical_radio_qualification': False}
-    _write(config / 'integrations' / 'dev-fixture-receipt.json', receipt)
     deployment = {'version': 1, 'enabled': enabled,
         'manifests': ['integrations/dev-fixture-manifest.json'],
-        'devices': {'401': {'serial': EXPECTED_SERIALS[401], 'integrations': [definition.integration_id]}},
-        'qualifications': ['integrations/dev-fixture-receipt.json'] if enabled else []}
+        'devices': {'401': {'serial': EXPECTED_SERIALS[401], 'integrations': [definition.integration_id]}}}
     if enabled:
         if cgroup_root is None:
             raise RuntimeError('enabled fixture requires owned cgroups')

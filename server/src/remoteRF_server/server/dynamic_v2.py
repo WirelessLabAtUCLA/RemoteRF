@@ -586,7 +586,7 @@ class SessionManager:
         return hardware_access.gate(gid)
 
     def integration_binding(self, session_id, *, work_dir, resources_released):
-        """Internal binding for qualified, durably fenced lab-local USRPs.
+        """Internal binding for configured, durably fenced lab-local USRPs.
 
         No RPC/configuration exposes this yet. The deployment must install a
         canonical physical gate shared by every alias before this can succeed.
@@ -599,7 +599,7 @@ class SessionManager:
         inventory = get_local_device_context(session.gid)
         gate = hardware_access.gate(session.gid)
         if not inventory or inventory["dtype"] != "usrp" or gate.journal is None:
-            raise IntegrationError("unsupported", "physical ownership has not been qualified/configured")
+            raise IntegrationError("unsupported", "physical ownership has not been configured")
         root = self.get_handle(session, session.root_handle)
         generation = root.generation
 
@@ -1333,7 +1333,7 @@ class SessionManager:
                     raise IntegrationError("unsupported", "generic integration API is not declared by this driver")
                 context = get_local_device_context(session.gid)
                 if not context or context['dtype'] != 'usrp':
-                    raise IntegrationError("unsupported_device", "integrations require a qualified plain USRP")
+                    raise IntegrationError("unsupported_device", "integrations require a configured plain USRP")
                 # Application control must remain reachable while the native
                 # gate is owned. Never interpret these arguments/results as UHD.
                 return validate_result(self.integrations.dispatch(self, session, method_name, request)), []

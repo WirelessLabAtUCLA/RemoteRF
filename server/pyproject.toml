@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "remoteRF-server"
-version = "1.7.23.dev0"
+version = "1.7.23"
 description = "RemoteRF server-side control package"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10"
 dependencies = [
     "remoterf-federation-core==0.22.0",
-    "remoterf-device-core==0.1.7.dev0",
+    "remoterf-device-core==0.1.7",
   "grpcio>=1.81.1,<2.0.0",
   "protobuf>=6.33.5,<7.0.0",
   "numpy",
@@ -60,3 +60,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "remoteRF_server.common.grpc" = ["*.proto"]
+"remoteRF_server.adapters.oai" = ["integration.json"]

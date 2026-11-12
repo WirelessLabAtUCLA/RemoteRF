@@ -1,6 +1,6 @@
 """The generic integration Invoke envelope, before native/UHD decoding.
 
-The six methods take one required ``request: dict`` and return ``dict``. The
+The seven methods take one required ``request: dict`` and return ``dict``. The
 normal generated client sends a named ``request`` argument. The positional
 transport form ``__args__: [request]`` is also accepted, with no other arguments.
 Never pass these protobuf values through the native DynamicValue decoder: JSON
@@ -19,7 +19,7 @@ from .payload import IntegrationError, MAX_ENVELOPE_BYTES, object_data
 
 INTEGRATION_METHODS = (
     "integration_list", "integration_describe", "integration_start",
-    "integration_status", "integration_stop", "integration_call",
+    "integration_status", "integration_stop", "integration_call", "integration_fetch",
 )
 INTEGRATION_OVERLOAD = "request"
 MAX_INVOKE_BYTES = 128 * 1024

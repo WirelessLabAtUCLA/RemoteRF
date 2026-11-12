@@ -9,7 +9,7 @@ from remoterf.drivers.usrp import usrp_remote
 
 METHODS = (
     'integration_list', 'integration_describe', 'integration_start',
-    'integration_status', 'integration_stop', 'integration_call',
+    'integration_status', 'integration_stop', 'integration_call', 'integration_fetch',
 )
 
 

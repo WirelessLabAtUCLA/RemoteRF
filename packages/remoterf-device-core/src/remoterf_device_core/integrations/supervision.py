@@ -4,7 +4,7 @@ This is trusted-code supervision, not a security sandbox. The operator must
 prevent applications from migrating themselves out of the delegated subtree.
 The proof here covers processes and their descendants, not arbitrary network
 interfaces, shared memory, hardware references or files created elsewhere.
-Those resource classes require independent qualified cleanup before a radio's
+Those resource classes require independent verified cleanup before a radio's
 lease may be released. There is deliberately no process-group/PID fallback.
 
 Kernel semantics: https://docs.kernel.org/admin-guide/cgroup-v2.html
@@ -364,9 +364,14 @@ class CgroupSupervisor:
     def _create_cgroup(self, name):
         os.mkdir(name, mode=0o700, dir_fd=self._root_fd)
 
-    def create(self, owner_id):
+    def create(self, owner_id, *, max_pids=None, memory_bytes=None):
         if type(owner_id) is not str or not _OWNER.fullmatch(owner_id):
             raise IntegrationError("invalid_owner", "invalid process owner identity")
+        max_pids = self.max_pids if max_pids is None else max_pids
+        memory_bytes = self.memory_bytes if memory_bytes is None else memory_bytes
+        if (type(max_pids) is not int or not 1 <= max_pids <= 4096
+                or type(memory_bytes) is not int or not 16 * 1024 * 1024 <= memory_bytes <= 64 * 1024**3):
+            raise ValueError("invalid supervision bounds")
         with self._lock:
             if self._closed or self._broken or self._draining:
                 raise _recovery()
@@ -385,8 +390,8 @@ class CgroupSupervisor:
                     if _read_control(fd, "cgroup.type") != "domain" or _populated(fd):
                         raise _recovery()
                     # Fail rather than silently omit fork/memory containment.
-                    _write_control(fd, "pids.max", str(self.max_pids))
-                    _write_control(fd, "memory.max", str(self.memory_bytes))
+                    _write_control(fd, "pids.max", str(max_pids))
+                    _write_control(fd, "memory.max", str(memory_bytes))
                     # All launched descendants inherit this single domain.
                     # Unbounded empty sub-cgroups are not part of this API.
                     _write_control(fd, "cgroup.max.descendants", "0")

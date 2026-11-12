@@ -5,7 +5,7 @@ framework with a real reserved USRP and receive-only probe to exercise actual
 `SessionManager`, `Controller`, `DeferredScope`, `Runtime`, `headless_main`,
 `_service_lifetime` and `ServerRuntime.stop` cleanup. It opens an unbound gRPC
 server with **no listening port**, starts no federation agent and never writes
-the deployed service's configuration or a qualification receipt.
+the deployed service's configuration.
 
 Run it only after the baseline handoff harness passes, under the same verified
 external booking and explicit physical serial. Keep the delegated root alive in
@@ -20,14 +20,11 @@ python -I tools/qualification/usrp_service_stop.py \
   --authority-command /absolute/operator/reservation-check \
   --cgroup-root /sys/fs/cgroup/EXACT_GUARDED_ROOT \
   --state-dir /absolute/private/NEW_SERVICE_STOP_STATE \
-  --evidence /absolute/private/service-stop.json \
-  --expected-framework-hash EXACT_REVIEWED_FRAMEWORK_SHA256
+  --evidence /absolute/private/service-stop.json
 ```
 
-All paths must be absolute and the state directory must be fresh. The framework
-hash uses the same core/controller/native/lifetime files as the activation gate;
-it is checked in both parent and child before hardware use. The JSON records
-source hashes, adapter content hash, versions, external authority and outcomes.
+All paths must be absolute and the state directory must be fresh. The JSON
+records source hashes, versions, external authority and outcomes.
 Native receive uses the same conservative defaults as the main harness: channel
 zero, 100 MHz, 1 MS/s, gain zero and 4,096 samples. There is no transmit action.
 The harness imports NumPy, UHD and the native session module before creating the
@@ -55,9 +52,9 @@ Two fresh child processes run sequentially:
 
 Only the transport-stop barrier, unused surrounding services and restart action
 are instrumented. Application ownership is wired through an **internal Binding**
-for qualification, with no fabricated hardware receipt and no public integration
+for this harness, with no deployment enablement and no public integration
 start. This proves real-radio lifecycle cleanup, not deployed network startup,
-Global RPC/receipt gates, calendar propagation, original service shutdown,
+Global RPC/enablement gates, calendar propagation, original service shutdown,
 production aggregate capacity, sustained RF load, or another profile/radio.
 
 On failure the parent stops only its own child if it is still running, preserves

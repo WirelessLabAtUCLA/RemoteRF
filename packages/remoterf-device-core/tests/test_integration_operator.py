@@ -177,3 +177,23 @@ def test_orphan_cleanup_repairs_completed_release_metadata_window(fake_cgroups, 
     assert json.loads((state / 'processes' / 'scopes.json').read_text())['scopes']['owner']['state'] == 'released'
     assert admin.cleanup_orphan(state, root, owner_id='owner')['cleaned']
     assert json.loads((state / 'processes' / 'scopes.json').read_text())['scopes'] == {}
+
+
+@pytest.mark.parametrize('rename_fails', [False, True])
+def test_recovery_discards_artifacts_and_reports_failure_without_blocking(fake_cgroups, tmp_path, monkeypatch,
+                                                                         rename_fails):
+    state, root, lease = prepared(fake_cgroups, tmp_path)
+    directory = state / 'work' / 'owner' / 'artifacts'
+    directory.mkdir(parents=True)
+    (directory / 'a').write_text('x')
+    released = []
+    real = Gate.release
+    def release(self, *args, **kwargs):
+        released.append(directory.exists())
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(Gate, 'release', release)
+    if rename_fails:
+        monkeypatch.setattr(admin.artifacts.os, 'rename', Mock(side_effect=PermissionError(13, 'denied')))
+    result = admin.recover(state, root, physical_id='serial:radio', lease=lease)
+    assert result['recovered'] and result['artifacts_discarded'] is not rename_fails
+    assert records(state) == {} and released == [rename_fails]

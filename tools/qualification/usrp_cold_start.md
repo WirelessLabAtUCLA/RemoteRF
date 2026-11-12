@@ -9,9 +9,8 @@ it through `update_devices`. Native opens and receive admission use the normal
 salt/hash token resolver. The separate external booking verifier is never used
 as that resolver and has no four-second freshness cache.
 
-The command uses the exact installed core/server/probe wheels and refuses a
-mismatched framework hash before inventory connection or account creation. The
-state directory must not exist. It sets private XDG/config locations before
+The command uses the exact installed core/server/probe wheels and records their
+source hashes. The state directory must not exist. It sets private XDG/config locations before
 server imports; no production database, account, inventory or integration
 configuration is copied or modified. No public listener or federation agent runs.
 The private calendar updater calls the normal method every **one second**, matching
@@ -22,7 +21,6 @@ python -I /absolute/usrp_cold_start.py \
   --backend usrp --case valid --serial EXACT_SERIAL --device-id EXACT_GID \
   --state-dir /absolute/private/NEW_STATE \
   --evidence /absolute/private/NEW_STATE/evidence.json \
-  --expected-framework-hash EXACT_REVIEWED_FRAMEWORK_SHA256 \
   --authority-command /absolute/operator/external-booking-check \
   --reservation-id EXACT_EXTERNAL_BOOKING \
   --guarded-scope /sys/fs/cgroup/EXACT_DELEGATED_ROOT/EXACT_OWNED_SCOPE

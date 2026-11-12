@@ -4,9 +4,9 @@
 
 `integration_soak.py` runs the real session manager, generic controller, runtime
 and durable ownership journal against explicitly fake radios, reservation
-authority, qualification receipts and process scopes. Run it in an isolated
+authority, operator enablement and process scopes. Run it in an isolated
 Linux environment containing the intended core/server builds. It never enables
-deployed integrations or supplies a hardware qualification receipt.
+deployed integrations or produces hardware evidence.
 
 ```sh
 env -u PYTHONPATH -u REMOTERF_CONFIG_DIR \

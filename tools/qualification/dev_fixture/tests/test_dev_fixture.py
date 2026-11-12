@@ -216,35 +216,22 @@ def test_unexpected_child_exit_is_reported(adapter):
         adapter.status()
 
 
-def test_guarded_configuration_is_disabled_and_receipt_nonapproving_by_default(guarded, monkeypatch):
-    from remoterf_device_core.integrations import fingerprint
+def test_guarded_configuration_is_disabled_by_default(guarded):
     root, config, _ = guarded
-    monkeypatch.setattr(fingerprint, 'adapter_digest', lambda manifest: 'a' * 64)
     server.configure_fixture(config)
     declaration = json.loads((config / 'integrations.json').read_text())
-    receipt = json.loads((config / 'integrations/dev-fixture-receipt.json').read_text())
-    assert declaration['enabled'] is False and declaration['qualifications'] == []
-    assert receipt['passed'] is False and not any(receipt['checks'].values())
-    assert receipt['physical_radio_qualification'] is False
-    assert receipt['run_id'].startswith('NON_RADIO_TEST_FIXTURE')
+    assert declaration['enabled'] is False and 'qualifications' not in declaration
     assert set(declaration['devices']) == {'401'}
 
 
-def test_enabled_synthetic_receipt_cannot_match_real_uhd_identity(guarded, monkeypatch):
-    from remoterf_device_core.integrations import fingerprint
+def test_enabled_fixture_enables_only_the_dev_serial(guarded, monkeypatch):
     from remoterf_device_core.integrations.deployment import Configuration
     from remoterf_device_core.integrations import IntegrationError
     root, config, _ = guarded
-    monkeypatch.setattr(fingerprint, 'adapter_digest', lambda manifest: 'a' * 64)
     monkeypatch.setenv('REMOTERF_DEV_INTEGRATION_ENABLE', '1')
     server.configure_fixture(config, '/sys/fs/cgroup/isolated-test/apps')
-    receipt = json.loads((config / 'integrations/dev-fixture-receipt.json').read_text())
-    assert receipt['passed'] is True and receipt['physical_radio_qualification'] is False
-    from remoterf_device_core.integrations import deployment
-    monkeypatch.setattr(deployment, 'adapter_digest', lambda manifest: 'a' * 64)
     configuration = Configuration.load(config / 'integrations.json')
-    configuration.require_qualified(401, 'org.remoterf.dev_fixture', 'test', schema_hash=receipt['schema_hash'],
-        uhd_version=backend.UHD_VERSION, framework_hash=receipt['framework_hash'])
+    configuration.require_enabled(401)
+    assert configuration.registry.discover(device_id='401', device_type='usrp')[0]['enabled'] is True
     with pytest.raises(IntegrationError):
-        configuration.require_qualified(401, 'org.remoterf.dev_fixture', 'test', schema_hash=receipt['schema_hash'],
-            uhd_version='4.10.0.main-release', framework_hash=receipt['framework_hash'])
+        configuration.require_enabled(402)

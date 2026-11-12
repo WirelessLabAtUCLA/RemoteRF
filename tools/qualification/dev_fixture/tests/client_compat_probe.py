@@ -16,7 +16,7 @@ source = Path(sys.argv[1])
 output = Path(sys.argv[2])
 schemas = {path.stem: json.loads(path.read_text()) for path in source.glob('*.json')}
 methods = ('integration_list', 'integration_describe', 'integration_start',
-           'integration_status', 'integration_stop', 'integration_call')
+           'integration_status', 'integration_stop', 'integration_call', 'integration_fetch')
 
 
 class Transport:

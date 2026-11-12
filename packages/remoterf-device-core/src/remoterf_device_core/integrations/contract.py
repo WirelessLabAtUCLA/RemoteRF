@@ -21,7 +21,7 @@ class Context:
 
     No bearer/session token or native UHD object is passed to an adapter. The
     work directory is provisioned by the runtime before adapter construction.
-    selector comes from qualified operator inventory, never caller configuration.
+    selector comes from operator inventory, never caller configuration.
     processes is an owner-bound supervision service; it grants no access to
     other owners, reservation credentials or the server's environment.
     Its launch(..., required_while_running=True) declares a long-lived worker

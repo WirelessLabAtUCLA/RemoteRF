@@ -97,6 +97,26 @@ def test_ordinary_files_are_not_a_delegated_cgroup(tmp_path):
     assert caught.value.code == 'supervision_unavailable'
 
 
+def test_per_scope_limits_override_defaults_within_bounds(fake_cgroups):
+    create, root, state = fake_cgroups
+    supervisor = create()
+    for bad in ({'max_pids': 0}, {'max_pids': 4097}, {'max_pids': True}, {'memory_bytes': 1 << 20},
+                {'memory_bytes': (64 << 30) + 1}, {'memory_bytes': 1.0}):
+        with pytest.raises(ValueError):
+            supervisor.create('owner', **bad)
+    assert supervisor.describe()['owners'] == {}
+    tuned = supervisor.create('tuned', max_pids=256, memory_bytes=1 << 30)
+    default = supervisor.create('default', max_pids=None)
+    rows = json.loads((state / 'scopes.json').read_text())['scopes']
+    assert (root / rows['tuned']['name'] / 'pids.max').read_text() == '256'
+    assert (root / rows['tuned']['name'] / 'memory.max').read_text() == str(1 << 30)
+    assert (root / rows['default']['name'] / 'pids.max').read_text() == '128'
+    assert (root / rows['default']['name'] / 'memory.max').read_text() == str(512 << 20)
+    tuned.close()
+    default.close()
+    supervisor.close()
+
+
 def test_scope_is_persisted_and_idempotent_before_any_launch(fake_cgroups):
     create, root, state = fake_cgroups
     supervisor = create()

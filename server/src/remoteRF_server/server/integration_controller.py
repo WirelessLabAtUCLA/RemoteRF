@@ -2,15 +2,17 @@
 
 No method in this module is a reservation/authorization bypass. Dynamic v2
 validates the live session and root first. Configuration is operator-owned,
-activation requires matching real-hardware evidence, and recovery is local-only.
+operator enablement is the activation gate, and recovery is local-only.
 """
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from threading import RLock
 import time
 
 from remoterf_device_core.integrations import CONTRACT_VERSION, IntegrationError, object_data
-from remoterf_device_core.integrations.deployment import Configuration, code_digest, scope_id, read_object
+from remoterf_device_core.integrations.artifacts import ARTIFACTS, MAX_FETCH_BYTES
+from remoterf_device_core.integrations.deployment import Configuration, scope_id, read_object
 from remoterf_device_core.integrations.ownership import Journal
 from remoterf_device_core.integrations.runtime import Runtime
 from remoterf_device_core.native_lifetime import submit_cleanup
@@ -18,15 +20,17 @@ from remoterf_device_core.native_lifetime import submit_cleanup
 
 class DeferredScope:
     """No filesystem/process work on RPC; prepare runs after durable ownership."""
-    def __init__(self, supervisor, owner_id, work_dir):
+    def __init__(self, supervisor, owner_id, work_dir, limits=None):
         self.supervisor, self.owner_id, self.work_dir = supervisor, owner_id, work_dir
+        self.limits = limits or {}
         self.scope = None
         self.attempted = False
 
     def prepare(self):
         self.attempted = True
         self.work_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
-        self.scope = self.supervisor.create(self.owner_id)
+        (self.work_dir / ARTIFACTS).mkdir(mode=0o700)
+        self.scope = self.supervisor.create(self.owner_id, **self.limits)
 
     def resources_released(self):
         if not self.attempted:
@@ -41,8 +45,8 @@ class DeferredScope:
     def close(self):
         if self.scope is not None:
             self.scope.close()
-        # Artifacts are not supported by this release. Never recursively delete
-        # adapter-written paths: leave nonempty directories for operator review.
+        # Runtime discarded artifacts/ before lease release. Never recursively
+        # delete other adapter-written paths: leave them for operator review.
         if self.work_dir.exists():
             try:
                 self.work_dir.rmdir()
@@ -75,13 +79,11 @@ def _text(request, key, limit=128):
 
 class Controller:
     def __init__(self, configuration=None, *, state_dir=None, journal=None, supervisor=None,
-                 framework_hash='', unavailable=None, framework_paths=None, installed_mapping=None):
+                 unavailable=None, installed_mapping=None):
         self.config = configuration or Configuration()
         self.registry = self.config.registry
         self.state_dir = Path(state_dir) if state_dir else None
         self.journal, self.supervisor = journal, supervisor
-        self.framework_hash = framework_hash
-        self.framework_paths = framework_paths
         self.installed_mapping = dict(installed_mapping or {})
         self.unavailable = unavailable
         self._lock = RLock()
@@ -93,9 +95,10 @@ class Controller:
         self._stopping = False
 
     def capabilities(self):
-        # Discovery never treats configuration alone as proof of qualification.
-        return {'contract_version': CONTRACT_VERSION, 'enabled': False,
-                'reason': self.unavailable or ('qualification_required' if self.config.enabled else 'integration_disabled')}
+        reason = (self.unavailable or (None if self.config.enabled else 'integration_disabled')
+                  or (None if self.supervisor and self.journal else 'supervision_unavailable')
+                  or ('overloaded' if self._stopping else None))
+        return {'contract_version': CONTRACT_VERSION, 'enabled': reason is None, 'reason': reason}
 
     def validate_inventory(self, records):
         mapping = self.config.physical_mapping(records, unresolved=self.journal.records() if self.journal else ())
@@ -149,26 +152,12 @@ class Controller:
                 if type(limit) is not int or not 1 <= limit <= 8 or type(cursor) is not str or len(cursor) > 128:
                     raise IntegrationError('invalid_request', 'invalid discovery page')
                 rows = self.registry.discover(device_id=str(session.gid), device_type='usrp')
+                result = {**self.capabilities(), 'generation': generation, 'integrations': [], 'next_cursor': None}
                 for row in rows:
                     row['configured'] = row['enabled']
-                    row['qualified_profiles'] = []
-                    if (row['configured'] and row['compatible'] and self.config.enabled
-                            and not self._stopping and not self.unavailable
-                            and self.supervisor is not None and self.journal is not None):
-                        for profile in row['profiles']:
-                            try:
-                                self.config.require_qualified(session.gid, row['id'], profile,
-                                    schema_hash=session.schema_v2['schema_hash'],
-                                    uhd_version=session.capabilities.get('uhd_version', ''),
-                                    framework_hash=self.framework_hash)
-                            except IntegrationError:
-                                continue
-                            row['qualified_profiles'].append(profile)
-                    row['enabled'] = bool(row['qualified_profiles'])
+                    row['enabled'] = (row['configured'] and row['compatible'] and result['enabled']
+                                      and session.gid in self.config.devices)
                 remaining = [row for row in rows if row['id'] > cursor]
-                result = {**self.capabilities(), 'generation': generation, 'integrations': [], 'next_cursor': None}
-                if any(row['enabled'] for row in rows):
-                    result.update(enabled=True, reason=None)
                 for row in remaining[:limit]:
                     candidate = {**result, 'integrations': result['integrations'] + [row]}
                     try:
@@ -192,13 +181,11 @@ class Controller:
                     raise IntegrationError('invalid_request', 'generation must be a positive integer')
                 # The deployment gate precedes native release, import and any
                 # process/workdir creation, even for broken installed adapters.
-                self.config.require_qualified(session.gid, integration_id, profile,
-                    schema_hash=session.schema_v2['schema_hash'], uhd_version=session.capabilities.get('uhd_version', ''),
-                    framework_hash=self.framework_hash)
+                self.config.require_enabled(session.gid)
                 if self._stopping:
                     raise IntegrationError('overloaded', 'application starts are draining')
                 if self.unavailable or self.supervisor is None or self.journal is None:
-                    raise IntegrationError('supervision_unavailable', 'qualified process supervision is unavailable')
+                    raise IntegrationError('supervision_unavailable', 'application process supervision is unavailable')
                 self.registry.validate_start(integration_id, device_id=str(session.gid), device_type='usrp',
                                              profile=profile, configuration=request['configuration'])
                 retry_key = (session.session_id, requested_generation, request_key)
@@ -217,16 +204,12 @@ class Controller:
                         gate = manager.integration_gate(session.gid)
                         owner = scope_id(gate.physical_id, session.session_id, generation, request_key)
                         directory = self.state_dir / 'work' / owner
-                        scope = DeferredScope(self.supervisor, owner, directory)
-                        def prepare(scope=scope, integration_id=integration_id):
-                            if self.framework_paths is not None and code_digest(self.framework_paths) != self.framework_hash:
-                                raise IntegrationError('qualification_required', 'framework code changed after qualification')
-                            self.config.verify_adapter(integration_id)
-                            scope.prepare()
+                        scope = DeferredScope(self.supervisor, owner, directory,
+                                              self.config.limits.get(integration_id))
                         binding = manager.integration_binding(session.session_id, work_dir=directory,
                                                               resources_released=scope.resources_released)
                         binding = replace(binding, selector={'serial': self.config.devices[session.gid]['serial']},
-                                          processes=scope, prepare=prepare, resource_owner=owner,
+                                          processes=scope, prepare=scope.prepare, resource_owner=owner,
                                           finalize=scope.stop_if_prepared, resource_failure=scope.resource_failure)
                         self._bindings[binding_key] = (binding, scope)
                         created_binding = True
@@ -244,10 +227,12 @@ class Controller:
                 self._starts[retry_key] = binding
                 self._operations[result['operation_id']] = binding
                 return result
-            if method not in {'integration_status', 'integration_stop', 'integration_call'}:
+            if method not in {'integration_status', 'integration_stop', 'integration_call', 'integration_fetch'}:
                 raise IntegrationError('unsupported_action', 'unknown integration method')
             if method == 'integration_call':
                 _fields(request, ('operation_id', 'action', 'parameters', 'request_key'))
+            elif method == 'integration_fetch':
+                _fields(request, ('operation_id', 'artifact', 'offset'), ('limit',))
             else:
                 _fields(request, ('operation_id',), ('action_id',) if method == 'integration_status' else ())
             operation_id = _text(request, 'operation_id')
@@ -259,18 +244,23 @@ class Controller:
             if method == 'integration_call':
                 return self._runtime.call(binding, operation_id, _text(request, 'action'), request['parameters'],
                                           request_key=_text(request, 'request_key'))
-            if 'action_id' in request:
-                return self._runtime.action_status(binding, operation_id, _text(request, 'action_id'))
-            result = self._runtime.status(binding, operation_id)
-            # A successful handoff refreshes native metadata through a plain
-            # object on this explicit path; no native probing occurs here.
-            result['native_generation'] = generation
-            if result['released']:
-                try:
-                    result['native_capabilities'] = object_data(session.capabilities, max_bytes=12 * 1024)
-                except IntegrationError:
-                    result['native_capabilities_truncated'] = True
-            return result
+            if method == 'integration_status':
+                if 'action_id' in request:
+                    return self._runtime.action_status(binding, operation_id, _text(request, 'action_id'))
+                result = self._runtime.status(binding, operation_id)
+                # A successful handoff refreshes native metadata through a plain
+                # object on this explicit path; no native probing occurs here.
+                result['native_generation'] = generation
+                if result['released']:
+                    try:
+                        result['native_capabilities'] = object_data(session.capabilities, max_bytes=12 * 1024)
+                    except IntegrationError:
+                        result['native_capabilities_truncated'] = True
+                return result
+            # File IO runs after this lock is released.
+            fetch = partial(self._runtime.fetch, binding, operation_id, request['artifact'], request['offset'],
+                            request.get('limit', MAX_FETCH_BYTES))
+        return fetch()
 
     def session_closed(self, session_id):
         with self._lock:
@@ -365,11 +355,8 @@ def initialize(manager, access, records, root):
                     # A crash after hardware release can leave a verified-empty
                     # scope. It is safe to finish removing that resource record.
                     orphan.close()
-        extra = [Path(__file__), Path(__file__).with_name('dynamic_v2.py'),
-                 Path(__file__).with_name('device_manager.py'), Path(__file__).with_name('grpc_server.py')]
         manager.integrations = Controller(configuration, state_dir=state, journal=journal, supervisor=supervisor,
-                                          framework_hash=code_digest(extra), unavailable=config_error, framework_paths=extra,
-                                          installed_mapping=mapping)
+                                          unavailable=config_error, installed_mapping=mapping)
         return manager.integrations
     except BaseException:
         try:

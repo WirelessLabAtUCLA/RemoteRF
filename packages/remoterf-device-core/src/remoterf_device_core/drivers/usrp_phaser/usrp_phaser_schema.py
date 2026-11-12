@@ -208,7 +208,7 @@ class UsrpPhaserSchema(UsrpSchema):
 
     device_type = "usrp_phaser"
     client_class = "MultiUSRPPhaser"
-    driver_version = "0.1.1"
+    driver_version = "0.1.2"
 
     def __init__(self):
         super().__init__()

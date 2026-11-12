@@ -137,11 +137,6 @@ def test_nonempty_fence_cannot_be_relabelled_as_clean(tmp_path, kind):
     assert json.loads(proc.read_text()) == processes
 
 
-def test_wrong_framework_refuses_before_any_authority_or_radio_use():
-    with pytest.raises(RuntimeError, match='differs'):
-        harness.source_identity('not-a-qualified-framework')
-
-
 def test_native_prewarm_only_imports_libraries(monkeypatch):
     imported = []
     def import_module(name):
@@ -158,12 +153,12 @@ def test_prewarm_precedes_authority_and_failed_reopen_preserves_child_evidence(t
     provider.write_text('unused')
     provider.chmod(0o700)
     args = SimpleNamespace(serial='FAKE123', reservation_id='fake-booking', device_id=40,
-        expected_framework_hash='exact', authority_command=provider, cgroup_root=tmp_path / 'cgroup',
+        authority_command=provider, cgroup_root=tmp_path / 'cgroup',
         state_dir=tmp_path / 'state', evidence=tmp_path / 'evidence.json', child_case=None, lock_fd=None)
     monkeypatch.setattr(harness, 'parser', lambda: SimpleNamespace(parse_args=lambda: args))
     monkeypatch.setitem(sys.modules, 'rrf_example_usrp_probe', SimpleNamespace(serial_selector=lambda value: value))
     monkeypatch.setattr(harness, 'private_environment', lambda state: None)
-    monkeypatch.setattr(harness, 'source_identity', lambda expected: {'framework_hash': expected})
+    monkeypatch.setattr(harness, 'source_identity', lambda: {})
     monkeypatch.setattr(harness.handoff, 'acquire_radio_lock', lambda *a: os.open(os.devnull, os.O_RDONLY))
     order = []
     def prewarm():

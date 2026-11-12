@@ -12,19 +12,12 @@ spec = importlib.util.spec_from_file_location('normal_auth_cold_test', HARNESS)
 h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
 
 
-def framework_hash():
-    from remoterf_device_core.integrations.deployment import code_digest
-    from remoteRF_server.server import integration_controller
-    p = Path(integration_controller.__file__)
-    return code_digest([p, p.with_name('dynamic_v2.py'), p.with_name('device_manager.py'), p.with_name('grpc_server.py')])
-
-
 @pytest.mark.parametrize('case,delay', [('valid', 5), ('expire_during_open', 2), ('cancel_during_open', .2)])
 def test_fresh_process_normal_calendar_auth_and_cleanup(tmp_path, case, delay):
     evidence = tmp_path / 'evidence.json'
     result = subprocess.run([sys.executable, str(HARNESS), '--backend', 'fake', '--case', case,
         '--serial', 'FAKE123', '--device-id', '40', '--state-dir', str(tmp_path / 'state'),
-        '--evidence', str(evidence), '--expected-framework-hash', framework_hash(),
+        '--evidence', str(evidence),
         '--fake-open-delay', str(delay)], capture_output=True, text=True, timeout=25)
     data = json.loads(evidence.read_text())
     assert result.returncode == 0, (data.get('failure'), result.stdout[-2000:], result.stderr[-2000:])
@@ -52,16 +45,6 @@ def test_fresh_process_normal_calendar_auth_and_cleanup(tmp_path, case, delay):
                    for row in data['events'] for key, value in row.items())
 
 
-def test_wrong_build_stops_before_private_account_or_native_open(tmp_path):
-    evidence = tmp_path / 'evidence.json'
-    result = subprocess.run([sys.executable, str(HARNESS), '--backend', 'fake', '--serial', 'FAKE123',
-        '--device-id', '40', '--state-dir', str(tmp_path / 'state'), '--evidence', str(evidence),
-        '--expected-framework-hash', 'wrong-build'], capture_output=True, timeout=15)
-    data = json.loads(evidence.read_text())
-    assert result.returncode != 0 and not data['passed']
-    assert not any(e['phase'] in ('private_account_created', 'first_native_open_started') for e in data['events'])
-
-
 @pytest.mark.parametrize('expires', [float('nan'), float('inf'), 0])
 def test_external_proof_refuses_nonfinite_or_expired_booking(tmp_path, monkeypatch, expires):
     from types import SimpleNamespace
@@ -82,7 +65,7 @@ def test_unguarded_hardware_is_refused_before_provider_or_server_import(tmp_path
     evidence = tmp_path / 'evidence.json'
     result = subprocess.run([sys.executable, str(HARNESS), '--backend', 'usrp', '--serial', 'FAKE123',
         '--device-id', '40', '--state-dir', str(tmp_path / 'state'), '--evidence', str(evidence),
-        '--expected-framework-hash', framework_hash(), '--authority-command', str(provider),
+        '--authority-command', str(provider),
         '--reservation-id', 'not-a-real-reservation', '--guarded-scope', str(scope)],
         capture_output=True, timeout=10)
     data = json.loads(evidence.read_text())

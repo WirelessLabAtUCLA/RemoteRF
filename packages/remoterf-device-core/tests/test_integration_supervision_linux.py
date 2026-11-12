@@ -234,3 +234,23 @@ raise SystemExit(int(sys.argv[2]))
         supervisor.close()
         journal.close()
     assert not any(path.name.startswith('rrf-') for path in Path(ROOT).iterdir())
+
+
+def test_per_scope_limits_reach_the_kernel(tmp_path):
+    root = Path(ROOT)
+    supervisor = mod.CgroupSupervisor(root, tmp_path / 'supervision-state')
+    limited = supervisor.create('limited', max_pids=64, memory_bytes=1024**3)
+    default = supervisor.create('default')
+
+    def control(owner, name):
+        return (root / supervisor._records[owner]['name'] / name).read_text().strip()
+
+    try:
+        assert (control('limited', 'pids.max'), control('limited', 'memory.max')) == ('64', str(1024**3))
+        assert (control('default', 'pids.max'), control('default', 'memory.max')) == ('128', str(512 * 1024**2))
+    finally:
+        for scope in (limited, default):
+            assert scope.stop(timeout=5)
+            scope.close()
+        supervisor.close()
+    assert not any(path.name.startswith('rrf-') for path in root.iterdir())

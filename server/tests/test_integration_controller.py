@@ -1,4 +1,5 @@
 """Session/controller boundaries with fake hardware and trusted fake supervision."""
+import base64
 from dataclasses import replace
 import json
 from threading import Event, Thread
@@ -10,8 +11,7 @@ import pytest
 
 from remoterf_device_core.hardware_access import AccessTable
 from remoterf_device_core.integrations import IntegrationError, Manifest, Registry
-from remoterf_device_core.integrations import deployment
-from remoterf_device_core.integrations.deployment import Configuration, REQUIRED_CHECKS
+from remoterf_device_core.integrations.deployment import Configuration
 from remoterf_device_core.integrations.ownership import Journal
 from remoteRF_server.server import dynamic_v2 as v2
 from remoteRF_server.server import integration_controller as control
@@ -19,8 +19,8 @@ from test_native_lifetime import Inventory, Native, opened, until
 
 
 class Scope:
-    def __init__(self, owner):
-        self.owner = owner
+    def __init__(self, owner, limits=None):
+        self.owner, self.limits = owner, limits
         self.stops = 0
         self.closed = False
     def resources_released(self):
@@ -38,8 +38,8 @@ class Supervisor:
     def __init__(self):
         self.scopes = []
         self.closed = False
-    def create(self, owner):
-        result = Scope(owner)
+    def create(self, owner, **limits):
+        result = Scope(owner, limits)
         self.scopes.append(result)
         return result
     def close(self):
@@ -52,22 +52,14 @@ def controlled(opened, tmp_path, monkeypatch):
     definition = Manifest.from_dict(dict(id='org.example.adapter', version='1.0.0', contract_version='0.1',
         factory='test_only_adapter:create', device_types=['usrp'], profiles=['rx'], actions=['stats']))
     registry = Registry([definition], enabled={str(session.gid): [definition.integration_id]})
-    receipt = dict(qualification_version=1, serial='RADIO_ONE', integration_id=definition.integration_id,
-        adapter_version=definition.version, adapter_hash='a' * 64, profile='rx',
-        schema_hash=session.schema_v2['schema_hash'], uhd_version='test', framework_hash='framework',
-        passed=True, checks={check: True for check in REQUIRED_CHECKS}, run_id='test-fixture-only')
     config = Configuration(registry=registry, enabled=True,
-        devices={session.gid: {'serial': 'RADIO_ONE', 'physical_id': 'usrp:serial:RADIO_ONE'}},
-        receipts=(receipt,), adapter_hashes={definition.integration_id: 'a' * 64})
-    monkeypatch.setattr(deployment, 'adapter_digest', lambda definition: 'a' * 64)
-    monkeypatch.setattr(control, 'code_digest', lambda *args: 'framework')
+        devices={session.gid: {'serial': 'RADIO_ONE', 'physical_id': 'usrp:serial:RADIO_ONE'}})
     access = AccessTable()
     journal = Journal(tmp_path / 'journal')
     access.configure({session.gid: 'usrp:serial:RADIO_ONE'}, journal)
     monkeypatch.setattr(v2, 'hardware_access', access)
     supervisor = Supervisor()
-    controller = control.Controller(config, state_dir=tmp_path, journal=journal, supervisor=supervisor,
-                                    framework_hash='framework')
+    controller = control.Controller(config, state_dir=tmp_path, journal=journal, supervisor=supervisor)
     manager.integrations = controller
     entered, proceed = Event(), Event()
     proceed.set()
@@ -117,43 +109,31 @@ def stopped(rig, operation):
     return rig.invoke('status', {'operation_id': operation['operation_id']})
 
 
-@pytest.mark.parametrize('failure', ['disabled', 'missing_receipt', 'old_hash', 'broken_package', 'supervisor'])
-def test_unqualified_or_broken_optional_adapter_never_releases_native(controlled, monkeypatch, failure):
+@pytest.mark.parametrize('failure,expected', [('disabled', 'integration_disabled'),
+    ('unmapped_serial', 'unsupported_device'), ('not_enabled_for_device', 'integration_disabled'),
+    ('broken_package', 'unknown_integration'), ('supervisor', 'supervision_unavailable')])
+def test_disabled_unmapped_or_broken_adapter_never_releases_native(controlled, failure, expected):
     rig = controlled
     native = rig.session.schema.device
-    expected = 'qualification_required'
     if failure == 'disabled':
         rig.config.enabled = False
-        expected = 'integration_disabled'
-    elif failure == 'missing_receipt':
-        rig.config.receipts = ()
-    elif failure == 'old_hash':
-        rig.config.adapter_hashes[rig.definition.integration_id] = 'b' * 64
+    elif failure == 'unmapped_serial':
+        rig.config.devices.clear()
+    elif failure == 'not_enabled_for_device':
+        rig.controller.registry = Registry([rig.definition])
     elif failure == 'broken_package':
-        rig.config.adapter_hashes.clear()
+        # Unloadable manifest metadata leaves the id out of the registry.
+        rig.controller.registry = Registry([])
     else:
         rig.controller.supervisor = None
-        expected = 'supervision_unavailable'
     code_from(lambda: rig.invoke('start', rig.start_request()), expected)
     assert rig.controller._runtime is None
     assert rig.session.schema.device is native and not native.closed
     assert not rig.supervisor.scopes and not (rig.controller.state_dir / 'work').exists()
     assert rig.manager.invoke(rig.session.session_id, rig.session.root_handle, 'get_time_now', {})[0] == 1.5
     page = rig.invoke('list', {})
-    assert page['enabled'] is False and page['integrations'][0]['enabled'] is False
-
-
-def test_worker_detects_adapter_change_before_native_release_or_resource_creation(controlled, monkeypatch):
-    rig = controlled
-    native = rig.session.schema.device
-    monkeypatch.setattr(deployment, 'adapter_digest', lambda definition: 'b' * 64)
-    operation = rig.invoke('start', rig.start_request())
-    until(lambda: rig.invoke('status', {'operation_id': operation['operation_id']})['released'])
-    result = rig.invoke('status', {'operation_id': operation['operation_id']})
-    assert result['error'] == 'qualification_required'
-    assert not native.closed and rig.session.schema.device is native
-    assert not rig.supervisor.scopes and not (rig.controller.state_dir / 'work').exists()
-    assert not rig.journal.records()
+    assert not any(row['enabled'] for row in page['integrations'])
+    assert page['enabled'] is (failure not in {'disabled', 'supervisor'})
 
 
 def test_start_action_stop_restores_generation_and_keeps_retry_identity(controlled):
@@ -174,6 +154,17 @@ def test_start_action_stop_restores_generation_and_keeps_retry_identity(controll
     rig.adapter.call.assert_called_once()
     assert rig.supervisor.scopes[0].stops == 1
     assert rig.manager.invoke(rig.session.session_id, rig.session.root_handle, 'get_time_now', {})[0] == 1.5
+
+
+def test_operator_limits_reach_only_their_integration_scope(controlled):
+    rig = controlled
+    rig.config.limits = {rig.definition.integration_id: {'max_pids': 256, 'memory_bytes': 1 << 30},
+                         'org.other.adapter': {'max_pids': 1}}
+    stopped(rig, running(rig))
+    assert rig.supervisor.scopes[0].limits == {'max_pids': 256, 'memory_bytes': 1 << 30}
+    rig.config.limits = {}
+    stopped(rig, running(rig, 'second'))
+    assert rig.supervisor.scopes[1].limits == {}
 
 
 def test_cancelled_before_release_can_retry_same_generation_with_new_resource_owner(controlled, monkeypatch):
@@ -225,7 +216,7 @@ def test_status_is_bounded_even_when_native_metadata_is_large(controlled):
     assert 'native_capabilities' not in result
 
 
-@pytest.mark.parametrize('method', ['status', 'stop', 'call'])
+@pytest.mark.parametrize('method', ['status', 'stop', 'call', 'fetch'])
 def test_operation_id_is_not_authority_for_another_session(controlled, monkeypatch, method):
     rig = controlled
     operation = running(rig)
@@ -234,23 +225,53 @@ def test_operation_id_is_not_authority_for_another_session(controlled, monkeypat
     request = {'operation_id': operation['operation_id']}
     if method == 'call':
         request.update(action='stats', parameters={}, request_key='foreign')
+    if method == 'fetch':
+        request.update(artifact='a', offset=0)
     code_from(lambda: rig.manager.invoke(other.session_id, other.root_handle, 'integration_' + method,
                                          {'request': request}), 'unknown_operation')
     stopped(rig, operation)
 
 
-@pytest.mark.parametrize('method', ['status', 'stop', 'call'])
+@pytest.mark.parametrize('method', ['status', 'stop', 'call', 'fetch'])
 def test_current_reservation_rechecked_for_every_operation(controlled, monkeypatch, method):
     rig = controlled
     operation = running(rig)
     request = {'operation_id': operation['operation_id']}
     if method == 'call':
         request.update(action='stats', parameters={}, request_key='late')
+    if method == 'fetch':
+        request.update(artifact='a', offset=0)
     monkeypatch.setattr(v2, 'token_matches_device', lambda *args: False)
     with pytest.raises(v2.RemoteRFSessionExpiredError):
         rig.invoke(method, request)
     until(lambda: rig.controller._runtime._operations[operation['operation_id']]['released'])
     assert not rig.journal.records() and rig.session.schema.device is None
+
+
+def test_fetch_reads_prepared_artifacts_outside_controller_lock_until_stop(controlled, monkeypatch):
+    rig = controlled
+    operation = running(rig)
+    work = rig.controller.state_dir / 'work' / rig.supervisor.scopes[0].owner
+    (work / 'artifacts' / 'grid.bin').write_bytes(b'x' * 40000)
+    fetch = rig.controller._runtime.fetch
+    held = []
+    def probe(*args):
+        held.append(rig.controller._lock._is_owned())
+        return fetch(*args)
+    monkeypatch.setattr(rig.controller._runtime, 'fetch', probe)
+    request = {'operation_id': operation['operation_id'], 'artifact': 'grid.bin', 'offset': 0}
+    first = rig.invoke('fetch', request)
+    assert first['size'] == 40000 and not first['eof'] and len(base64.b64decode(first['data'])) == 32768
+    last = rig.invoke('fetch', {**request, 'offset': 32768, 'limit': 32768})
+    assert last['eof'] and len(base64.b64decode(last['data'])) == 40000 - 32768
+    assert held == [False, False]
+    code_from(lambda: rig.invoke('fetch', {**request, 'artifact': '../grid.bin'}), 'invalid_request')
+    code_from(lambda: rig.invoke('fetch', {**request, 'extra': 1}), 'invalid_request')
+    code_from(lambda: rig.invoke('fetch', {'operation_id': operation['operation_id'], 'artifact': 'grid.bin'}),
+              'invalid_request')
+    stopped(rig, operation)
+    assert not (work / 'artifacts').exists()
+    code_from(lambda: rig.invoke('fetch', request), 'invalid_state')
 
 
 def test_session_close_stops_resources_without_status_polling(controlled):
@@ -341,8 +362,9 @@ def test_default_startup_opens_no_journal_or_adapter(tmp_path, monkeypatch):
     journal.assert_not_called()
 
 
-def test_broken_optional_configuration_keeps_raw_startup_working(tmp_path):
-    (tmp_path / 'integrations.json').write_text('{"version":true}')
+@pytest.mark.parametrize('text', ['{"version":true}', '{"version":1,"limits":{"org.example.adapter":{"max_pids":0}}}'])
+def test_broken_optional_configuration_keeps_raw_startup_working(tmp_path, text):
+    (tmp_path / 'integrations.json').write_text(text)
     manager = SimpleNamespace(integrations=control.Controller())
     access = AccessTable()
     controller = control.initialize(manager, access, {7: {'TYPE': 'usrp', 'INIT': {}}}, tmp_path)
@@ -562,23 +584,23 @@ def test_cleanup_scheduler_refusal_preserves_scope_for_retry(controlled, monkeyp
     assert not rig.controller._bindings
 
 
-def test_qualified_discovery_reports_only_profiles_with_matching_evidence(controlled, monkeypatch):
+def test_discovery_and_describe_report_real_enablement_without_import(controlled, monkeypatch):
     rig = controlled
-    definition = replace(rig.definition, profiles=('rx', 'unqualified'))
-    registry = Registry([definition], enabled={str(rig.session.gid): [definition.integration_id]})
-    rig.config.registry = rig.controller.registry = registry
-    no_io = Mock(side_effect=AssertionError('discovery must use cached qualification identity'))
-    monkeypatch.setattr(deployment, 'adapter_digest', no_io)
-    monkeypatch.setattr(control, 'code_digest', no_io)
+    monkeypatch.setattr(rig.controller.registry, 'create', Mock(side_effect=AssertionError('discovery cannot import')))
     result = rig.invoke('list', {})
     assert result['enabled'] is True and result['reason'] is None
-    assert result['integrations'][0]['qualified_profiles'] == ['rx']
-    assert result['integrations'][0]['enabled'] is True
-    assert rig.controller.capabilities()['enabled'] is False
-    rig.controller.shutdown()
+    row = result['integrations'][0]
+    assert row['enabled'] is True and row['configured'] is True and 'qualified_profiles' not in row
+    described = rig.invoke('describe', {'integration_id': rig.definition.integration_id})
+    assert described['availability'] == {'contract_version': result['contract_version'], 'enabled': True, 'reason': None}
+    rig.config.enabled = False
+    assert rig.invoke('describe', {'integration_id': rig.definition.integration_id})['availability']['reason'] == 'integration_disabled'
     result = rig.invoke('list', {})
-    assert result['enabled'] is False and result['integrations'][0]['qualified_profiles'] == []
-    no_io.assert_not_called()
+    assert result['enabled'] is False and result['integrations'][0]['enabled'] is False
+    assert result['integrations'][0]['configured'] is True
+    rig.config.enabled = True
+    rig.controller.shutdown()
+    assert rig.invoke('list', {})['integrations'][0]['enabled'] is False
 
 
 def test_hung_scope_close_does_not_block_discovery_and_close_has_deadline(controlled, monkeypatch):

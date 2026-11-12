@@ -8,7 +8,7 @@ locks. Its snapshots are not atomic across journals and do not authorize work.
 Recovery takes both exclusive writer locks. The framework holds its ownership
 lock for the lifetime of managed native ownership; obtaining it excludes that
 managed controller. This does NOT audit external/unmanaged hardware owners,
-interfaces, shared memory or files. The installed qualified adapter must use
+interfaces, shared memory or files. The installed adapter must use
 only the resource classes whose release is independently verified here.
 There is no remote recovery endpoint and no arbitrary PID signalling.
 """
@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 
+from . import artifacts
 from .ownership import Gate, Journal, _unique_object
 from .payload import IntegrationError, object_data
 from . import supervision as backend
@@ -195,11 +196,17 @@ def recover(state_dir, cgroup_root, *, physical_id, lease, timeout=5):
         scope = supervisor.reopen(owner)
         if not scope.stop(timeout=timeout) or not scope.resources_released():
             raise RecoveryError()
+        # Reported, not blocking: processes are verified gone and fetch is scope-bound.
+        try:
+            artifacts.discard(Path(state_dir) / 'work' / owner)
+            discarded = True
+        except IntegrationError:
+            discarded = False
         Gate(physical_id, journal).release(lease, verify=scope.resources_released)
         physical_released = True
         scope.close()
         return {'recovered': True, 'physical_id': physical_id, 'resource_owner': owner,
-                'managed_resources_only': True}
+                'managed_resources_only': True, 'artifacts_discarded': discarded}
     except IntegrationError as exc:
         if exc.code in {'stale_owner', 'journal_busy'}:
             raise

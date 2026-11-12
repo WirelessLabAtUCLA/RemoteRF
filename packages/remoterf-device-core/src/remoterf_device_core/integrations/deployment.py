@@ -1,4 +1,4 @@
-"""Operator configuration and hardware qualification, separate from RPC data.
+"""Operator integration configuration, separate from RPC data.
 
 A missing config is disabled. Malformed optional adapter metadata cannot break
 raw UHD; ownership/recovery ambiguity must still prevent native acquisition.
@@ -13,13 +13,6 @@ import re
 from .ownership import _unique_object
 from .payload import IntegrationError, object_data
 from .registry import Manifest, Registry
-from .fingerprint import adapter_digest
-
-REQUIRED_CHECKS = frozenset({
-    'native_rx_before', 'application_rx', 'native_rx_after', 'explicit_stop',
-    'startup_failure', 'expired_start', 'expired_running', 'process_crash',
-    'cleanup_descendants', 'next_holder_rx',
-})
 
 
 def read_object(path):
@@ -49,28 +42,14 @@ def scope_id(physical_id, session_id, generation, request_key=''):
     return sha256(json.dumps([physical_id, session_id, generation, request_key]).encode()).hexdigest()
 
 
-def code_digest(extra_paths=()):
-    digest = sha256()
-    core = Path(__file__).parent.parent
-    paths = sorted(Path(__file__).parent.glob('*.py')) + [
-        core / 'hardware_access.py', core / 'native_lifetime.py',
-        core / 'drivers' / 'usrp' / 'usrp_schema.py',
-    ] + [Path(p) for p in extra_paths]
-    for path in paths:
-        digest.update(path.name.encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
 @dataclass
 class Configuration:
     registry: Registry = field(default_factory=lambda: Registry([]))
     enabled: bool = False
     devices: dict = field(default_factory=dict)
-    receipts: tuple = ()
     cgroup_root: Path | None = None
     errors: tuple = ()
-    adapter_hashes: dict = field(default_factory=dict)
+    limits: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path):
@@ -78,7 +57,7 @@ class Configuration:
         if not path.exists():
             return cls()
         raw = read_object(path)
-        if (set(raw) - {'version', 'enabled', 'manifests', 'devices', 'qualifications', 'cgroup_root'}
+        if (set(raw) - {'version', 'enabled', 'manifests', 'devices', 'cgroup_root', 'limits'}
                 or type(raw.get('version')) is not int or raw['version'] != 1
                 or type(raw.get('enabled', False)) is not bool):
             raise IntegrationError('invalid_configuration', 'invalid integration deployment configuration')
@@ -101,38 +80,38 @@ class Configuration:
         for gid, row in rows.items():
             if (not re.fullmatch(r'[1-9][0-9]{0,17}', gid) or type(row) is not dict
                     or set(row) != {'serial', 'integrations'}):
-                raise IntegrationError('invalid_configuration', 'invalid qualified device declaration')
+                raise IntegrationError('invalid_configuration', 'invalid device declaration')
             serial = inventory_serial({'TYPE': 'usrp', 'INIT': {'serial': row['serial']}})
             ids = row['integrations']
             if (serial is None or type(ids) is not list or len(ids) > 64
                     or any(type(i) is not str for i in ids)):
-                raise IntegrationError('invalid_configuration', 'invalid qualified device selector')
+                raise IntegrationError('invalid_configuration', 'invalid device selector')
             devices[int(gid)] = {'serial': serial, 'physical_id': f'usrp:serial:{serial}'}
             enabled[gid] = [i for i in ids if i in declared]
             if any(i not in declared for i in ids):
                 errors.append('adapter_metadata_unavailable')
-        receipts = []
-        receipt_paths = raw.get('qualifications', [])
-        if type(receipt_paths) is not list or len(receipt_paths) > 64:
-            raise IntegrationError('invalid_configuration', 'invalid qualification paths')
-        for entry in receipt_paths:
-            if type(entry) is not str or not entry:
-                raise IntegrationError('invalid_configuration', 'invalid qualification path')
-            try:
-                receipts.append(read_object(path.parent / entry))
-            except (OSError, IntegrationError):
-                errors.append('qualification_unavailable')
         cgroup = raw.get('cgroup_root')
         if cgroup is not None and (type(cgroup) is not str or not Path(cgroup).is_absolute()):
             raise IntegrationError('invalid_configuration', 'cgroup_root must be an absolute operator path')
-        adapter_hashes = {}
-        for definition in manifests:
-            try:
-                adapter_hashes[definition.integration_id] = adapter_digest(definition)
-            except IntegrationError:
-                errors.append('adapter_fingerprint_unavailable')
+        rows = raw.get('limits', {})
+        if type(rows) is not dict or len(rows) > 64:
+            raise IntegrationError('invalid_configuration', 'invalid resource limits')
+        limits = {}
+        for integration_id, row in rows.items():
+            if (type(row) is not dict or set(row) - {'memory_mib', 'max_pids'}
+                    or any(type(row[key]) is not int for key in row)
+                    or not 16 <= row.get('memory_mib', 16) <= 65536
+                    or not 1 <= row.get('max_pids', 1) <= 4096):
+                raise IntegrationError('invalid_configuration', 'invalid resource limits')
+            if integration_id in declared:
+                # Stored as CgroupSupervisor.create keyword overrides.
+                limits[integration_id] = entry = {}
+                if 'max_pids' in row:
+                    entry['max_pids'] = row['max_pids']
+                if 'memory_mib' in row:
+                    entry['memory_bytes'] = row['memory_mib'] << 20
         return cls(Registry(manifests, enabled=enabled), raw.get('enabled', False), devices,
-                   tuple(receipts), Path(cgroup) if cgroup else None, tuple(errors), adapter_hashes)
+                   Path(cgroup) if cgroup else None, tuple(errors), limits)
 
     def physical_mapping(self, records, *, unresolved=()):
         if not self.enabled and not unresolved:
@@ -157,34 +136,8 @@ class Configuration:
             raise IntegrationError('recovery_required', 'unresolved owners are missing from physical inventory')
         return mapping
 
-    def verify_adapter(self, integration_id):
-        expected = self.adapter_hashes.get(integration_id)
-        if type(expected) is not str or not re.fullmatch(r'[0-9a-f]{64}', expected):
-            raise IntegrationError('qualification_required', 'installed adapter identity has not been verified')
-        try:
-            actual = adapter_digest(self.registry._definition(integration_id))
-        except IntegrationError:
-            raise IntegrationError('qualification_required', 'installed adapter identity could not be verified') from None
-        if actual != expected:
-            raise IntegrationError('qualification_required', 'installed adapter changed after qualification')
-
-    def require_qualified(self, gid, integration_id, profile, *, schema_hash, uhd_version, framework_hash):
+    def require_enabled(self, gid):
         if not self.enabled:
             raise IntegrationError('integration_disabled', 'application integrations are disabled')
-        device = self.devices.get(int(gid))
-        if device is None:
+        if int(gid) not in self.devices:
             raise IntegrationError('unsupported_device', 'this physical radio is not configured for integrations')
-        definition = self.registry.describe(integration_id)
-        adapter_hash = self.adapter_hashes.get(integration_id)
-        if type(adapter_hash) is not str or not re.fullmatch(r'[0-9a-f]{64}', adapter_hash):
-            raise IntegrationError('qualification_required', 'installed adapter identity has not been verified')
-        expected = {'adapter_hash': adapter_hash, 'qualification_version': 1, 'serial': device['serial'], 'integration_id': integration_id,
-                    'adapter_version': definition['version'], 'profile': profile, 'schema_hash': schema_hash,
-                    'uhd_version': uhd_version, 'framework_hash': framework_hash, 'passed': True}
-        for receipt in self.receipts:
-            if (all(type(receipt.get(k)) is type(v) and receipt.get(k) == v for k, v in expected.items())
-                    and type(receipt.get('checks')) is dict
-                    and all(receipt['checks'].get(check) is True for check in REQUIRED_CHECKS)
-                    and type(receipt.get('run_id')) is str and receipt['run_id']):
-                return
-        raise IntegrationError('qualification_required', 'real-radio handoff and cleanup qualification is required')

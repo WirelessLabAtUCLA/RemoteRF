@@ -220,7 +220,7 @@ def run(args, evidence):
     from remoteRF_server.server.reservation import reservation_handler as reservation
     from remoterf_device_core.drivers.usrp import usrp_schema
     manager = v2.session_manager
-    evidence['source_identity'] = helpers.source_identity(args.expected_framework_hash)
+    evidence['source_identity'] = helpers.source_identity()
     evidence['source_identity']['cold_harness_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     evidence['native_startup'] = {'test_only_prewarm': False, 'ordinary_preload_enabled': True,
         'preloaded_entries_after_normal_imports': len(usrp_schema._preloaded),
@@ -345,7 +345,6 @@ def main():
     parser.add_argument('--device-id', type=int, required=True)
     parser.add_argument('--state-dir', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
-    parser.add_argument('--expected-framework-hash', required=True)
     parser.add_argument('--fake-open-delay', type=float, default=2.0)
     parser.add_argument('--authority-command', type=Path)
     parser.add_argument('--reservation-id')

@@ -27,8 +27,8 @@ DEPLOYMENT_NAME = 'Isolated UCLA Integration Qualification'
 DEVICE_ID = 40
 SERIAL = '32C78EE'
 INTEGRATION = 'org.remoterf.usrp_probe'
-SCHEMA_HASH = 'sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b'
-MODES = ('receipt-missing', 'receipt-mismatch', 'enabled', 'cancel', 'expiry')
+SCHEMA_HASH = 'sha256:be1ffefaf1a6141aba81e396e76eb30226f50f46fea9f0ebd9f06eb2c32f4500'
+MODES = ('disabled', 'enabled', 'cancel', 'expiry')
 
 
 def require(condition, message):
@@ -194,7 +194,7 @@ def discovery(radio, *, enabled):
     page = radio.integration_list({})
     rows = [row for row in page['integrations'] if row['id'] == INTEGRATION]
     require(len(rows) == 1, 'probe integration absent or duplicated')
-    require(page['enabled'] is enabled and rows[0]['enabled'] is enabled, 'unexpected qualification availability')
+    require(page['enabled'] is enabled and rows[0]['enabled'] is enabled, 'unexpected integration availability')
     desc = radio.integration_describe({'integration_id': INTEGRATION})
     require(desc['integration']['id'] == INTEGRATION, 'describe returned another integration')
     return page
@@ -246,8 +246,8 @@ def lifecycle(mode, bookings, checks, key):
         checks['discovery'] = page
         checks['describe'] = True
         if not enabled:
-            checks['unqualified_start_refused'] = refused(
-                lambda: radio.integration_start(start_request(page, key)), code='qualification_required')
+            checks['disabled_start_refused'] = refused(
+                lambda: radio.integration_start(start_request(page, key)), code='integration_disabled')
             checks['native_rx_after_refusal'] = native_rx(radio, uhd)
         else:
             operation = start_running(radio, page, checks, key)

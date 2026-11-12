@@ -7,6 +7,7 @@ No Python timeout is treated as termination of native work.
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -16,6 +17,7 @@ from threading import Event, RLock, Thread
 import time
 from uuid import uuid4
 
+from . import artifacts
 from .contract import Context
 from .ownership import Gate
 from .payload import IntegrationError, object_data
@@ -204,6 +206,7 @@ class Runtime:
             result = object_data(op["adapter"].call(record["action"], record["parameters"]),
                                  max_bytes=48 * 1024)
             self._check(op)
+            artifacts.usage(op["binding"].work_dir)
             # Refresh cached status while still serializing adapter hooks. A
             # stuck status hook is an active action and cannot race stop().
             details = object_data(op["adapter"].status(), max_bytes=48 * 1024)
@@ -306,6 +309,7 @@ class Runtime:
             self._phase(op, "checking_readiness")
             details = object_data(adapter.status(), max_bytes=48 * 1024)
             self._check(op)
+            artifacts.usage(binding.work_dir)
             with self._lock:
                 if op["cancelled"].is_set():
                     raise IntegrationError("cancelled", "application operation was cancelled")
@@ -352,6 +356,8 @@ class Runtime:
             self._phase(op, "verifying_release")
             if binding.resources_released() is not True:
                 raise IntegrationError("recovery_required", "application resources remain owned")
+            # Artifacts never outlive the lease; a failed discard keeps it held.
+            artifacts.discard(binding.work_dir)
             # Reacquisition is runtime work, never hidden in a normal UHD call.
             # Expired sessions must not reacquire; the next holder opens normally.
             if op["native_released"] and binding.authority():
@@ -391,6 +397,25 @@ class Runtime:
         # Cached snapshot: status never calls potentially hung adapter code.
         with self._lock:
             return self._snapshot(self._owned(binding, operation_id))
+
+    def fetch(self, binding, operation_id, artifact, offset, limit=artifacts.MAX_FETCH_BYTES):
+        """Read one artifact chunk of a running operation; no adapter/native code."""
+        artifacts.validate(artifact, offset, limit)
+        op = self._fetchable(binding, operation_id)
+        data, size = artifacts.read_chunk(op["binding"].work_dir, artifact, offset, limit)
+        # Authority or cancellation may change during the read: return no bytes then.
+        self._fetchable(binding, operation_id)
+        return object_data({"operation_id": operation_id, "artifact": artifact, "offset": offset, "size": size,
+                            "eof": offset + len(data) >= size, "data": base64.b64encode(data).decode("ascii")})
+
+    def _fetchable(self, binding, operation_id):
+        if not binding.authority():
+            raise IntegrationError("expired", "reservation authority ended")
+        with self._lock:
+            op = self._owned(binding, operation_id)
+            if op["released"] or op["state"] != "RUNNING" or op["cancelled"].is_set():
+                raise IntegrationError("invalid_state", "application is not running")
+            return op
 
     def stop(self, binding, operation_id):
         with self._lock:
@@ -476,6 +501,7 @@ class Runtime:
                 return self._snapshot(op)
             op["cleanup"] = True
         try:
+            artifacts.discard(op["binding"].work_dir)
             binding.gate.release(op["lease"], verify=verify)
             with self._lock:
                 op.update(released=True, state="ERROR")

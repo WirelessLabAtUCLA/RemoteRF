@@ -1,5 +1,4 @@
-"""Operator configuration never turns metadata into hardware qualification."""
-from dataclasses import replace
+"""Operator enablement in integrations.json is the only activation gate."""
 from importlib import metadata
 import json
 import sys
@@ -9,8 +8,7 @@ import pytest
 
 from remoterf_device_core.hardware_access import AccessTable
 from remoterf_device_core.integrations import IntegrationError, Manifest, Registry
-from remoterf_device_core.integrations import fingerprint
-from remoterf_device_core.integrations.deployment import Configuration, REQUIRED_CHECKS
+from remoterf_device_core.integrations.deployment import Configuration
 from remoterf_device_core.integrations.ownership import Journal
 
 
@@ -37,25 +35,10 @@ def installed(tmp_path, monkeypatch):
     return definition, package, distributions
 
 
-def configuration(definition, digest='a' * 64, *, enabled=True):
+def configuration(definition, *, enabled=True):
     registry = Registry([definition], enabled={'7': [definition.integration_id]})
     return Configuration(registry=registry, enabled=enabled,
-        devices={7: {'serial': 'RADIO_ONE', 'physical_id': 'usrp:serial:RADIO_ONE'}},
-        adapter_hashes={definition.integration_id: digest})
-
-
-def receipt(definition, **changes):
-    value = dict(qualification_version=1, serial='RADIO_ONE', integration_id=definition.integration_id,
-        adapter_version=definition.version, adapter_hash='a' * 64, profile='rx', schema_hash='schema',
-        uhd_version='4.8', framework_hash='framework', passed=True,
-        checks={check: True for check in REQUIRED_CHECKS}, run_id='physical-radio-run-1')
-    value.update(changes)
-    return value
-
-
-def admit(config, definition):
-    config.require_qualified(7, definition.integration_id, 'rx', schema_hash='schema',
-                             uhd_version='4.8', framework_hash='framework')
+        devices={7: {'serial': 'RADIO_ONE', 'physical_id': 'usrp:serial:RADIO_ONE'}})
 
 
 def assert_code(code, function):
@@ -64,74 +47,52 @@ def assert_code(code, function):
     assert caught.value.code == code
 
 
-def test_fingerprint_never_imports_parent_or_factory_and_is_stable(installed):
-    definition, package, distributions = installed
-    first = fingerprint.adapter_digest(definition)
-    assert len(first) == 64
-    assert fingerprint.adapter_digest(definition) == first
-    assert 'qualified_adapter' not in sys.modules
-    assert 'qualified_adapter.factory' not in sys.modules
-    (package / '__pycache__').mkdir()
-    (package / '__pycache__' / 'factory.cpython.pyc').write_bytes(b'cache')
-    assert fingerprint.adapter_digest(definition) == first
-
-
-@pytest.mark.parametrize('change', ['factory', 'source', 'native', 'json', 'dependency', 'optional_dependency'])
-def test_fingerprint_binds_factory_package_and_dependency_versions(installed, change):
-    definition, package, distributions = installed
-    before = fingerprint.adapter_digest(definition)
-    if change == 'factory':
-        definition = replace(definition, factory='qualified_adapter.factory:other')
-    elif change == 'source':
-        (package / 'factory.py').write_text('def create(context): return 1\n')
-    elif change == 'native':
-        (package / 'native.so').write_bytes(b'changed-native-image')
-    elif change == 'json':
-        (package / 'profile.json').write_text('{"rx":false}')
-    elif change == 'dependency':
-        distributions['native-dependency'].version = '2.2'
-    else:
-        distributions['qualified-adapter'].requires.append('optional-plugin; extra == "optional"')
-    assert fingerprint.adapter_digest(definition) != before
-
-
-def test_missing_distribution_or_factory_fails_closed(installed, monkeypatch):
-    definition, package, distributions = installed
-    del distributions['qualified-adapter']
-    assert_code('adapter_fingerprint_unavailable', lambda: fingerprint.adapter_digest(definition))
-    assert_code('adapter_fingerprint_unavailable', lambda: fingerprint.adapter_digest(
-        replace(definition, factory='not_installed.factory:create')))
-
-
-@pytest.mark.parametrize('kind', ['file', 'directory'])
-def test_fingerprint_rejects_symlinks_even_inside_package(installed, tmp_path, kind):
-    definition, package, distributions = installed
-    outside = tmp_path / 'outside'
-    outside.mkdir()
-    (outside / 'config.json').write_text('{}')
-    (package / 'linked').symlink_to(outside if kind == 'directory' else outside / 'config.json')
-    assert_code('adapter_fingerprint_unavailable', lambda: fingerprint.adapter_digest(definition))
-
-
-@pytest.mark.parametrize('limit,value', [('MAX_FILES', 1), ('MAX_FILE_BYTES', 2), ('MAX_TOTAL_BYTES', 3), ('MAX_DISTRIBUTIONS', 1), ('MAX_DEPTH', 0)])
-def test_fingerprint_work_is_bounded(installed, monkeypatch, limit, value):
-    definition, package, distributions = installed
-    (package / 'nested').mkdir()
-    monkeypatch.setattr(fingerprint, limit, value)
-    assert_code('adapter_fingerprint_unavailable', lambda: fingerprint.adapter_digest(definition))
-
-
 def test_configuration_loads_optional_metadata_without_importing_adapter(installed, tmp_path):
     definition, package, distributions = installed
     (tmp_path / 'adapter.json').write_text(json.dumps({**definition.describe(), 'factory': definition.factory}))
     (tmp_path / 'integrations.json').write_text(json.dumps(dict(version=1, enabled=False,
         manifests=['adapter.json', 'missing.json'], devices={'7': {'serial': 'RADIO_ONE',
-        'integrations': [definition.integration_id, 'org.missing.adapter']}}, qualifications=['missing-receipt.json'])))
+        'integrations': [definition.integration_id, 'org.missing.adapter']}})))
     config = Configuration.load(tmp_path / 'integrations.json')
     assert not config.enabled and config.registry.describe(definition.integration_id)
-    assert config.adapter_hashes[definition.integration_id] == fingerprint.adapter_digest(definition)
-    assert set(config.errors) == {'adapter_metadata_unavailable', 'qualification_unavailable'}
+    assert set(config.errors) == {'adapter_metadata_unavailable'}
     assert 'qualified_adapter' not in sys.modules
+
+
+def test_legacy_qualifications_key_is_rejected(tmp_path):
+    path = tmp_path / 'integrations.json'
+    path.write_text(json.dumps({'version': 1, 'enabled': True, 'qualifications': []}))
+    assert_code('invalid_configuration', lambda: Configuration.load(path))
+
+
+def limits_config(tmp_path, definition, limits):
+    (tmp_path / 'adapter.json').write_text(json.dumps({**definition.describe(), 'factory': definition.factory}))
+    (tmp_path / 'integrations.json').write_text(json.dumps(dict(version=1, manifests=['adapter.json'],
+                                                                limits=limits)))
+    return Configuration.load(tmp_path / 'integrations.json')
+
+
+def test_operator_limits_are_converted_and_undeclared_ids_ignored(installed, tmp_path):
+    definition, package, distributions = installed
+    config = limits_config(tmp_path, definition, {definition.integration_id: {'memory_mib': 1024, 'max_pids': 256},
+                                                  'org.missing.adapter': {'max_pids': 4096}})
+    assert config.limits == {definition.integration_id: {'max_pids': 256, 'memory_bytes': 1 << 30}}
+    assert config.errors == ()
+    assert limits_config(tmp_path, definition, {definition.integration_id: {'memory_mib': 16}}).limits == {
+        definition.integration_id: {'memory_bytes': 16 << 20}}
+    assert limits_config(tmp_path, definition, {definition.integration_id: {}}).limits == {
+        definition.integration_id: {}}
+    assert Configuration().limits == {}
+
+
+@pytest.mark.parametrize('limits', [[], {'org.example.adapter': []}, {'org.example.adapter': {'memory_mib': 15}},
+    {'org.example.adapter': {'memory_mib': 65537}}, {'org.example.adapter': {'max_pids': 0}},
+    {'org.example.adapter': {'max_pids': 4097}}, {'org.example.adapter': {'max_pids': True}},
+    {'org.example.adapter': {'memory_mib': 1024.0}}, {'org.example.adapter': {'artifact_mib': 1}},
+    {'org.missing.adapter': {'max_pids': '8'}}, {f'org.example.a{i}': {} for i in range(65)}])
+def test_malformed_operator_limits_fail_closed(installed, tmp_path, limits):
+    definition, package, distributions = installed
+    assert_code('invalid_configuration', lambda: limits_config(tmp_path, definition, limits))
 
 
 @pytest.mark.parametrize('version', [True, False, 1.0, '1', None, 2])
@@ -147,57 +108,17 @@ def test_missing_or_broken_optional_packages_leave_disabled_raw_configuration(in
     (tmp_path / 'adapter.json').write_text(json.dumps({**definition.describe(), 'factory': 'missing_package:create'}))
     (tmp_path / 'integrations.json').write_text(json.dumps({'version': 1, 'manifests': ['adapter.json']}))
     config = Configuration.load(tmp_path / 'integrations.json')
-    assert not config.enabled and config.adapter_hashes == {}
-    assert config.errors == ('adapter_fingerprint_unavailable',)
+    assert not config.enabled and config.errors == ()
     assert config.physical_mapping({7: {'TYPE': 'usrp', 'INIT': {}}}) == {}
 
 
-def test_all_receipt_fields_and_checks_required(installed):
+def test_operator_enablement_is_the_only_gate(installed):
     definition, *_ = installed
     config = configuration(definition)
-    valid = receipt(definition)
-    config.receipts = (valid,)
-    admit(config, definition)
-    for field in valid:
-        config.receipts = ({k: v for k, v in valid.items() if k != field},)
-        assert_code('qualification_required', lambda: admit(config, definition))
-    for check in REQUIRED_CHECKS:
-        for incorrect in [False, 1, 'true', None]:
-            config.receipts = (receipt(definition, checks={**valid['checks'], check: incorrect}),)
-            assert_code('qualification_required', lambda: admit(config, definition))
-
-
-@pytest.mark.parametrize('field,value', [('qualification_version', True), ('qualification_version', 1.0),
-    ('serial', 'OTHER'), ('integration_id', 'org.other.adapter'), ('adapter_version', '1.2.4'),
-    ('adapter_hash', 'b' * 64), ('profile', 'tx'), ('schema_hash', 'old-schema'), ('uhd_version', '4.9'),
-    ('framework_hash', 'old-code'), ('passed', 1), ('passed', 'true'), ('run_id', '')])
-def test_receipts_cannot_be_reused_for_different_identity(installed, field, value):
-    definition, *_ = installed
-    config = configuration(definition)
-    config.receipts = (receipt(definition, **{field: value}),)
-    assert_code('qualification_required', lambda: admit(config, definition))
-
-
-def test_disabled_and_unknown_device_cannot_be_enabled_by_receipt(installed):
-    definition, *_ = installed
-    config = configuration(definition, enabled=False)
-    config.receipts = (receipt(definition),)
-    assert_code('integration_disabled', lambda: admit(config, definition))
-    config.enabled = True
-    config.devices.clear()
-    assert_code('unsupported_device', lambda: admit(config, definition))
-
-
-def test_adapter_identity_must_exist_and_match_on_worker_recheck(installed):
-    definition, package, distributions = installed
-    config = configuration(definition, fingerprint.adapter_digest(definition))
-    config.verify_adapter(definition.integration_id)
-    (package / 'factory.py').write_text('def create(context): return "modified"\n')
-    assert_code('qualification_required', lambda: config.verify_adapter(definition.integration_id))
-    config.adapter_hashes.clear()
-    assert_code('qualification_required', lambda: config.verify_adapter(definition.integration_id))
-    config.receipts = (receipt(definition),)
-    assert_code('qualification_required', lambda: admit(config, definition))
+    config.require_enabled(7)
+    assert_code('unsupported_device', lambda: config.require_enabled(8))
+    config.enabled = False
+    assert_code('integration_disabled', lambda: config.require_enabled(7))
 
 
 def test_inventory_maps_every_serial_alias_to_canonical_identity(installed, tmp_path):
@@ -261,16 +182,3 @@ def test_manifest_identifiers_fit_discovery_cursors_and_requests(installed, fiel
     definition, *_ = installed
     raw = {**definition.describe(), 'factory': definition.factory, field: value}
     assert_code('invalid_manifest', lambda: Manifest.from_dict(raw))
-
-
-def test_nested_namespace_package_lookup_does_not_import_parents(tmp_path, monkeypatch):
-    definition = Manifest.from_dict(dict(id='org.example.namespace', version='1.0.0', contract_version='0.1',
-        factory='qualified_namespace.nested.factory:create', device_types=['usrp'], profiles=['rx'], actions=[]))
-    package = tmp_path / 'qualified_namespace' / 'nested'
-    package.mkdir(parents=True)
-    (package / 'factory.py').write_text("raise RuntimeError('must not import')\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.setattr(metadata, 'packages_distributions', lambda: {'qualified_namespace': ['namespace-dist']})
-    monkeypatch.setattr(metadata, 'distribution', lambda name: SimpleNamespace(version='1.0', requires=[]))
-    assert len(fingerprint.adapter_digest(definition)) == 64
-    assert not any(name.startswith('qualified_namespace') for name in sys.modules)

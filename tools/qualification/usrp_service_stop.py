@@ -3,7 +3,7 @@
 
 The guardian must keep this delegated cgroup root alive after a failed payload.
 Run only while holding a verified external reservation. This supplement uses an
-internal Binding, never a fabricated hardware receipt or the deployed RPC path.
+internal Binding, never deployment enablement or the deployed RPC path.
 """
 from __future__ import annotations
 
@@ -47,29 +47,20 @@ def private_environment(state):
     os.environ['REMOTERF_DIRECT'] = '0'
 
 
-def source_identity(expected):
-    from remoterf_device_core.integrations.deployment import code_digest
-    from remoterf_device_core.integrations import Manifest
-    from remoterf_device_core.integrations.fingerprint import adapter_digest
+def source_identity():
     from remoteRF_server.server import integration_controller
     base = Path(integration_controller.__file__)
     extra = [base, base.with_name('dynamic_v2.py'), base.with_name('device_manager.py'),
              base.with_name('grpc_server.py')]
-    actual = code_digest(extra)
-    if actual != expected:
-        raise RuntimeError('installed framework differs from the expected build')
     import remoterf_device_core.integrations as integrations
     import rrf_example_usrp_probe
     probe = Path(rrf_example_usrp_probe.__file__).parent
-    definition = Manifest.from_file(probe / 'integration.json')
     core = Path(integrations.__file__).parent.parent
     files = sorted(Path(integrations.__file__).parent.glob('*.py')) + extra + [
         core / 'hardware_access.py', core / 'native_lifetime.py',
         core / 'drivers/usrp/usrp_schema.py',
     ] + sorted(probe.glob('*.py')) + [probe / 'integration.json']
-    return {'framework_hash': actual,
-            'adapter_hash': adapter_digest(definition),
-            'module_sha256': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
+    return {'module_sha256': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
             'harness_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'helper_sha256': hashlib.sha256(Path(handoff.__file__).read_bytes()).hexdigest(),
             'versions': {name: version(name) for name in
@@ -193,8 +184,8 @@ def run_child(args, authority, evidence):
             binding = replace(binding, selector={'serial': args.serial}, processes=scoped,
                 prepare=scoped.prepare, resource_owner=owner, finalize=scoped.stop_if_prepared,
                 resource_failure=scoped.resource_failure)
-            # Internal qualification setup, explicitly not a public RPC start or
-            # qualification receipt. Production enablement remains untouched.
+            # Internal harness setup, explicitly not a public RPC start.
+            # Production enablement remains untouched.
             key = (session.session_id, generation, args.child_case)
             controller._bindings[key] = (binding, scoped)
             operation = controller._runtime.start(binding, definition.integration_id, 'receive', settings,
@@ -242,7 +233,7 @@ def child_command(args, case, state):
         '--device-id', str(args.device_id), '--reservation-id', args.reservation_id,
         '--authority-command', str(args.authority_command), '--cgroup-root', str(args.cgroup_root),
         '--state-dir', str(state), '--evidence', str(state / 'child-evidence.json'),
-        '--expected-framework-hash', args.expected_framework_hash, '--profile', args.profile,
+        '--profile', args.profile,
         '--rate', str(args.rate), '--frequency', str(args.frequency), '--gain', str(args.gain)]
 
 
@@ -322,8 +313,6 @@ def run_case(args, authority, case, progress):
                             child_passed=child_result.get('passed'), child_checks=child_result.get('checks', {}))
             if result != 0 or child_result.get('passed') is not True:
                 raise RuntimeError('isolated service termination failed qualification')
-            if child_result['source_identity']['framework_hash'] != args.expected_framework_hash:
-                raise RuntimeError('child used a different framework build')
             proof = verify_empty_state(state, args.cgroup_root)
             progress.update(cleanup=proof, phase='next_holder_rx')
             if not authority.active():
@@ -342,7 +331,7 @@ def run_case(args, authority, case, progress):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ('serial', 'reservation-id', 'expected-framework-hash'):
+    for name in ('serial', 'reservation-id'):
         p.add_argument('--' + name, required=True)
     p.add_argument('--device-id', type=int, required=True)
     for name in ('authority-command', 'cgroup-root', 'state-dir', 'evidence'):
@@ -375,11 +364,11 @@ def main():
     evidence = {'format': 'remoterf-usrp-service-stop-evidence-1', 'passed': False,
         'serial': args.serial, 'device_id': args.device_id, 'reservation_id': args.reservation_id,
         'route': 'isolated_internal_binding_and_actual_server_lifetime_no_listener',
-        'transmit': False, 'activation_changed': False, 'qualification_receipt_created': False,
+        'transmit': False, 'activation_changed': False,
         'public_rpc_or_startup_qualified': False, 'started_at': time.time(), 'checks': {}}
     authority = None
     try:
-        evidence['source_identity'] = source_identity(args.expected_framework_hash)
+        evidence['source_identity'] = source_identity()
         evidence['native_library_prewarm'] = prewarm_native()
         authority = handoff.Authority(str(args.authority_command), args.reservation_id, args.device_id, args.serial)
         evidence['external_reservation'] = authority.last

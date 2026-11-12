@@ -2,8 +2,8 @@
 
 This separately packaged adapter exercises RemoteRF's generic integration
 contract without OAI. Installation and metadata discovery do not import UHD,
-open a radio or enable integrations. It is for explicitly authorized lab
-qualification, not automatic production activation.
+open a radio or enable integrations. It runs only where the operator enables it
+in `integrations.json`.
 
 The `receive` profile selects one RX channel using the runtime-provided serial.
 It starts a separately supervised Python process, receives a finite burst of
@@ -27,12 +27,12 @@ failure leaves ownership fenced until verified cleanup. Process supervision
 covers owned descendants; it does not prove cleanup of arbitrary external files,
 interfaces or shared memory. This sample does not create those resources.
 
-Build/install in an isolated qualification environment, then run `smoke.py` to
+Build/install in an isolated test environment, then run `smoke.py` to
 check metadata, the disabled default and supervision requirements without a
 radio. Run `tests/test_usrp_probe.py` for fake-process contract checks. Neither
-is physical-radio qualification.
+exercises a physical radio.
 
 The explicit hardware harness is `tools/qualification/usrp_handoff.py` at the
 repository root. Its provider contract, real-reservation requirement, injected
 faults and limitations are documented alongside that script. Even a passing
-result does not modify deployment configuration or create an activation approval.
+result does not modify deployment configuration or enable the adapter.

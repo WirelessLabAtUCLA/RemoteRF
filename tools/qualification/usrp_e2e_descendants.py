@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real receiver-descendant cleanup evidence; no receipt or activation is created.
+"""Real receiver-descendant cleanup evidence; no activation is created.
 
 The unchanged probe runs as a child of a qualification-only required wrapper.
 Kill only that wrapper, observe the receiving descendant behind a held cleanup
@@ -215,7 +215,7 @@ def run(args, evidence, cold):
     from remoteRF_server.server.reservation import reservation_handler as reservation
     from rrf_example_usrp_probe import configuration
     helpers = cold.helpers
-    evidence['source_identity'] = helpers.source_identity(args.expected_framework_hash)
+    evidence['source_identity'] = helpers.source_identity()
     evidence['source_identity']['descendant_harness_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     journal = Journal(args.state_dir / 'ownership')
     supervisor = CgroupSupervisor(args.cgroup_root, args.state_dir / 'processes')
@@ -322,7 +322,7 @@ def run(args, evidence, cold):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('serial', 'reservation-id', 'expected-framework-hash'): parser.add_argument('--' + name, required=True)
+    for name in ('serial', 'reservation-id'): parser.add_argument('--' + name, required=True)
     parser.add_argument('--device-id', type=int, required=True)
     for name in ('state-dir', 'evidence', 'cgroup-root', 'authority-command'):
         parser.add_argument('--' + name, type=Path, required=True)
@@ -339,7 +339,7 @@ def main():
     evidence = {'format': 'remoterf-receiver-descendant-qualification-1', 'passed': False,
         'started_at': time.time(), 'serial': args.serial, 'device_id': args.device_id,
         'reservation_id': args.reservation_id, 'transmit': False, 'activation_changed': False,
-        'qualification_receipt_created': False, 'route': 'isolated_normal_local_auth_internal_runtime',
+        'route': 'isolated_normal_local_auth_internal_runtime',
         'fault_injection': 'required_wrapper_parent_exits_real_receiver_descendant_keeps_usb', 'checks': {}}
     lock = None
     try:

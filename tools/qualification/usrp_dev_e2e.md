@@ -13,16 +13,16 @@ The runner is deliberately pinned to:
   `ucla-integrations-20261110`, display name
   `Isolated UCLA Integration Qualification`.
 - Device `40`, physical USRP serial `32C78EE` and the qualified stock v2 schema
-  `sha256:7276bf3ab3eefcb55270abe10311fb000a1897a0337b63a7810c7a107306384b`.
+  `sha256:be1ffefaf1a6141aba81e396e76eb30226f50f46fea9f0ebd9f06eb2c32f4500`.
 - Separately installed `org.remoterf.usrp_probe`, `receive` profile, `health`
   action; RX at 1 Msps, 100 MHz, gain zero, 4096 finite samples per native check.
 
 Before invoking it, the operator must hold the real UCLA reservation throughout
 all runs and cleanup, isolate and independently supervise the private lab
-service, verify the exact installed wheels/framework/UHD/receipt identities,
+service, verify the exact installed wheels/framework/UHD identities,
 and confirm no competing owner on this serial. The client runner cannot prove
 the remote build identity from a schema hash alone. The service's independent
-startup/configuration/receipt and physical resource evidence are part of the
+startup/configuration and physical resource evidence are part of the
 qualification record. Production services and integration configuration remain
 untouched.
 
@@ -34,25 +34,24 @@ client functions. It never replaces credentials or auth callbacks. The private
 home override is process-local; the operator's `HOME` and saved login are not
 changed. Keyring and direct paths are disabled for this invocation.
 
-For each receipt mode, stop and cleanly restart only the isolated canary service
-using ordinary integration configuration/startup. Configure an actually missing
-receipt for `receipt-missing`, an actual tuple mismatch for `receipt-mismatch`,
-and the truthful accepted receipt for `enabled`, `cancel` and `expiry`. Do not
-manufacture receipt checks or patch server qualification/authentication. The
-client verifies the observable refusal; independently retain the precise
-configuration that caused each denial.
+For each mode, stop and cleanly restart only the isolated canary service using
+ordinary integration configuration/startup. Configure `"enabled": false` in
+`integrations.json` for `disabled`, and operator enablement of the probe for
+this serial for `enabled`, `cancel` and `expiry`. Do not patch server
+authentication. The client verifies the observable refusal; independently
+retain the precise configuration that caused the denial.
 
 ```sh
 python tools/qualification/usrp_dev_e2e.py \
-  --mode receipt-missing \
+  --mode disabled \
   --deployment-id c59791c0-7645-4a4a-94d8-55c5551061a9 \
   --client-home /tmp/remoterf-phase1c-dev-client-e2e-20261110 \
-  --evidence /absolute/private/receipt-missing.json
+  --evidence /absolute/private/disabled.json
 ```
 
-Repeat with `receipt-mismatch` and `enabled`, each with a new evidence path.
-All three modes exercise native RX before and after the integration attempt.
-Receipt denials must preserve native UHD access. Enabled mode checks discovery,
+Repeat with `enabled`, with a new evidence path. Both modes exercise native RX
+before and after the integration attempt. The disabled denial must preserve
+native UHD access. Enabled mode checks discovery,
 describe, start/status, duplicate start, native refusal while the application
 owns the radio, health/status, duplicate action, stop/release and native RX
 reacquisition using the same generated root. Duplicate checks establish stable
@@ -139,6 +138,6 @@ python -m pytest -q tools/qualification/tests/test_usrp_dev_e2e.py
 ```
 
 These tests use no network or real hardware. They check destination/private-state
-guards, calendar policy/cleanup, receipt refusal without native regression, and
+guards, calendar policy/cleanup, disabled refusal without native regression, and
 that stale/unproven external observations cannot authorize post-revocation device
 calls or a next reservation.

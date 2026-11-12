@@ -1,4 +1,5 @@
 """Failure and race contracts for ownership; all hardware is deterministic fake state."""
+import base64
 from dataclasses import replace
 from threading import Event
 import time
@@ -6,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from remoterf_device_core.integrations import IntegrationError, Manifest, Registry
+from remoterf_device_core.integrations import IntegrationError, Manifest, Registry, artifacts
 from remoterf_device_core.integrations.ownership import Gate, Journal
 from remoterf_device_core.integrations.runtime import Binding, Runtime
 
@@ -613,3 +614,105 @@ def test_durable_claim_records_resource_owner_and_finalizer_runs_after_stop_erro
     wait_for(lambda: finalized and not runtime._operations[operation_id]['cleanup'])
     assert finalized == [True] and not state['application']
     assert binding.gate.snapshot()['blocked']  # failed adapter cleanup still needs reconciliation
+
+
+def fetch_refused(code, runtime, binding, operation_id, *args):
+    with pytest.raises(IntegrationError) as caught:
+        runtime.fetch(binding, operation_id, *(args or ('a', 0)))
+    assert caught.value.code == code
+
+
+def test_fetch_reads_running_artifacts_with_per_call_authority(rig, tmp_path, monkeypatch):
+    runtime, binding, state, adapter, operation_id = running(rig)
+    (tmp_path / 'artifacts').mkdir()
+    (tmp_path / 'artifacts' / 'a').write_bytes(b'abc')
+    reply = runtime.fetch(binding, operation_id, 'a', 1, 1)
+    assert reply == {'operation_id': operation_id, 'artifact': 'a', 'offset': 1, 'size': 3, 'eof': False,
+                     'data': base64.b64encode(b'b').decode()}
+    assert runtime.fetch(binding, operation_id, 'a', 1)['eof']
+    fetch_refused('unknown_operation', runtime, replace(binding, session_id='other'), operation_id)
+    fetch_refused('unknown_operation', runtime, replace(binding, generation=2), operation_id)
+    fetch_refused('invalid_request', runtime, binding, operation_id, '../a', 0)
+    fetch_refused('unknown_artifact', runtime, binding, operation_id, 'b', 0)
+    # Authority ending during the read returns no bytes.
+    read = artifacts.read_chunk
+    def expire(*args):
+        state['authorized'] = False
+        return read(*args)
+    monkeypatch.setattr(artifacts, 'read_chunk', expire)
+    fetch_refused('expired', runtime, binding, operation_id)
+    wait_for(lambda: runtime.status(binding, operation_id)['released'])
+    fetch_refused('expired', runtime, binding, operation_id)
+
+
+@pytest.mark.parametrize('ending', ['stop', 'expiry'])
+def test_artifacts_are_discarded_before_lease_release(rig, tmp_path, ending):
+    runtime, binding, state, adapter, entered, proceed, start = rig
+    seen = []
+    def released():
+        seen.append((tmp_path / 'artifacts').exists())
+        return not state['application']
+    binding = replace(binding, resources_released=released)
+    operation_id = start(bound=binding)['operation_id']
+    wait_for(lambda: runtime.status(binding, operation_id)['state'] == 'RUNNING')
+    (tmp_path / 'artifacts').mkdir()
+    (tmp_path / 'artifacts' / 'a').write_bytes(b'abc')
+    if ending == 'stop':
+        runtime.stop(binding, operation_id)
+        wait_for(lambda: runtime.status(binding, operation_id)['released'])
+        fetch_refused('invalid_state', runtime, binding, operation_id)
+    else:
+        state['authorized'] = False
+        wait_for(lambda: runtime.status(binding, operation_id)['released'])
+    # The pre-discard proof saw artifacts; the gate's release proof did not.
+    assert seen[0] and not seen[-1] and not (tmp_path / 'artifacts').exists()
+
+
+def test_failed_discard_rename_keeps_lease_until_reconciled(rig, tmp_path, monkeypatch):
+    runtime, binding, state, adapter, operation_id = running(rig)
+    (tmp_path / 'artifacts').mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr(artifacts.os, 'rename', Mock(side_effect=PermissionError(13, 'denied', str(tmp_path))))
+        runtime.stop(binding, operation_id)
+        wait_for(lambda: runtime.status(binding, operation_id)['error'] == 'recovery_required')
+        wait_for(lambda: not runtime._operations[operation_id]['cleanup'])
+        assert binding.gate.snapshot()['blocked'] and not runtime.status(binding, operation_id)['released']
+        with pytest.raises(IntegrationError):
+            runtime.recover(binding, operation_id, verify=lambda: True)
+        assert binding.gate.snapshot()['blocked']
+    state.update(native=False, application=False)
+    runtime.recover(binding, operation_id, verify=lambda: True)
+    assert not binding.gate.snapshot()['blocked'] and not (tmp_path / 'artifacts').exists()
+
+
+def test_failed_removal_after_rename_does_not_block_release(rig, tmp_path, monkeypatch):
+    runtime, binding, state, adapter, operation_id = running(rig)
+    (tmp_path / 'artifacts').mkdir()
+    (tmp_path / 'artifacts' / 'a').write_bytes(b'abc')
+    monkeypatch.setattr(artifacts.shutil, 'rmtree', Mock(side_effect=OSError('busy')))
+    runtime.stop(binding, operation_id)
+    wait_for(lambda: runtime.status(binding, operation_id)['released'])
+    assert runtime.status(binding, operation_id)['error'] is None
+    assert not (tmp_path / 'artifacts').exists()
+    assert [path.name.startswith('.discarded-') for path in tmp_path.iterdir() if path.is_dir()].count(True) == 1
+
+
+@pytest.mark.parametrize('when', ['start', 'action'])
+def test_artifact_quota_breach_fails_and_cleans_up(rig, tmp_path, monkeypatch, when):
+    runtime, binding, state, adapter, entered, proceed, start = rig
+    monkeypatch.setattr(artifacts, 'QUOTA_BYTES', 2)
+    (tmp_path / 'artifacts').mkdir()
+    if when == 'start':
+        (tmp_path / 'artifacts' / 'a').write_bytes(b'abc')
+        operation_id = start()['operation_id']
+    else:
+        operation_id = start()['operation_id']
+        wait_for(lambda: runtime.status(binding, operation_id)['state'] == 'RUNNING'
+                 and not runtime._operations[operation_id]['active'])
+        adapter.call = lambda *args: (tmp_path / 'artifacts' / 'a').write_bytes(b'abc') and {}
+        action_id = runtime.call(binding, operation_id, 'increment', {}, request_key='call')['action_id']
+    wait_for(lambda: runtime.status(binding, operation_id)['released'])
+    assert runtime.status(binding, operation_id)['error'] == 'artifact_limit'
+    if when == 'action':
+        assert runtime.action_status(binding, operation_id, action_id)['error'] == 'artifact_limit'
+    assert state['stops'] == 1 and not (tmp_path / 'artifacts').exists()

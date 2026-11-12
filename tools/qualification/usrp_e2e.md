@@ -1,7 +1,7 @@
 # Exact-build receive-only dev qualification
 
-These tools add the missing positive receiver-descendant evidence and assemble
-an operator receipt for an isolated dev canary. They do not enable production,
+These tools add the missing positive receiver-descendant evidence for an
+isolated dev canary. They do not enable production,
 change the installed framework/probe packages, or prove the public API by
 themselves. The external physical-radio reservation must remain active while
 the canary exercises its separate dev reservations.
@@ -41,11 +41,10 @@ that omit those Python wrappers; both signal only the captured owned child.
 The qualifier requires sibling `usrp_cold_start.py`, `usrp_service_stop.py`, and
 `usrp_handoff.py`. Supply absolute paths for a new private `--state-dir`,
 `--evidence`, `--cgroup-root`, executable `--authority-command`, the approved
-`--reservation-id`, `--serial`, `--device-id`, and
-`--expected-framework-hash`. No public server listener is started. Its private
+`--reservation-id`, `--serial` and `--device-id`. No public server listener is started. Its private
 account, calendar and token resolver use the ordinary server implementation.
 
-## Independent cleanup and receipt
+## Independent cleanup
 
 After the qualifier exits successfully, independently inspect its hardware
 ledger, process ledger, pinned root identity, cgroup population and the actual
@@ -80,22 +79,6 @@ user. Record that limitation; do not interpret zero visible owners as a global
 cross-user descriptor audit. Verified empty managed cgroups and subsequent
 native receive provide separate cleanup and reacquisition evidence.
 
-`usrp_e2e_receipt.py` accepts absolute `--handoff`, `--service`,
-`--descendants`, `--cleanup`, and `--output` paths, plus `--run-id` and the
-mandatory `--dev-canary-only` flag. The output parent must already exist with
-private operator permissions. Output is exclusive and cannot overwrite a
-receipt. The assembler checks the retained hardware observations and matching
-framework, adapter, package-source and UHD identities before deriving all ten
-required booleans. It binds the new independent cleanup to the fresh raw
-evidence digest and retains all input digests.
-
-The historical expiry cases use explicitly injected local revocation. This
-receipt permits the next isolated dev tests; it does not itself establish
-Global expiry/cancellation or public generic RPC behavior. The receipt's
-`production_approved: false` and `dev_canary_only: true` fields are operator
-annotations, not additional enforcement by the deployment loader. Keep the
-receipt and enabled configuration confined to the private dev canary.
-
 ## Public dev canary sequence
 
 Use the exact built server through its ordinary startup path, ordinary dev
@@ -105,19 +88,19 @@ production requests for that radio. Retain the unchanged production service and
 its disabled integration configuration; the operator guardian independently
 checks the outer reservation and stops the private service before it ends.
 
-1. With an absent receipt, verify native RX before and after generic discovery
-   and a start denied with `qualification_required`.
-2. Repeat with a mismatched receipt; the denial must precede native handoff.
-3. Install the freshly assembled matching receipt only in the private canary.
-   Restart normally, discover the probe, start receive, observe state/logs and
+1. With integrations disabled, verify native RX before and after generic
+   discovery and a start denied with `integration_disabled`; the denial must
+   precede native handoff.
+2. Enable the probe for this serial only in the private canary's
+   `integrations.json`. Restart normally, discover the probe, start receive, observe state/logs and
    health through the public generic API, and stop explicitly. Verify native
    RX, empty ownership records and no remaining USB owner.
-4. With an active application, let a real dev reservation expire through the
+3. With an active application, let a real dev reservation expire through the
    ordinary Global-to-deployment synchronization path. Verify revoked access,
    bounded cleanup, and a subsequent holder's native RX.
-5. Repeat with cancellation of a real dev reservation. The outer physical UCLA
+4. Repeat with cancellation of a real dev reservation. The outer physical UCLA
    booking remains active through both nested cases and all cleanup checks.
-6. Stop the canary, verify empty persistent and kernel ownership independently,
+5. Stop the canary, verify empty persistent and kernel ownership independently,
    restore the original disabled deployment configuration, release guardians,
    and release the outer booking after cleanup. Retain exact artifact hashes,
    startup logs, public-route results, calendar timings and independent cleanup
@@ -126,5 +109,5 @@ checks the outer reservation and stops the private service before it ends.
 Qualification helper tests:
 
 ```text
-python -m pytest tools/qualification/tests/test_usrp_e2e_descendants.py tools/qualification/tests/test_usrp_e2e_receipt.py
+python -m pytest tools/qualification/tests/test_usrp_e2e_descendants.py
 ```

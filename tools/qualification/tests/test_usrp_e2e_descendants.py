@@ -57,7 +57,7 @@ def test_cli_help_and_serial_preflight_do_not_load_hardware(tmp_path):
     help_run = subprocess.run([sys.executable, '-I', str(SCRIPT), '--help'], capture_output=True, text=True)
     assert help_run.returncode == 0 and '--lock-fd' in help_run.stdout
     command = [sys.executable, '-I', str(SCRIPT), '--serial', 'unsafe,selector',
-        '--reservation-id', 'test-only', '--expected-framework-hash', '1' * 64,
+        '--reservation-id', 'test-only',
         '--device-id', '40']
     for name in ('state-dir', 'evidence', 'cgroup-root', 'authority-command'):
         command.extend(['--' + name, str(tmp_path / name)])
