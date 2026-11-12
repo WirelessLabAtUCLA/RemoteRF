@@ -28,8 +28,8 @@ _DONE = {"SUCCEEDED", "ERROR", "CANCELLED"}
 
 
 class IntegrationError(RuntimeError):
-    def __init__(self, code):
-        super().__init__(code)
+    def __init__(self, code, message=None):
+        super().__init__(f"{code}: {message}" if message else code)
         self.code = code
 
 
@@ -57,7 +57,7 @@ class App:
     @property
     def actions(self):
         if self._actions is None:
-            described = self._radio.integration_describe({"integration_id": self._id})
+            described = self._rpc("integration_describe", {"integration_id": self._id})
             self.__dict__["_actions"] = tuple(described["integration"]["actions"])
         return self._actions
 
@@ -65,17 +65,31 @@ class App:
     def operation_id(self):
         return self._op
 
-    def _send(self, method, request):
-        # Same request (and key) on retry: the server attaches to the recorded outcome.
+    def _rpc(self, method, request):
+        """A server refusal carries details.integration_code; raise it as IntegrationError."""
         try:
             return getattr(self._radio, method)(request)
+        except Exception as exc:
+            details = getattr(exc, "details", None)
+            code = details.get("integration_code") if isinstance(details, dict) else None
+            if code:
+                raise IntegrationError(code, str(exc)) from exc
+            raise
+
+    def _send(self, method, request):
+        # Same request (and key) on retry: the server attaches to the recorded outcome.
+        # Only transport failures are retried; a refusal would just be refused again.
+        try:
+            return self._rpc(method, request)
+        except IntegrationError:
+            raise
         except Exception:
-            return getattr(self._radio, method)(request)
+            return self._rpc(method, request)
 
     def _poll(self, request, done, timeout_s):
         deadline = time.monotonic() + timeout_s
         while True:
-            snapshot = self._radio.integration_status(request)
+            snapshot = self._rpc("integration_status", request)
             if done(snapshot):
                 return snapshot
             if time.monotonic() >= deadline:
@@ -84,7 +98,7 @@ class App:
 
     def start(self, timeout_s=120.0, wait=True):
         if self._start is None:
-            generation = self._radio.integration_list({})["generation"]
+            generation = self._rpc("integration_list", {})["generation"]
             self.__dict__["_start"] = {"integration_id": self._id, "profile": self._profile,
                                        "configuration": dict(self._config),
                                        "request_key": uuid.uuid4().hex, "generation": generation}
@@ -99,7 +113,7 @@ class App:
         return snapshot
 
     def status(self):
-        return self._radio.integration_status({"operation_id": self._require()})
+        return self._rpc("integration_status", {"operation_id": self._require()})
 
     def _require(self):
         if self._op is None:
@@ -136,7 +150,7 @@ class App:
     def fetch(self, name):
         operation_id, data = self._require(), bytearray()
         while True:
-            chunk = self._radio.integration_fetch({"operation_id": operation_id, "artifact": name,
+            chunk = self._rpc("integration_fetch", {"operation_id": operation_id, "artifact": name,
                                                    "offset": len(data), "limit": MAX_FETCH_BYTES})
             raw = base64.b64decode(chunk["data"])
             data += raw
@@ -148,7 +162,7 @@ class App:
     def stop(self, timeout_s=120.0):
         if self._op is None:
             return None
-        self._radio.integration_stop({"operation_id": self._op})
+        self._rpc("integration_stop", {"operation_id": self._op})
         return self._poll({"operation_id": self._op}, lambda s: s["released"], timeout_s)
 
     def __enter__(self):

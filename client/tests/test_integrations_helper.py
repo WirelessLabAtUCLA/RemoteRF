@@ -140,3 +140,40 @@ def test_oai_subclasses_and_aliases():
     ue.attach(wait=False)
     assert ue._start["integration_id"] == "org.remoterf.oai" and ue._start["profile"] == "ue"
     ue.detach()
+
+
+class Refused(Exception):
+    """Shape of RemoteRFProtocolError for a server-side integration refusal."""
+
+    def __init__(self, code):
+        super().__init__("application integrations are disabled")
+        self.details = {"integration_code": code}
+
+
+def test_server_refusal_becomes_integration_error_without_retry():
+    radio = FakeRadio()
+
+    def refuse(request):
+        radio._record("integration_start", request)
+        raise Refused("integration_disabled")
+
+    radio.integration_start = refuse
+    with pytest.raises(IntegrationError) as caught:
+        OaiGnb(radio).start_cell(timeout_s=1)
+    assert caught.value.code == "integration_disabled"
+    assert "application integrations are disabled" in str(caught.value)
+    assert [m for m, _ in radio.requests].count("integration_start") == 1
+
+
+def test_refusal_on_status_poll_is_mapped_too():
+    radio = FakeRadio()
+    app = App(radio, "org.example.fake", "test")
+    app.start(timeout_s=1)
+
+    def refuse(request):
+        raise Refused("unknown_operation")
+
+    radio.integration_status = refuse
+    with pytest.raises(IntegrationError) as caught:
+        app.status()
+    assert caught.value.code == "unknown_operation"
