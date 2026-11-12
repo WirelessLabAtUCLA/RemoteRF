@@ -106,7 +106,7 @@ class Scope:
         return not self.alive
     def resource_failure(self):
         return self.failure
-    def stop(self):
+    def stop(self, timeout=None):
         self.alive = False
         return True
     def close(self):
