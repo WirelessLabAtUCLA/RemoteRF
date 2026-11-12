@@ -81,6 +81,7 @@ _TEXT = {
     "invalid_refresh_token": "Your saved login has expired; log in again.",
     "refresh_token_reused": "Your saved login was used somewhere else; log in again.",
     "rate_limited": ("Too many requests; try again in {retry_after} s.", "Too many requests; wait a minute and try again."),
+    "region_blocked": "RemoteRF isn't available in your region.",
     "invalid_email": "That email address isn't valid.",
     "invalid_username": "That username isn't allowed; pick another.",
     "invalid_password": "Password must be 6-128 characters.",

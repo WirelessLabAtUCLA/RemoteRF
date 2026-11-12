@@ -347,3 +347,16 @@ def test_no_user_facing_template_interpolates_an_id():
         found += [f"{path.name}:{n.lineno} {ast.unparse(n.value)}" for n in ast.walk(tree)
                   if isinstance(n, ast.FormattedValue) and n not in legacy and is_id.match(ast.unparse(n.value))]
     assert found == []
+
+
+def test_http_451_reads_as_region_blocked():
+    import httpx
+    from remoterf.deployment.http import JsonTransport
+    for body in (b"", b'{"error":{"code":"region_blocked"}}'):
+        transport = JsonTransport(
+            "https://home.example",
+            client=httpx.Client(transport=httpx.MockTransport(lambda _r, b=body: httpx.Response(451, content=b))),
+        )
+        with pytest.raises(AccountBackendError) as info:
+            transport.permissions("/v2/deployment/permissions", access="token")
+        assert explain(info.value) == "RemoteRF isn't available in your region."
