@@ -1,0 +1,590 @@
+{
+  "format": "remoterf-exact-build-radio-service-stop-bundle-1",
+  "authoritative_run": {
+    "activation_changed": false,
+    "checks": {
+      "pending_restart": {
+        "child_checks": {
+          "admission_closed_before_transport": true,
+          "application_rx": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "ready": true,
+            "received": 4096,
+            "serial": "32C78EE",
+            "uhd_version": "4.10.0.main-release"
+          },
+          "hardware_records": 0,
+          "native_rx_before": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "owned_cgroups": 0,
+          "process_records": 0,
+          "reexec_calls": 0,
+          "root_identity_verified": true,
+          "service_stopped": true,
+          "signal_handler_restored": true
+        },
+        "child_exit": 0,
+        "child_passed": true,
+        "cleanup": {
+          "hardware_records": 0,
+          "owned_cgroups": 0,
+          "process_records": 0,
+          "root_identity_verified": true
+        },
+        "native_reopen": {
+          "authority_after": {
+            "cache_active": true,
+            "cache_remaining_seconds": 1.3409247887320817,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285259.0141468
+          },
+          "authority_after_open": {
+            "cache_active": true,
+            "cache_remaining_seconds": 1.500544236972928,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285258.8545275
+          },
+          "authority_before": {
+            "cache_active": true,
+            "cache_remaining_seconds": 3.9275189330801368,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285256.4275525
+          },
+          "authority_before_open": {
+            "cache_active": true,
+            "cache_remaining_seconds": 3.9269416509196162,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285256.4281297
+          },
+          "open_seconds": 2.4269815399311483,
+          "phase": "complete",
+          "seconds": 2.586594282183796
+        },
+        "native_rx_after": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "phase": "complete",
+        "signal": "SIGTERM",
+        "stop_seconds": 0.2148537691682577,
+        "total_seconds": 11.101074210833758
+      },
+      "running": {
+        "child_checks": {
+          "admission_closed_before_transport": true,
+          "application_rx": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "ready": true,
+            "received": 4096,
+            "serial": "32C78EE",
+            "uhd_version": "4.10.0.main-release"
+          },
+          "hardware_records": 0,
+          "native_rx_before": {
+            "channel": 0,
+            "frequency": 100000000.0,
+            "gain": 0.0,
+            "rate": 1000000.0,
+            "received": 4096
+          },
+          "owned_cgroups": 0,
+          "process_records": 0,
+          "reexec_calls": 0,
+          "root_identity_verified": true,
+          "service_stopped": true,
+          "signal_handler_restored": true
+        },
+        "child_exit": 0,
+        "child_passed": true,
+        "cleanup": {
+          "hardware_records": 0,
+          "owned_cgroups": 0,
+          "process_records": 0,
+          "root_identity_verified": true
+        },
+        "native_reopen": {
+          "authority_after": {
+            "cache_active": true,
+            "cache_remaining_seconds": 1.093238104134798,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285247.9127028
+          },
+          "authority_after_open": {
+            "cache_active": true,
+            "cache_remaining_seconds": 1.2534652082249522,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285247.752476
+          },
+          "authority_before": {
+            "cache_active": true,
+            "cache_remaining_seconds": 2.9903445448726416,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285242.855358
+          },
+          "authority_before_open": {
+            "cache_active": true,
+            "cache_remaining_seconds": 2.9900305988267064,
+            "diagnostic_only": true,
+            "external_expires_at": 1794286800.0,
+            "observed_at": 1794285242.8556716
+          },
+          "open_seconds": 4.897109869401902,
+          "phase": "complete",
+          "seconds": 5.057336091063917
+        },
+        "native_rx_after": {
+          "channel": 0,
+          "frequency": 100000000.0,
+          "gain": 0.0,
+          "rate": 1000000.0,
+          "received": 4096
+        },
+        "phase": "complete",
+        "signal": "SIGTERM",
+        "stop_seconds": 0.1643463890068233,
+        "total_seconds": 13.444037789013237
+      }
+    },
+    "device_id": 40,
+    "external_reservation": {
+      "device_id": 40,
+      "expires_at": 1794286800.0,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+      "serial": "32C78EE"
+    },
+    "finished_at": 1794285259.0153978,
+    "format": "remoterf-usrp-service-stop-evidence-1",
+    "native_library_prewarm": {
+      "hardware_opened": false,
+      "modules": {
+        "numpy": "/home/prod-remoterf/miniconda3/envs/serverrf/lib/python3.12/site-packages/numpy/__init__.py",
+        "remoteRF_server.server.dynamic_v2": "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py",
+        "uhd": "/home/prod-remoterf/miniconda3/envs/serverrf/lib/python3.12/site-packages/uhd/__init__.py"
+      },
+      "seconds": 0.3972505237907171
+    },
+    "passed": true,
+    "public_rpc_or_startup_qualified": false,
+    "qualification_receipt_created": false,
+    "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+    "route": "isolated_internal_binding_and_actual_server_lifetime_no_listener",
+    "serial": "32C78EE",
+    "source_identity": {
+      "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+      "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+      "module_sha256": {
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+      },
+      "versions": {
+        "remoterf-device-core": "0.1.7.dev0",
+        "remoterf-example-usrp-probe": "0.1.0",
+        "remoterf-server": "1.7.23.dev0"
+      }
+    },
+    "stage": "complete",
+    "started_at": 1794285233.9699168,
+    "transmit": false
+  },
+  "child_running": {
+    "activation_changed": false,
+    "checks": {
+      "admission_closed_before_transport": true,
+      "application_rx": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "hardware_records": 0,
+      "native_rx_before": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "received": 4096
+      },
+      "owned_cgroups": 0,
+      "process_records": 0,
+      "reexec_calls": 0,
+      "root_identity_verified": true,
+      "service_stopped": true,
+      "signal_handler_restored": true
+    },
+    "device_id": 40,
+    "external_reservation": {
+      "device_id": 40,
+      "expires_at": 1794286800.0,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+      "serial": "32C78EE"
+    },
+    "finished_at": 1794285242.7345128,
+    "format": "remoterf-usrp-service-stop-evidence-1",
+    "native_library_prewarm": {
+      "hardware_opened": false,
+      "modules": {
+        "numpy": "/home/prod-remoterf/miniconda3/envs/serverrf/lib/python3.12/site-packages/numpy/__init__.py",
+        "remoteRF_server.server.dynamic_v2": "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py",
+        "uhd": "/home/prod-remoterf/miniconda3/envs/serverrf/lib/python3.12/site-packages/uhd/__init__.py"
+      },
+      "seconds": 0.33656798768788576
+    },
+    "passed": true,
+    "public_rpc_or_startup_qualified": false,
+    "qualification_receipt_created": false,
+    "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+    "route": "isolated_internal_binding_and_actual_server_lifetime_no_listener",
+    "serial": "32C78EE",
+    "source_identity": {
+      "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+      "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+      "module_sha256": {
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+      },
+      "versions": {
+        "remoterf-device-core": "0.1.7.dev0",
+        "remoterf-example-usrp-probe": "0.1.0",
+        "remoterf-server": "1.7.23.dev0"
+      }
+    },
+    "stage": "complete",
+    "started_at": 1794285234.5319395,
+    "transmit": false
+  },
+  "child_pending_restart": {
+    "activation_changed": false,
+    "checks": {
+      "admission_closed_before_transport": true,
+      "application_rx": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "hardware_records": 0,
+      "native_rx_before": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "received": 4096
+      },
+      "owned_cgroups": 0,
+      "process_records": 0,
+      "reexec_calls": 0,
+      "root_identity_verified": true,
+      "service_stopped": true,
+      "signal_handler_restored": true
+    },
+    "device_id": 40,
+    "external_reservation": {
+      "device_id": 40,
+      "expires_at": 1794286800.0,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+      "serial": "32C78EE"
+    },
+    "finished_at": 1794285256.291291,
+    "format": "remoterf-usrp-service-stop-evidence-1",
+    "native_library_prewarm": {
+      "hardware_opened": false,
+      "modules": {
+        "numpy": "/home/prod-remoterf/miniconda3/envs/serverrf/lib/python3.12/site-packages/numpy/__init__.py",
+        "remoteRF_server.server.dynamic_v2": "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py",
+        "uhd": "/home/prod-remoterf/miniconda3/envs/serverrf/lib/python3.12/site-packages/uhd/__init__.py"
+      },
+      "seconds": 0.375061159953475
+    },
+    "passed": true,
+    "public_rpc_or_startup_qualified": false,
+    "qualification_receipt_created": false,
+    "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+    "route": "isolated_internal_binding_and_actual_server_lifetime_no_listener",
+    "serial": "32C78EE",
+    "source_identity": {
+      "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+      "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+      "module_sha256": {
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+      },
+      "versions": {
+        "remoterf-device-core": "0.1.7.dev0",
+        "remoterf-example-usrp-probe": "0.1.0",
+        "remoterf-server": "1.7.23.dev0"
+      }
+    },
+    "stage": "complete",
+    "started_at": 1794285247.9892647,
+    "transmit": false
+  },
+  "independent_cleanup": {
+    "passed": true,
+    "observed_at": 1794285269.0467806,
+    "empty_ledgers": {
+      "running/processes/scopes.json": 0,
+      "running/ownership/ownership.json": 0,
+      "pending_restart/processes/scopes.json": 0,
+      "pending_restart/ownership/ownership.json": 0
+    },
+    "remaining_owned_scopes": 0,
+    "root_identity_verified": true,
+    "usb_device_node": "/dev/bus/usb/003/015",
+    "usb_owner_count": 0,
+    "production_pid": "359991"
+  },
+  "retained_initial_failed_run": {
+    "activation_changed": false,
+    "checks": {},
+    "device_id": 40,
+    "external_reservation": {
+      "device_id": 40,
+      "expires_at": 1794286800.0,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+      "serial": "32C78EE"
+    },
+    "failure": {
+      "code": "RemoteRFSessionExpiredError",
+      "type": "RemoteRFSessionExpiredError"
+    },
+    "finished_at": 1794284798.6159475,
+    "format": "remoterf-usrp-service-stop-evidence-1",
+    "passed": false,
+    "public_rpc_or_startup_qualified": false,
+    "qualification_receipt_created": false,
+    "recovery_required_before_guardian_release": true,
+    "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+    "route": "isolated_internal_binding_and_actual_server_lifetime_no_listener",
+    "serial": "32C78EE",
+    "source_identity": {
+      "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "harness_sha256": "bcea6cc568d3c714112e5c7fe923881fceffd3addea97f46b9c6f557ebe8a986",
+      "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+      "module_sha256": {
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+      },
+      "versions": {
+        "remoterf-device-core": "0.1.7.dev0",
+        "remoterf-example-usrp-probe": "0.1.0",
+        "remoterf-server": "1.7.23.dev0"
+      }
+    },
+    "stage": "running",
+    "started_at": 1794284783.7923388,
+    "transmit": false
+  },
+  "retained_initial_child": {
+    "activation_changed": false,
+    "checks": {
+      "admission_closed_before_transport": true,
+      "application_rx": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "hardware_records": 0,
+      "native_rx_before": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "received": 4096
+      },
+      "owned_cgroups": 0,
+      "process_records": 0,
+      "reexec_calls": 0,
+      "root_identity_verified": true,
+      "service_stopped": true,
+      "signal_handler_restored": true
+    },
+    "device_id": 40,
+    "external_reservation": {
+      "device_id": 40,
+      "expires_at": 1794286800.0,
+      "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+      "serial": "32C78EE"
+    },
+    "finished_at": 1794284792.4493458,
+    "format": "remoterf-usrp-service-stop-evidence-1",
+    "passed": true,
+    "public_rpc_or_startup_qualified": false,
+    "qualification_receipt_created": false,
+    "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1021",
+    "route": "isolated_internal_binding_and_actual_server_lifetime_no_listener",
+    "serial": "32C78EE",
+    "source_identity": {
+      "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+      "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+      "harness_sha256": "bcea6cc568d3c714112e5c7fe923881fceffd3addea97f46b9c6f557ebe8a986",
+      "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+      "module_sha256": {
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+        "/tmp/remoterf-phase1c-radio-final-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+      },
+      "versions": {
+        "remoterf-device-core": "0.1.7.dev0",
+        "remoterf-example-usrp-probe": "0.1.0",
+        "remoterf-server": "1.7.23.dev0"
+      }
+    },
+    "stage": "complete",
+    "started_at": 1794284783.9656837,
+    "transmit": false
+  },
+  "initial_failure_cleanup": {
+    "test_passed": false,
+    "cleanup_verified": true,
+    "observed_at": 1794285035.5361114,
+    "empty_ledgers": {
+      "running/processes/scopes.json": 0,
+      "running/ownership/ownership.json": 0
+    },
+    "remaining_owned_scopes": 0,
+    "root_identity_verified": true,
+    "usb_device_node": "/dev/bus/usb/003/015",
+    "usb_owner_count": 0,
+    "production_pid": "359991"
+  }
+}

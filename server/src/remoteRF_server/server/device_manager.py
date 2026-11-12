@@ -43,6 +43,9 @@ from ..host import host_tunnel_server as hts
 
 logger = logging.getLogger(__name__)
 
+from remoterf_device_core.hardware_access import AccessTable
+hardware_access = AccessTable()
+
 _state_lock = threading.RLock()
 _reservation_end_callbacks: list = []
 # token -> (gid, salt, hsh): see reservation_bridge_token()
@@ -926,21 +929,54 @@ def _start_host_reservation(device: VirtualDevice) -> None:
 
 
 def _prepare_for_holder(device_id: int, held: Tuple[str, str]) -> None:
-    """A reservation started: ready the device (a PoE Pluto boots) before the
-    holder's first call, which waits on io_lock for this same boot meanwhile."""
+    """Prepare only after verified previous release and for the current holder."""
+    from remoterf_device_core.integrations import IntegrationError
     with _state_lock:
         st = _devices.get(int(device_id))
     if st is None:
         return
+    retry = lambda: _prepare_for_holder(device_id, held)
     with st.io_lock:
-        _reset_locked(st)  # a back-to-back predecessor's power-down comes first
         with _state_lock:
             if _devices.get(int(device_id)) is not st or (st.salt, st.hsh) != held:
-                return  # the reservation is already over: leave the device off
+                return
+        if _native_cleanup_pending(device_id):
+            _after_native_cleanup(device_id, "prepare", retry)
+            return
         try:
-            st.dev.prepare_for_holder()
+            with hardware_access.native(device_id):
+                _reset_locked(st)
+                st.dev.prepare_for_holder()
+        except IntegrationError as exc:
+            if exc.code != "device_owned":
+                raise
+            _after_native_cleanup(device_id, "prepare", retry)
         except Exception as exc:
             print(f"Warning: preparing {st.name or st.ident} for its reservation failed: {exc}")
+
+
+_deferred_native_hooks = {}
+
+
+def _after_native_cleanup(gid, kind, action):
+    from remoterf_device_core.native_lifetime import submit_cleanup
+    key = (int(gid), kind)
+    with _state_lock:
+        already = key in _deferred_native_hooks
+        _deferred_native_hooks[key] = action
+    if already:
+        return
+    def run():
+        with _state_lock:
+            latest = _deferred_native_hooks.pop(key)
+        latest()
+    submit_cleanup(lambda: not _native_cleanup_pending(gid), run)
+
+
+def _native_cleanup_pending(gid):
+    # Import lazily: device inventory is loaded before the session runtime.
+    from .dynamic_v2 import session_manager
+    return session_manager.cleanup_pending(gid) or hardware_access.blocked(gid)
 
 
 def _reset_locked(st: _DeviceState) -> None:
@@ -958,11 +994,26 @@ def _reset_locked(st: _DeviceState) -> None:
 
 
 def _reset_if_pending(device_id: int) -> None:
+    from remoterf_device_core.integrations import IntegrationError
     with _state_lock:
         st = _devices.get(int(device_id))
-    if st is not None:
-        with st.io_lock:
-            _reset_locked(st)
+    if st is None:
+        return
+    retry = lambda: _reset_if_pending(device_id)
+    with st.io_lock:
+        with _state_lock:
+            if _devices.get(int(device_id)) is not st:
+                return
+        if _native_cleanup_pending(device_id):
+            _after_native_cleanup(device_id, "reset", retry)
+            return
+        try:
+            with hardware_access.native(device_id):
+                _reset_locked(st)
+        except IntegrationError as exc:
+            if exc.code != "device_owned":
+                raise
+            _after_native_cleanup(device_id, "reset", retry)
 
 
 def reservation_bridge_token(device_id: int, expect=None) -> str:
@@ -1013,6 +1064,8 @@ def get_local_device_context(device_id: int) -> dict[str, Any] | None:
             "ident": st.ident,
             "name": st.name,
             "reserved": bool(st.salt or st.hsh),
+            "io_lock": st.io_lock,
+            "prepare": lambda: _reset_if_pending(int(device_id)),
         }
 
 
@@ -1086,7 +1139,8 @@ def device_is_available(device_id: int) -> bool:
         st = _devices.get(int(device_id))
         if not st or not _is_connected(st):
             return False
-        return (st.salt == "") and (st.hsh == "")
+        available = (st.salt == "") and (st.hsh == "")
+    return available and not hardware_access.blocked(device_id) and not _native_cleanup_pending(device_id)
 
 def get_device_by_id(device_id: int):
     _sync_host_devices()
@@ -1370,8 +1424,11 @@ def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
 
     lock.acquire()
     try:
-        _reset_locked(st)
-        yield int(gid), dev
+        with hardware_access.native(gid):
+            if _native_cleanup_pending(gid):
+                raise RuntimeError("previous native cleanup is still in progress")
+            _reset_locked(st)
+            yield int(gid), dev
     finally:
         lock.release()
 
@@ -1398,8 +1455,11 @@ def acquire_device_by_gid(gid: int) -> Iterator[Tuple[int, object]]:
 
     lock.acquire()
     try:
-        _reset_locked(st)
-        yield int(gid), dev
+        with hardware_access.native(gid):
+            if _native_cleanup_pending(gid):
+                raise RuntimeError("previous native cleanup is still in progress")
+            _reset_locked(st)
+            yield int(gid), dev
     finally:
         lock.release()
 
@@ -1476,6 +1536,19 @@ _reload_lock = threading.Lock()
 
 
 def _reload_devices_locked(on_device=None) -> None:
+    from .dynamic_v2 import session_manager
+    session_manager.integrations.validate_inventory(_load_device_records())
+    with _state_lock:
+        gids = [gid for gid, st in _devices.items() if st.origin == "local" and st.dev is not None]
+    with hardware_access.maintenance(gids):
+        for gid in gids:
+            session_manager.close_gid(gid)
+        if any(session_manager.cleanup_pending(gid) for gid in gids):
+            raise RuntimeError("native cleanup is still in progress; retry reload after it finishes")
+        _reload_devices_unfenced(on_device)
+
+
+def _reload_devices_unfenced(on_device=None) -> None:
     # ponytail: reconnects every local device, not just the changed one;
     # diff against the current table if a reload mid-session ever hurts.
     records = _load_device_records()
@@ -1510,7 +1583,10 @@ def _reload_devices_locked(on_device=None) -> None:
 
         if on_device is not None:
             on_device(int(gid), name)
-        dev, ident2, dtype2 = _connect_from_record(rec)
+        if hardware_access.gate(gid).snapshot()['owner'] is not None:
+            dev, ident2, dtype2 = _connect_from_record(rec, connect=False)
+        else:
+            dev, ident2, dtype2 = _connect_from_record(rec)
 
         tmp_info[int(gid)] = name
         if ident:
@@ -1573,14 +1649,49 @@ def _close_schema(schema) -> bool:
 
 
 def close_local_devices() -> int:
-    """Release server-owned native handles during an orderly shutdown."""
+    """Request inventory cleanup, returning the number completed within 0.5s.
+
+    A stuck driver must not prevent attempts for other devices or close an
+    inventory handle while a native call/application still owns the hardware.
+    """
+    from remoterf_device_core.native_lifetime import submit_cleanup
+    from remoterf_device_core.integrations import IntegrationError
     with _state_lock:
-        schemas = [
-            state.dev
-            for state in _devices.values()
+        states = [
+            (gid, state)
+            for gid, state in _devices.items()
             if state.origin == "local" and state.dev is not None
         ]
-    return sum(_close_schema(schema) for schema in schemas)
+    completed = []
+    jobs = []
+    def close(gid, state):
+        try:
+            with state.io_lock:
+                if _native_cleanup_pending(gid):
+                    _after_native_cleanup(gid, "shutdown", lambda: close(gid, state))
+                    return
+                with hardware_access.gate(gid).maintenance():
+                    completed.append(_close_schema(state.dev))
+        except IntegrationError:
+            # Admission changed between readiness and execution. Retain
+            # this schema and retry only after the new owner has drained.
+            _after_native_cleanup(gid, "shutdown", lambda: close(gid, state))
+
+    for gid, state in states:
+        if getattr(state.dev, "device", None) is None:
+            continue
+        def schedule(gid=gid, state=state):
+            return submit_cleanup(lambda: not _native_cleanup_pending(gid)
+                                  and not hardware_access.gate(gid).snapshot()["active_native"],
+                                  lambda: close(gid, state))
+        try:
+            jobs.append(schedule())
+        except Exception:
+            logger.exception("could not schedule inventory cleanup for device %s", gid)
+    deadline = time.monotonic() + 0.5
+    for job in jobs:
+        job.done.wait(max(0.0, deadline - time.monotonic()))
+    return sum(completed)
 
 def set_pluto(ip: str = "192.168.2.1"):
     # kept for compatibility (no-op)

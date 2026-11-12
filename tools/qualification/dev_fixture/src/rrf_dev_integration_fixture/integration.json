@@ -1,0 +1,9 @@
+{
+  "id": "org.remoterf.dev_fixture",
+  "version": "0.1.3",
+  "contract_version": "0.1",
+  "factory": "rrf_dev_integration_fixture:create_adapter",
+  "device_types": ["usrp"],
+  "profiles": ["test"],
+  "actions": ["echo", "health"]
+}

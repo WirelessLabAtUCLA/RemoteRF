@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -28,9 +28,13 @@ from ..common.idl.schema import load_builtin_drivers
 from ..common.utils import get_devices_config_path, get_drivers_dir
 from ..common.utils.host_logging import error, warn
 
+from remoterf_device_core.hardware_access import AccessTable
+hardware_access = AccessTable()
+
 _state_lock = threading.RLock()
 _reservation_end_callbacks: list = []
-_reservation_hooks: Dict[int, ThreadPoolExecutor] = {}
+_reservation_hooks: Dict[int, Future] = {}
+_reservation_hook_counts: Dict[int, int] = {}
 _HOST_BRIDGE_TOKEN_PREFIX = "__remoterf_host_v2_gid__:"
 
 
@@ -41,6 +45,7 @@ class _DeviceState:
     ident: str
     dtype: str
     init: Dict[str, Any]
+    io_lock: threading.RLock = field(default_factory=threading.RLock)
 
 
 _devices: Dict[int, _DeviceState] = {}
@@ -320,6 +325,23 @@ def reload_devices(*, force: bool = False) -> bool:
 
 
 def _reload_devices_locked(*, force: bool) -> bool:
+    with _state_lock:
+        if not force and _loaded_signature == _reload_signature():
+            return False
+    with _state_lock:
+        gids = list(_devices)
+    if not gids:  # first inventory load, before dynamic_v2 can be imported
+        return _reload_devices_unfenced(force=force)
+    from .dynamic_v2 import session_manager
+    with hardware_access.maintenance(gids):
+        for gid in gids:
+            session_manager.close_gid(gid)
+        if any(session_manager.cleanup_pending(gid) for gid in gids):
+            raise RuntimeError("native cleanup is still in progress; retry reload after it finishes")
+        return _reload_devices_unfenced(force=force)
+
+
+def _reload_devices_unfenced(*, force: bool) -> bool:
     global _loaded_signature
 
     sig = _reload_signature()
@@ -502,6 +524,7 @@ def get_local_device_context(device_id: int) -> dict[str, Any] | None:
             "ident": st.ident,
             "name": st.name,
             "reserved": True,
+            "io_lock": st.io_lock,
         }
 
 
@@ -515,24 +538,49 @@ def register_reservation_end_callback(callback) -> None:
 
 
 def _run_hook(gid: int, name: str, failed: str) -> Optional[Future]:
-    """Queue a device's reservation hook on its own worker: hooks for one device
-    run in arrival order, and a boot that takes seconds never holds up the tunnel."""
+    """Bounded, ordered hooks; waiting for native cleanup consumes no worker."""
+    from remoterf_device_core.native_lifetime import submit_cleanup
+    from .dynamic_v2 import session_manager
     with _state_lock:
         st = _devices.get(gid)
         hook = getattr(st.schema if st else None, name, None)
         if not callable(hook):
             return None
-        worker = _reservation_hooks.get(gid)
-        if worker is None:
-            worker = _reservation_hooks[gid] = ThreadPoolExecutor(1, thread_name_prefix=f"hostrf-gid{gid}")
+        if _reservation_hook_counts.get(gid, 0) >= 64:
+            raise RuntimeError("device reservation hook queue is full")
+        previous = _reservation_hooks.get(gid)
+        future = Future()
+        _reservation_hooks[gid] = future
+        _reservation_hook_counts[gid] = _reservation_hook_counts.get(gid, 0) + 1
 
-    def run() -> None:
+    def run():
         try:
-            hook()
-        except Exception as e:
-            warn(f"{failed} gid={gid} failed: {e}", component="hostrf.device_manager")
+            with _state_lock:
+                current = _devices.get(gid) is st
+            if current:
+                with st.io_lock, hardware_access.native(gid):
+                    hook()
+        except BaseException as exc:
+            warn(f"{failed} gid={gid} failed: {exc}", component="hostrf.device_manager")
+        finally:
+            with _state_lock:
+                count = _reservation_hook_counts[gid] - 1
+                if count:
+                    _reservation_hook_counts[gid] = count
+                else:
+                    _reservation_hook_counts.pop(gid, None)
+            future.set_result(None)
 
-    return worker.submit(run)
+    try:
+        submit_cleanup(lambda: (previous is None or previous.done()) and not session_manager.cleanup_pending(gid), run)
+    except BaseException as exc:
+        # Keep the failed tail observable and let later hooks advance. No native
+        # action has run; callers see overload instead of a false success.
+        with _state_lock:
+            _reservation_hook_counts[gid] -= 1
+        future.set_exception(exc)
+        raise
+    return future
 
 
 def prepare_reservation(device_id: int | str) -> Optional[Future]:

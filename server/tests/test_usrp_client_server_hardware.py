@@ -44,16 +44,16 @@ def _add_client_source() -> None:
         Path(__file__).resolve().parents[2] / "client" / "src"
     )
     for candidate in candidates:
-        if (candidate / "remoteRF").is_dir():
+        if (candidate / "remoterf").is_dir():
             sys.path.insert(0, str(candidate.resolve()))
             return
 
 
 _add_client_source()
 try:
-    from remoteRF.common.grpc import grpc_pb2_grpc as client_grpc
-    from remoteRF.core.dynamic_v2_transport import DynamicV2Transport
-    from remoteRF.drivers.dynamic_v2 import build_uhd_bindings
+    from remoterf.common.grpc import grpc_pb2_grpc as client_grpc
+    from remoterf.core.dynamic_v2_transport import DynamicV2Transport
+    from remoterf.drivers.dynamic_v2 import build_uhd_bindings
 except (ImportError, RuntimeError) as exc:
     _CLIENT_IMPORT_ERROR = exc
 else:

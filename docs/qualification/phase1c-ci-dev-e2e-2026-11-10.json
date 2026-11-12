@@ -1,0 +1,148 @@
+{
+  "cli_smoke": {
+    "descendant_help": "exit0",
+    "descendant_invalid_serial": "exit2, refused before helper/account/native access"
+  },
+  "format": "remoterf-phase1c-dev-e2e-ci-summary-1",
+  "hardware_used": false,
+  "host": "ci-box",
+  "identity": {
+    "all_installed_package_files_matched": true,
+    "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+    "installed_package_files_matched": 209,
+    "python": "3.12.16 (main, Oct 26 2026, 14:08:45) [Clang 23.1.3 ]",
+    "python_executable": "/tmp/remoterf-phase1c-cold-auth-20261109/env/bin/python",
+    "socket_client_source": "/tmp/remoterf-phase1c-cold-auth-20261109/client-src",
+    "versions": {
+      "remoterf-device-core": "0.1.7.dev0",
+      "remoterf-example-usrp-probe": "0.1.0",
+      "remoterf-server": "1.7.23.dev0"
+    },
+    "wheels": {
+      "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": {
+        "installed_package_files_matched": 79,
+        "sha256": "9d3b88258c7a6298c460f50468a6385bc59d64c72e763dcb21719d230e331d97"
+      },
+      "remoterf_example_usrp_probe-0.1.0-py3-none-any.whl": {
+        "installed_package_files_matched": 3,
+        "sha256": "e6894b585afcf6a769ec8f9112f60a509eb18521568820fa21907780b152c784"
+      },
+      "remoterf_server-1.7.23.dev0-py3-none-any.whl": {
+        "installed_package_files_matched": 127,
+        "sha256": "f9b382782d457bb7197c22b1bc77f310075d103ea5a688f9f4923d1249397d4e"
+      }
+    }
+  },
+  "observed_at": 1794340162.0498948,
+  "passed": true,
+  "prior_result_superseded": "27,35,39 descendant/receipt tests passed before pidfd fallback, manager/runner containment and post-pidfd liveness cases; final40 above is authoritative. Client20 became21 after explicit current-uid USB visibility validation.",
+  "production_changed": false,
+  "scope": "focused qualification and existing UHD real-localhost-socket regression; fake radio resources",
+  "source_sha256": {
+    "existing_socket_test": "a01c1755ad3c5ff85857cdce731aaf7606d88c9ae77d7dc199dbbfe7eb37d101",
+    "socket_client_dynamic_v2_transport": "3adc652328616c6e9349f1cf4f54cbfed8dcd1113919d4091d0506041b0d9388",
+    "tools/qualification/tests/test_integration_controller.py": "9ccb32d7605e997052a4a85fbc3a928eed0a7c76148b441011652e3784b5e505",
+    "tools/qualification/tests/test_integration_deployment.py": "7743da2695c74f77600a0407cb0b3cf2d3b4976257a0ab238b8e8ec3820e481d",
+    "tools/qualification/tests/test_native_lifetime.py": "3cbb54264b3ec28d51f56549c9f6103bce8afae79c5d88b4b4e47f8bbf941ef9",
+    "tools/qualification/tests/test_usrp_dev_e2e.py": "276727206ca7734d5fd83c4be60c8826de9692932052c3a07213a865e15d68af",
+    "tools/qualification/tests/test_usrp_e2e_descendants.py": "a609ce034bc445b42b3dcd7b8b89d36549f67448ba52c666e05734c661d6873c",
+    "tools/qualification/tests/test_usrp_e2e_receipt.py": "1b934342e7f7e69f82a1e147140e4b6ba88592f51966ea6e6f33de9d392a1761",
+    "tools/qualification/usrp_dev_e2e.py": "8f223814cff360cca550e9ecd8e37d9ba3c0456968dd28146e160eedad3ebb55",
+    "tools/qualification/usrp_e2e_descendants.py": "89b3e504955b6ffe616bc022e9ada1e011cd9609876f28a47a74781ee85f68f3",
+    "tools/qualification/usrp_e2e_receipt.py": "31e8c804e177d22fbfc1dee204383940c4c9e27b32d46f0383cb2a7e55698e26"
+  },
+  "tests": {
+    "controller_receipt_native_preservation": {
+      "command": [
+        "/tmp/remoterf-phase1c-cold-auth-20261109/env/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tools/qualification/tests/test_integration_deployment.py",
+        "tools/qualification/tests/test_integration_controller.py",
+        "-k",
+        "unqualified_or_broken_optional_adapter_never_releases_native or all_receipt_fields_and_checks_required or receipt or missing_or_broken_optional_packages_leave_disabled_raw_configuration"
+      ],
+      "deselected": 72,
+      "environment": {
+        "REMOTERF_CONFIG_DIR": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/private-config",
+        "REMOTERF_USRP_PRELOAD": "0",
+        "XDG_CACHE_HOME": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/private-cache",
+        "XDG_CONFIG_HOME": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/private-xdg",
+        "XDG_DATA_HOME": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/private-data"
+      },
+      "errors": 0,
+      "failed": 0,
+      "observed_stdout": "21 passed, 72 deselected in 0.44s",
+      "passed": 21,
+      "result_source": "captured successful SSH tool result from this review; no rerun solely for XML",
+      "skipped": 0
+    },
+    "descendant_and_receipt": {
+      "command": [
+        "/tmp/remoterf-phase1c-cold-auth-20261109/env/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tools/qualification/tests/test_usrp_e2e_descendants.py",
+        "tools/qualification/tests/test_usrp_e2e_receipt.py",
+        "--junitxml=/tmp/remoterf-phase1c-e2e-offline-review-20261110/descendants-receipt.xml"
+      ],
+      "environment": {},
+      "errors": 0,
+      "failed": 0,
+      "junit_path": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/descendants-receipt.xml",
+      "junit_sha256": "2c6d3c0a3e565467525eaf65764a8d7de1f1c40a8b6b3e519d5b75b17aabaafa",
+      "passed": 40,
+      "seconds": 0.18,
+      "skipped": 0
+    },
+    "dev_client_runner": {
+      "command": [
+        "/tmp/remoterf-phase1c-cold-auth-20261109/env/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tools/qualification/tests/test_usrp_dev_e2e.py",
+        "--junitxml=/tmp/remoterf-phase1c-e2e-offline-review-20261110/dev-client.xml"
+      ],
+      "environment": {
+        "PYTHONPATH": "/tmp/remoterf-phase1c-cold-auth-20261109/client-src"
+      },
+      "errors": 0,
+      "failed": 0,
+      "junit_path": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/dev-client.xml",
+      "junit_sha256": "109b249d8dcf4d16540c4662d6a18571b0fb556bed5018b439436f45abb2d730",
+      "passed": 21,
+      "seconds": 0.034,
+      "skipped": 0
+    },
+    "required_existing_uhd_socket": {
+      "command": [
+        "/tmp/remoterf-phase1c-cold-auth-20261109/env/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "/tmp/remoterf-phase1c-cold-auth-20261109/tests/test_usrp_client_server_localhost.py",
+        "--junitxml=/tmp/remoterf-phase1c-e2e-offline-review-20261110/required-uhd-socket.xml"
+      ],
+      "environment": {
+        "REMOTERF_CLIENT_SRC": "/tmp/remoterf-phase1c-cold-auth-20261109/client-src",
+        "REMOTERF_CONFIG_DIR": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/socket-config",
+        "REMOTERF_USRP_PRELOAD": "0",
+        "XDG_CACHE_HOME": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/socket-cache",
+        "XDG_CONFIG_HOME": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/socket-xdg",
+        "XDG_DATA_HOME": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/socket-data"
+      },
+      "errors": 0,
+      "failed": 0,
+      "junit_path": "/tmp/remoterf-phase1c-e2e-offline-review-20261110/required-uhd-socket.xml",
+      "junit_sha256": "449e8a58c2fc2557bddb529363d321c062eb2deb92c227a833e08596d3c93090",
+      "passed": 1,
+      "seconds": 0.53,
+      "skipped": 0
+    }
+  },
+  "total_current_passed": 83,
+  "working_directory": "/tmp/remoterf-phase1c-e2e-offline-review-20261110"
+}

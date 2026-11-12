@@ -162,6 +162,13 @@ def _run_one(row: dict, init: dict, display: _Display, log_fd: int, left_after: 
     typical = [_typical(t[1], st.dev) for t in mod.TESTS] + ([restore_s[0]] if teardown else [])
     started_at = time.monotonic()
     ran = False
+    access = []
+    access_lock = threading.Lock()
+
+    def release_access():
+        with access_lock:
+            if access:
+                access.pop().__exit__(None, None, None)
 
     def step(i: int, name: str, timeout: float, fn, step_ctx: dict) -> bool:
         """Run one test; True when it timed out."""
@@ -204,6 +211,9 @@ def _run_one(row: dict, init: dict, display: _Display, log_fd: int, left_after: 
         if reason:
             row["status"] = f"skipped: {reason}"
             return
+        ticket = dm.hardware_access.native(gid)
+        ticket.__enter__()
+        access.append(ticket)
         ran = True
         dm._reset_locked(st)
         halted = None
@@ -232,6 +242,7 @@ def _run_one(row: dict, init: dict, display: _Display, log_fd: int, left_after: 
 
                 def _release(_f, fs=wedged):
                     if all(f.done() for f in fs):
+                        release_access()
                         dm.diag_release(gid)
 
                 for f in wedged:
@@ -239,6 +250,7 @@ def _run_one(row: dict, init: dict, display: _Display, log_fd: int, left_after: 
                 row["tests"].append({"name": "release", "status": "fail",
                                      "detail": "a test is still running; clients stay refused until it ends"})
             else:
+                release_access()
                 dm.diag_release(gid)
             st.io_lock.release()
             _flush_all()

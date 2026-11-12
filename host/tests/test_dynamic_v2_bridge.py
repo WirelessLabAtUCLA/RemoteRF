@@ -574,7 +574,7 @@ class RXPrefetchTests(unittest.TestCase):
 
         streamer = StreamingRX()
         entry = self.entry(value=streamer, stream_channels=[0], cpu_format="fc32")
-        session = types.SimpleNamespace(closed=False)
+        session = types.SimpleNamespace(closed=False, gid=7, lifecycle_lock=threading.RLock())
         fake_uhd = types.SimpleNamespace(
             types=types.SimpleNamespace(RXMetadata=FakeRXMetadata)
         )
@@ -606,7 +606,7 @@ class RXPrefetchTests(unittest.TestCase):
                 return buffer.shape[-1]
 
         entry = self.entry(value=SlowRX(), stream_channels=[0], cpu_format="fc32")
-        session = types.SimpleNamespace(closed=False)
+        session = types.SimpleNamespace(closed=False, gid=7, lifecycle_lock=threading.RLock())
         fake_uhd = types.SimpleNamespace(
             types=types.SimpleNamespace(RXMetadata=FakeRXMetadata)
         )

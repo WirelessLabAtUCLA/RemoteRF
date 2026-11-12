@@ -22,6 +22,8 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from contextlib import contextmanager
+import signal
 
 # os.system('clear')
 
@@ -237,35 +239,44 @@ class ServerRuntime:
             self._stopped = True
             self.stop_event.set()
 
-        termination = self.grpc_server.stop(max(0.0, float(grace_sec)))
+        def cleanup(name, action):
+            try:
+                action()
+            except Exception:
+                logger.exception("shutdown cleanup failed: %s", name)
+
+        # Fence direct and relayed admission before waiting for transport drain.
+        # Already admitted native calls retain their resources until they finish.
+        cleanup("native sessions", lambda: session_manager.close_all(stop_admission=True))
         try:
+            termination = self.grpc_server.stop(max(0.0, float(grace_sec)))
             termination.wait(timeout=max(1.0, float(grace_sec) + 2.0))
         finally:
-            transport_counters.flush(force=True)
+            cleanup("transport counters", lambda: transport_counters.flush(force=True))
             if direct_path is not None:
-                direct_path.shutdown()
-            session_manager.close_all()
-            host_session_proxy.close_all()
-            close_local_devices()
+                cleanup("direct paths", direct_path.shutdown)
+            cleanup("host sessions", host_session_proxy.close_all)
+            cleanup("inventory devices", close_local_devices)
+            cleanup("application runtime", session_manager.integrations.close)
             if self.cert_server is not None:
-                stop_cert_provider(self.cert_server)
+                cleanup("certificate provider", lambda: stop_cert_provider(self.cert_server))
             if (
                 self.update_thread is not None
                 and self.update_thread.is_alive()
                 and self.update_thread is not threading.current_thread()
             ):
-                self.update_thread.join(timeout=2.0)
+                cleanup("update thread", lambda: self.update_thread.join(timeout=2.0))
             if self.control_server is not None:
-                self.control_server.stop()
+                cleanup("control server", self.control_server.stop)
                 self.control_server = None
             if self.writer_lock is not None:
-                self.writer_lock.close()
+                cleanup("writer lock", self.writer_lock.close)
                 self.writer_lock = None
             close_permissions = getattr(self.federation_permissions, "close", None)
             if close_permissions is not None:
-                close_permissions()
+                cleanup("permissions", close_permissions)
             if self.federation_devices is not None:
-                self.federation_devices.close()
+                cleanup("federation devices", self.federation_devices.close)
 
 
 def _load_server_credentials(cert_dir: Path):
@@ -311,6 +322,8 @@ def start_server_runtime(
     home_federation_enroller: Any = None,
     home_federation_permissions: Any = None,
 ) -> ServerRuntime:
+    global _runtime
+    previous_runtime = _runtime
     bind_host = str(bind_host or local_ip)
     grpc_port = int(local_port if grpc_port is None else grpc_port)
     certificate_port = int(
@@ -423,7 +436,13 @@ def start_server_runtime(
     cert_server = None
     stop_event = threading.Event()
     update_thread = None
+    control_server = None
     try:
+        session_manager.resume_admission()
+        from .integration_controller import initialize as initialize_integrations
+        from . import device_manager as integration_devices
+        initialize_integrations(session_manager, integration_devices.hardware_access,
+                                integration_devices._load_device_records(), integration_devices.get_remoterf_root())
         cert_server, _cert_thread = start_cert_provider(
             host=bind_host,
             port=certificate_port,
@@ -454,45 +473,57 @@ def start_server_runtime(
             )
             update_thread.start()
             start_usergroup_cleanup_loop(interval_sec=60)
+        from .control import ControlServer
+
+        control_server = ControlServer(control_handler)
+        try:
+            control_server.start()
+        except OSError as exc:
+            logger.warning("control socket unavailable: %s", exc)
+            control_server = None
+        _runtime = ServerRuntime(
+            grpc_server=server,
+            cert_server=cert_server,
+            stop_event=stop_event,
+            update_thread=update_thread,
+            bind_host=bind_host,
+            grpc_port=int(bound_grpc_port),
+            cert_port=int(cert_server.server_address[1]),
+            writer_lock=writer_lock,
+            federation_permissions=home_federation_permissions,
+            federation_devices=home_federation_devices,
+            control_server=control_server,
+        )
+        return _runtime
     except BaseException:  # Ctrl-C during the startup check too: close_local_devices powers Plutos down
         stop_event.set()
-        server.stop(0)
-        session_manager.close_all()
-        host_session_proxy.close_all()
-        close_local_devices()
+        def cleanup(name, action):
+            try:
+                action()
+            except BaseException:
+                # Preserve the startup exception, including Ctrl-C. A failed
+                # native close must not skip other radios or ownership locks.
+                logger.exception("startup cleanup failed: %s", name)
+
+        cleanup("transport", lambda: server.stop(0))
+        if direct_path is not None:
+            cleanup("direct paths", direct_path.shutdown)
+        cleanup("native sessions", lambda: session_manager.close_all(stop_admission=True))
+        cleanup("host sessions", host_session_proxy.close_all)
+        cleanup("inventory devices", close_local_devices)
+        cleanup("application runtime", session_manager.integrations.close)
         if cert_server is not None:
-            stop_cert_provider(cert_server)
+            cleanup("certificate provider", lambda: stop_cert_provider(cert_server))
         close_permissions = getattr(home_federation_permissions, "close", None)
         if close_permissions is not None:
-            close_permissions()
+            cleanup("permissions", close_permissions)
         if home_federation_devices is not None:
-            home_federation_devices.close()
-        writer_lock.close()
+            cleanup("federation devices", home_federation_devices.close)
+        if control_server is not None:
+            cleanup("control server", control_server.stop)
+        cleanup("writer lock", writer_lock.close)
+        _runtime = previous_runtime
         raise
-
-    from .control import ControlServer
-
-    control_server = ControlServer(control_handler)
-    try:
-        control_server.start()
-    except OSError as exc:
-        logger.warning("control socket unavailable: %s", exc)
-        control_server = None
-    global _runtime
-    _runtime = ServerRuntime(
-        grpc_server=server,
-        cert_server=cert_server,
-        stop_event=stop_event,
-        update_thread=update_thread,
-        bind_host=bind_host,
-        grpc_port=int(bound_grpc_port),
-        cert_port=int(cert_server.server_address[1]),
-        writer_lock=writer_lock,
-        federation_permissions=home_federation_permissions,
-        federation_devices=home_federation_devices,
-        control_server=control_server,
-    )
-    return _runtime
 
 
 def update_devices(stop_event: threading.Event) -> None:
@@ -506,14 +537,61 @@ def update_devices(stop_event: threading.Event) -> None:
             )
 
 
-def serve() -> None:
-    runtime = start_server_runtime()
+class _TerminationRequested(BaseException):
+    """Unwind service startup/run without being swallowed by command handlers."""
+
+
+@dataclass
+class _ServiceLifetime:
+    runtime: ServerRuntime | None = None
+    terminating: bool = False
+    stopping: bool = False
+
+
+@contextmanager
+def _service_lifetime():
+    """Main-thread SIGTERM uses the same bounded cleanup as ordinary shutdown.
+
+    The signal handler performs no IO or cleanup. Repeated SIGTERM cannot
+    interrupt cleanup, and embedders running off the main thread retain control
+    of their own process signals. SIGINT/interactive-console behavior is kept.
+    """
+    lifetime = _ServiceLifetime()
+    previous_runtime = _runtime
+    previous_handler = None
+    installed = threading.current_thread() is threading.main_thread()
+    def terminate(signum, frame):
+        if not lifetime.terminating:
+            lifetime.terminating = True
+            # Finish cleanup uninterrupted, but suppress a pending restart
+            # even when the first TERM arrives after cleanup has begun.
+            if not lifetime.stopping:
+                raise _TerminationRequested()
+    if installed:
+        previous_handler = signal.signal(signal.SIGTERM, terminate)
     try:
-        runtime.wait()
-    except KeyboardInterrupt:
+        yield lifetime
+    except (_TerminationRequested, KeyboardInterrupt):
         pass
     finally:
-        runtime.stop()
+        lifetime.stopping = True
+        try:
+            # Cover a signal after startup publishes the runtime but before the
+            # caller stores its return value. Failed startup restores the old one.
+            runtime = lifetime.runtime
+            if runtime is None and _runtime is not previous_runtime:
+                runtime = _runtime
+            if runtime is not None:
+                runtime.stop()
+        finally:
+            if installed:
+                signal.signal(signal.SIGTERM, previous_handler)
+
+
+def serve() -> None:
+    with _service_lifetime() as service:
+        service.runtime = start_server_runtime()
+        service.runtime.wait()
 
 start_time = datetime.now()
 
@@ -1530,10 +1608,10 @@ def cmd_restart(argv):
 def main() -> int:
     from . import console
 
-    runtime = start_server_runtime()
-    start_agent()  # after the devices are open: its first status report lists them
-    welcome()
-    try:
+    with _service_lifetime() as service:
+        service.runtime = start_server_runtime()
+        start_agent()  # after the devices are open: its first status report lists them
+        welcome()
         while True:
             try:
                 if not server_input(session.prompt(stylize("serverrf> ", Sty.BOLD))):
@@ -1545,25 +1623,19 @@ def main() -> int:
                 printf("Server keeps running. Type ", Sty.GRAY, "quit", Sty.MAGENTA,
                        " to stop it; ", Sty.GRAY, "serverrf -s", Sty.MAGENTA, " to come back.", Sty.GRAY)
                 console.detach()
-    finally:
-        runtime.stop()
-    if _exit_action == "restart":
+    if _exit_action == "restart" and not service.terminating:
         _reexec()
     printf("Stopped the RemoteRF server background process.", Sty.GRAY)
     return 0
 
 
 def headless_main() -> int:
-    runtime = start_server_runtime()
-    start_agent()  # after the devices are open: its first status report lists them
-    welcome()
-    try:
-        runtime.wait()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        runtime.stop()
-    if _exit_action == "restart":
+    with _service_lifetime() as service:
+        service.runtime = start_server_runtime()
+        start_agent()  # after the devices are open: its first status report lists them
+        welcome()
+        service.runtime.wait()
+    if _exit_action == "restart" and not service.terminating:
         _reexec()
     printf("Stopped the RemoteRF server background process.", Sty.GRAY)
     return 0

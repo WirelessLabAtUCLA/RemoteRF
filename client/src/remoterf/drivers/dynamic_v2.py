@@ -876,6 +876,12 @@ def build_uhd_bindings(schema: dict, *, transport_factory=None):
 
 def render_stub(schema: dict) -> str:
     """Render a compact .pyi with declared overloads for editor support."""
+    def annotation(wire_type):
+        # Only emit known syntax; schema type names are metadata, not Python
+        # source. Native/compound types retain the established Any fallback.
+        return {"any": "Any", "None": "None", "bool": "bool", "int": "int",
+                "float": "float", "str": "str", "bytes": "bytes",
+                "dict": "dict[str, Any]", "list": "list[Any]"}.get(wire_type, "Any")
     lines = [
         *_GPL_NOTICE_LINES,
         "from typing import Any, overload",
@@ -902,12 +908,12 @@ def render_stub(schema: dict) -> str:
                 if kind == "var_keyword":
                     params.append(f"**{spec['name']}: Any")
                     continue
-                text = f"{spec['name']}: Any"
+                text = f"{spec['name']}: {annotation(spec.get('type', 'any'))}"
                 if not spec.get("required", True):
                     text += f" = {spec.get('default')!r}"
                 params.append(text)
             lines.append(
-                f"    def {descriptor['name']}({', '.join(params)}) -> Any: ..."
+                f"    def {descriptor['name']}({', '.join(params)}) -> {annotation(candidate.get('returns', 'any'))}: ..."
             )
     lines.extend(["", "uhd: Any", ""])
     return "\n".join(lines)

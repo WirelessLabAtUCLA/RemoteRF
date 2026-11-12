@@ -46,20 +46,17 @@ def _add_client_source() -> None:
         Path(__file__).resolve().parents[2] / "client" / "src"
     )
     for candidate in candidates:
-        if (candidate / "remoteRF").is_dir():
+        if (candidate / "remoterf").is_dir():
             sys.path.insert(0, str(candidate.resolve()))
             return
 
 
 _add_client_source()
-try:
-    from remoteRF.common.grpc import grpc_pb2_grpc as client_grpc
-    from remoteRF.core.dynamic_v2_transport import DynamicV2Transport
-    from remoteRF.drivers.dynamic_v2 import build_uhd_bindings
-except (ImportError, RuntimeError) as exc:
-    _CLIENT_IMPORT_ERROR = exc
-else:
-    _CLIENT_IMPORT_ERROR = None
+# This is a required regression test. Import failures must fail collection,
+# not turn a broken client/server boundary into a green skipped test.
+from remoterf.common.grpc import grpc_pb2_grpc as client_grpc
+from remoterf.core.dynamic_v2_transport import DynamicV2Transport
+from remoterf.drivers.dynamic_v2 import build_uhd_bindings
 
 
 class _FakeRXStreamer:
@@ -125,10 +122,6 @@ class _FakeInventorySchema:
         return self.live
 
 
-@unittest.skipIf(
-    _CLIENT_IMPORT_ERROR is not None,
-    f"RemoteRF client source is unavailable: {_CLIENT_IMPORT_ERROR}",
-)
 class USRPClientServerLocalhostTests(unittest.TestCase):
     def test_control_handle_binary_rx_and_cleanup_cross_the_grpc_boundary(self):
         inventory = _FakeInventorySchema()

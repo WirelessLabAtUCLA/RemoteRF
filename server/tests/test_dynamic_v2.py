@@ -16,6 +16,7 @@
 import json
 import os
 import sys
+import threading
 import tempfile
 import time
 import types
@@ -711,7 +712,7 @@ class DynamicV2ServerTests(unittest.TestCase):
             stream_channels=[0],
             cpu_format="fc32",
         )
-        session = types.SimpleNamespace(closed=False)
+        session = types.SimpleNamespace(closed=False, gid=7, lifecycle_lock=threading.RLock())
         fake_uhd = types.SimpleNamespace(
             types=types.SimpleNamespace(RXMetadata=FakeRXMetadata)
         )
@@ -754,7 +755,7 @@ class DynamicV2ServerTests(unittest.TestCase):
         )
         manager = SessionManager()
         with patch.dict(sys.modules, {"uhd": fake_uhd}):
-            manager._start_rx_prefetch(types.SimpleNamespace(closed=False), entry)
+            manager._start_rx_prefetch(types.SimpleNamespace(closed=False, gid=7, lifecycle_lock=threading.RLock()), entry)
             try:
                 self.assertTrue(in_recv.wait(1.0))
                 self.assertTrue(entry.lock.acquire(timeout=0.2))
@@ -794,7 +795,7 @@ class DynamicV2ServerTests(unittest.TestCase):
             types=types.SimpleNamespace(RXMetadata=FakeRXMetadata)
         )
         manager = SessionManager()
-        session = types.SimpleNamespace(closed=False)
+        session = types.SimpleNamespace(closed=False, gid=7, lifecycle_lock=threading.RLock())
         with patch.dict(sys.modules, {"uhd": fake_uhd}):
             manager._start_rx_prefetch(session, entry)
             try:
@@ -1036,6 +1037,9 @@ class DynamicV2ServerTests(unittest.TestCase):
                 {
                     "sessions": 1,
                     "opening_sessions": 0,
+                "closing_sessions": 0,
+                "failed_native_cleanups": 0,
+                "closing_handles": 0,
                     "handles": 3,
                     "async_queue_depth": 0,
                     "async_queue_overflows": 0,

@@ -100,7 +100,7 @@ class DefaultUsrpSchemaTests(unittest.TestCase):
             dynamic = schema.get_idl_v2()
             assert dynamic["schema_version"] == "2.0"
             assert dynamic["device_type"] == "usrp"
-            assert dynamic["driver_version"] == "0.0.7"
+            assert dynamic["driver_version"] == "0.0.9"
             assert dynamic["native_api"]["version"] == "4.10.0.0"
             assert "n210" in dynamic["hardware_profiles"]
             assert "usrp2" in dynamic["hardware_profiles"]

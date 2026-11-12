@@ -1,0 +1,624 @@
+{
+  "format": "remoterf-normal-auth-cold-ci-bundle-1",
+  "passed": true,
+  "observed_at": 1794286824.872369,
+  "hardware_used": false,
+  "identity": {
+    "python": "3.12.16 (main, Oct 26 2026, 14:08:45) [Clang 23.1.3 ]",
+    "checked_at": 1794286384.730096,
+    "dependency_source": "/tmp/remoterf-phase1c-rollout-final-env/lib/python3.12/site-packages",
+    "wheels": {
+      "remoterf_device_core-0.1.7.dev0-py3-none-any.whl": {
+        "sha256": "9d3b88258c7a6298c460f50468a6385bc59d64c72e763dcb21719d230e331d97",
+        "installed_files_matched": 79
+      },
+      "remoterf_server-1.7.23.dev0-py3-none-any.whl": {
+        "sha256": "f9b382782d457bb7197c22b1bc77f310075d103ea5a688f9f4923d1249397d4e",
+        "installed_files_matched": 127
+      },
+      "remoterf_example_usrp_probe-0.1.0-py3-none-any.whl": {
+        "sha256": "e6894b585afcf6a769ec8f9112f60a509eb18521568820fa21907780b152c784",
+        "installed_files_matched": 3
+      }
+    },
+    "hardware_used": false,
+    "all_installed_files_matched": true,
+    "federation_dependency_source": "/tmp/remoterf-phase1c-rollout-final-source/packages/remoterf-federation-core/src",
+    "federation_dependency_version": "0.22.0"
+  },
+  "tests": {
+    "cold_auth": {
+      "passed": 9,
+      "skipped": 0,
+      "summary": "9 passed in 11.55s"
+    },
+    "required_uhd_localhost": {
+      "passed": 1,
+      "skipped": 0,
+      "summary": "1 passed in 0.55s"
+    }
+  },
+  "source_sha256": {
+    "usrp_cold_start.py": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+    "usrp_handoff.py": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+    "usrp_service_stop.py": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+    "tests/test_usrp_cold_start.py": "4d8a332f8f1202460e2fe89aec40414e03abf1cb95c58491e4ae78391aa958c1",
+    "tests/test_usrp_client_server_localhost.py": "a01c1755ad3c5ff85857cdce731aaf7606d88c9ae77d7dc199dbbfe7eb37d101"
+  },
+  "scenarios": {
+    "valid": {
+      "backend": "fake",
+      "calendar_errors": [],
+      "calendar_interval_seconds": 1.0,
+      "calendar_updates": 5,
+      "case": "valid",
+      "cleanup_after_first_attempt": {
+        "active_native": 0,
+        "cleanup_pending": false,
+        "closing_sessions": 0,
+        "deferred_native_hooks": 0,
+        "fake_native_instances_closed": 1,
+        "hardware_owner": null,
+        "inventory_native_owners": 0,
+        "opening_devices": 0,
+        "sessions": 0
+      },
+      "cleanup_final": {
+        "active_native": 0,
+        "cleanup_pending": false,
+        "closing_sessions": 0,
+        "deferred_native_hooks": 0,
+        "fake_native_instances_closed": 1,
+        "hardware_owner": null,
+        "inventory_native_owners": 0,
+        "opening_devices": 0,
+        "sessions": 0
+      },
+      "device_id": 40,
+      "epoch_before_first_open": 0,
+      "events": [
+        {
+          "elapsed_seconds": 0.03390920697711408,
+          "initial_native_modules": {
+            "numpy": false,
+            "uhd": false
+          },
+          "observed_at": 1794286804.3928752,
+          "phase": "normal_server_imports_started"
+        },
+        {
+          "elapsed_seconds": 0.34416659106500447,
+          "observed_at": 1794286804.7031326,
+          "phase": "normal_server_imports_complete"
+        },
+        {
+          "elapsed_seconds": 0.4041334979701787,
+          "observed_at": 1794286804.7630994,
+          "phase": "private_account_created"
+        },
+        {
+          "elapsed_seconds": 0.4078533189604059,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286804.766819,
+          "phase": "normal_calendar_authorized",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 0.4082423320505768,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286804.767208,
+          "phase": "first_native_open_started",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 5.413528337026946,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286809.772495,
+          "phase": "first_native_open_complete",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 5.414034783956595,
+          "observed_at": 1794286809.773001,
+          "phase": "first_receive_complete"
+        },
+        {
+          "elapsed_seconds": 5.4355476760538295,
+          "observed_at": 1794286809.794514,
+          "phase": "complete"
+        }
+      ],
+      "external_booking_after": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "external_booking_before": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "finished_at": 1794286809.7945166,
+      "first_open_seconds": 5.004579451982863,
+      "first_receive": {
+        "fake_native": true,
+        "received": 4096
+      },
+      "format": "remoterf-normal-auth-cold-start-1",
+      "global_calendar_or_rpc_qualified": false,
+      "guarded_scope": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "integrations_enabled": false,
+      "invalid_token_refused": true,
+      "native_startup": {
+        "native_modules_after_normal_imports": {
+          "numpy": true,
+          "uhd": false
+        },
+        "ordinary_preload_enabled": true,
+        "preloaded_entries_after_normal_imports": 0,
+        "test_only_prewarm": false
+      },
+      "normal_auth_final": {
+        "four_second_authority_cache_used": false,
+        "match_function_agrees": true,
+        "resolver_unmodified": true,
+        "token_matches": true
+      },
+      "passed": true,
+      "phase": "complete",
+      "private_calendar_empty": true,
+      "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+      "serial": "FAKE123",
+      "source_identity": {
+        "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+        "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+        "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+        "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+        "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+        "module_sha256": {
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+        },
+        "versions": {
+          "remoterf-device-core": "0.1.7.dev0",
+          "remoterf-example-usrp-probe": "0.1.0",
+          "remoterf-server": "1.7.23.dev0"
+        }
+      },
+      "started_at": 1794286804.3928716,
+      "transmit": false
+    },
+    "expire_during_open": {
+      "backend": "fake",
+      "calendar_errors": [],
+      "calendar_interval_seconds": 1.0,
+      "calendar_updates": 4,
+      "case": "expire_during_open",
+      "cleanup_after_first_attempt": {
+        "active_native": 0,
+        "cleanup_pending": false,
+        "closing_sessions": 0,
+        "deferred_native_hooks": 0,
+        "fake_native_instances_closed": 1,
+        "hardware_owner": null,
+        "inventory_native_owners": 0,
+        "opening_devices": 0,
+        "sessions": 0
+      },
+      "cleanup_final": {
+        "active_native": 0,
+        "cleanup_pending": false,
+        "closing_sessions": 0,
+        "deferred_native_hooks": 0,
+        "fake_native_instances_closed": 2,
+        "hardware_owner": null,
+        "inventory_native_owners": 0,
+        "opening_devices": 0,
+        "sessions": 0
+      },
+      "device_id": 40,
+      "epoch_before_first_open": 0,
+      "events": [
+        {
+          "elapsed_seconds": 0.033899643924087286,
+          "initial_native_modules": {
+            "numpy": false,
+            "uhd": false
+          },
+          "observed_at": 1794286809.9109378,
+          "phase": "normal_server_imports_started"
+        },
+        {
+          "elapsed_seconds": 0.35098955093417317,
+          "observed_at": 1794286810.2280278,
+          "phase": "normal_server_imports_complete"
+        },
+        {
+          "elapsed_seconds": 0.4103562149684876,
+          "observed_at": 1794286810.2873943,
+          "phase": "private_account_created"
+        },
+        {
+          "elapsed_seconds": 0.41416513500735164,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286810.291203,
+          "phase": "normal_calendar_authorized",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 0.4145735639613122,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286810.2916114,
+          "phase": "first_native_open_started",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 2.45539848995395,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286812.3324368,
+          "phase": "next_holder_authorized",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 4.464011571952142,
+          "observed_at": 1794286814.3410506,
+          "phase": "next_holder_receive_complete"
+        },
+        {
+          "elapsed_seconds": 4.4957308899611235,
+          "observed_at": 1794286814.3727698,
+          "phase": "complete"
+        }
+      ],
+      "external_booking_after": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "external_booking_before": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "finished_at": 1794286814.3727748,
+      "first_attempt_refusal": {
+        "code": "RemoteRFSessionExpiredError",
+        "elapsed_seconds": 2.008368420996703,
+        "normal_authorization": {
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": false,
+          "resolver_unmodified": true,
+          "token_matches": false
+        },
+        "session_state": {
+          "closing_sessions": 1,
+          "epoch": 1,
+          "opening_devices": 0,
+          "stopping": false
+        },
+        "trace": [
+          {
+            "file": "usrp_cold_start.py",
+            "function": "run",
+            "line": 273
+          },
+          {
+            "file": "dynamic_v2.py",
+            "function": "open",
+            "line": 724
+          },
+          {
+            "file": "dynamic_v2.py",
+            "function": "_open_admitted",
+            "line": 865
+          }
+        ],
+        "type": "RemoteRFSessionExpiredError"
+      },
+      "format": "remoterf-normal-auth-cold-start-1",
+      "global_calendar_or_rpc_qualified": false,
+      "guarded_scope": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "integrations_enabled": false,
+      "invalid_token_refused": true,
+      "native_startup": {
+        "native_modules_after_normal_imports": {
+          "numpy": true,
+          "uhd": false
+        },
+        "ordinary_preload_enabled": true,
+        "preloaded_entries_after_normal_imports": 0,
+        "test_only_prewarm": false
+      },
+      "next_holder_receive": {
+        "fake_native": true,
+        "received": 4096
+      },
+      "normal_auth_final": {
+        "four_second_authority_cache_used": false,
+        "match_function_agrees": true,
+        "resolver_unmodified": true,
+        "token_matches": true
+      },
+      "passed": true,
+      "phase": "complete",
+      "private_calendar_empty": true,
+      "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+      "serial": "FAKE123",
+      "source_identity": {
+        "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+        "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+        "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+        "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+        "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+        "module_sha256": {
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+        },
+        "versions": {
+          "remoterf-device-core": "0.1.7.dev0",
+          "remoterf-example-usrp-probe": "0.1.0",
+          "remoterf-server": "1.7.23.dev0"
+        }
+      },
+      "started_at": 1794286809.9109342,
+      "transmit": false
+    },
+    "cancel_during_open": {
+      "backend": "fake",
+      "calendar_errors": [],
+      "calendar_interval_seconds": 1.0,
+      "calendar_updates": 0,
+      "case": "cancel_during_open",
+      "cleanup_after_first_attempt": {
+        "active_native": 0,
+        "cleanup_pending": false,
+        "closing_sessions": 0,
+        "deferred_native_hooks": 0,
+        "fake_native_instances_closed": 1,
+        "hardware_owner": null,
+        "inventory_native_owners": 0,
+        "opening_devices": 0,
+        "sessions": 0
+      },
+      "cleanup_final": {
+        "active_native": 0,
+        "cleanup_pending": false,
+        "closing_sessions": 0,
+        "deferred_native_hooks": 0,
+        "fake_native_instances_closed": 2,
+        "hardware_owner": null,
+        "inventory_native_owners": 0,
+        "opening_devices": 0,
+        "sessions": 0
+      },
+      "device_id": 40,
+      "epoch_before_first_open": 0,
+      "events": [
+        {
+          "elapsed_seconds": 0.03398592595476657,
+          "initial_native_modules": {
+            "numpy": false,
+            "uhd": false
+          },
+          "observed_at": 1794286814.491018,
+          "phase": "normal_server_imports_started"
+        },
+        {
+          "elapsed_seconds": 0.34582668694201857,
+          "observed_at": 1794286814.802859,
+          "phase": "normal_server_imports_complete"
+        },
+        {
+          "elapsed_seconds": 0.4053455420071259,
+          "observed_at": 1794286814.8623774,
+          "phase": "private_account_created"
+        },
+        {
+          "elapsed_seconds": 0.40910952794365585,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286814.8661416,
+          "phase": "normal_calendar_authorized",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 0.40964036097284406,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286814.866672,
+          "phase": "first_native_open_started",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 0.6572020900202915,
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": true,
+          "observed_at": 1794286815.114234,
+          "phase": "next_holder_authorized",
+          "resolver_unmodified": true,
+          "token_matches": true
+        },
+        {
+          "elapsed_seconds": 0.8661213560262695,
+          "observed_at": 1794286815.3231547,
+          "phase": "next_holder_receive_complete"
+        },
+        {
+          "elapsed_seconds": 0.8911271119723096,
+          "observed_at": 1794286815.3481598,
+          "phase": "complete"
+        }
+      ],
+      "external_booking_after": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "external_booking_before": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "finished_at": 1794286815.348166,
+      "first_attempt_refusal": {
+        "code": "RemoteRFSessionExpiredError",
+        "elapsed_seconds": 0.20776453195139766,
+        "normal_authorization": {
+          "four_second_authority_cache_used": false,
+          "match_function_agrees": false,
+          "resolver_unmodified": true,
+          "token_matches": false
+        },
+        "session_state": {
+          "closing_sessions": 1,
+          "epoch": 1,
+          "opening_devices": 0,
+          "stopping": false
+        },
+        "trace": [
+          {
+            "file": "usrp_cold_start.py",
+            "function": "run",
+            "line": 273
+          },
+          {
+            "file": "dynamic_v2.py",
+            "function": "open",
+            "line": 724
+          },
+          {
+            "file": "dynamic_v2.py",
+            "function": "_open_admitted",
+            "line": 865
+          }
+        ],
+        "type": "RemoteRFSessionExpiredError"
+      },
+      "format": "remoterf-normal-auth-cold-start-1",
+      "global_calendar_or_rpc_qualified": false,
+      "guarded_scope": {
+        "reason": "explicit fake native backend",
+        "required": false
+      },
+      "integrations_enabled": false,
+      "invalid_token_refused": true,
+      "native_startup": {
+        "native_modules_after_normal_imports": {
+          "numpy": true,
+          "uhd": false
+        },
+        "ordinary_preload_enabled": true,
+        "preloaded_entries_after_normal_imports": 0,
+        "test_only_prewarm": false
+      },
+      "next_holder_receive": {
+        "fake_native": true,
+        "received": 4096
+      },
+      "normal_auth_final": {
+        "four_second_authority_cache_used": false,
+        "match_function_agrees": true,
+        "resolver_unmodified": true,
+        "token_matches": true
+      },
+      "passed": true,
+      "phase": "complete",
+      "private_calendar_empty": true,
+      "route": "normal_local_account_calendar_and_session_manager_no_public_listener",
+      "serial": "FAKE123",
+      "source_identity": {
+        "adapter_hash": "9c6ae545c37066d23a76f9f5fbb90c5a6f7658e531377ebd0a91ad07a756ad0f",
+        "cold_harness_sha256": "3ca929656759b75b5a2b0c4b5ab2fd80910c69fe558f29d68d01dd46bd986e18",
+        "framework_hash": "8697958f27a1b1289cc45093258cb3eeed84bdb631cacc122a055f21a3a7d41a",
+        "harness_sha256": "f03f32b3e84bf7ebc40796be36b43402dd4e7f873dccf2b7298be790397d66d0",
+        "helper_sha256": "6c5dfabe3687d12e9a47c0584484d3c9b984dc45f00aa024a82c7bac2584df93",
+        "module_sha256": {
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/device_manager.py": "9d7abe80615f826286ef8d5269394a1a517d657cb69cb17d972f4771e3b771f9",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/dynamic_v2.py": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/grpc_server.py": "aa44fb1e090830224c97c213e98762e9d92f94da05fcd688aebc77a2ac455023",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoteRF_server/server/integration_controller.py": "c2f0a860237aca669c591af874dbaaffd52970d1ea9cf07c4473ae1eefa5df81",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/drivers/usrp/usrp_schema.py": "00bc12dff5b8799ddbc1a1da7f1525c1ca22d776b3c69e6525decf6df977a5a8",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/hardware_access.py": "eb9ec1a456c48ed8d9ff08fc7fcaaf1590e49277303742f29fcd0243f5f89284",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/__init__.py": "854f6e6cc7c5d07d1c6dac6528af757ef6dbf3000bfc36b786f101563d557dca",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/_process_worker.py": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/contract.py": "a28daef9123a01c8696836883c464c62a13f917c434ffe6b7c4ebfc44ac8a5f5",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/deployment.py": "d8f1563e3f3e4060374a0f3e6d9ec1f277441adbec3a63d4b621697ac6af2115",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/fingerprint.py": "da6a2d36a016f9d0905ec789b879b2bbf7f2e0937aec2281aac11a7dd4738ee1",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/operator.py": "5e7c88c8a608c69737b4d36b0c389d68d0b994f8d9b54ca2c5a0464f7b82e8be",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/ownership.py": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/payload.py": "8698a1c7c8dc44c6ae70ae07151586ebda7fb278f92e10acf3ed693750425542",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/registry.py": "aea0b2630fb2f1caf89f9c17a2d87c9b6f77eb1139aafde7bc7068f8c2d3ce8f",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/runtime.py": "bc02b1b159a7b8a3552aea3ce0f38aa53f0dede788b6410548e59edf08377aa1",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/supervision.py": "fa35b0c31a8034bb99e8f1840e9db7f85221db8c99798207ea1a71bacdf995f2",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/integrations/wire.py": "41fe5c710420373157ab17d9b0e16921b3f3c6cdbc5e8b259fc049a30dd76ab5",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/remoterf_device_core/native_lifetime.py": "b5f117c0b7bd981d422589243739e73f25487d64544b4d07a2afa60b055ccec7",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/__init__.py": "16376a359212a0e4fff138c7447a06cb0197423c8489e7888dac8b4ae7189b81",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/integration.json": "b33666b0ffeef26966ec5beb246a8d2539942e366266ade1d89e165a2f3e440c",
+          "/tmp/remoterf-phase1c-cold-auth-20261109/env/lib/python3.12/site-packages/rrf_example_usrp_probe/worker.py": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42"
+        },
+        "versions": {
+          "remoterf-device-core": "0.1.7.dev0",
+          "remoterf-example-usrp-probe": "0.1.0",
+          "remoterf-server": "1.7.23.dev0"
+        }
+      },
+      "started_at": 1794286814.4910145,
+      "transmit": false
+    }
+  },
+  "initial_environment_setup_failure": "First localhost collection lacked the existing editable federation dependency path. The private environment was corrected; no framework source changed. Original setup-failure log retained."
+}

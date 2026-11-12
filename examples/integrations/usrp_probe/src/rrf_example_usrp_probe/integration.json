@@ -1,0 +1,9 @@
+{
+  "id": "org.remoterf.usrp_probe",
+  "version": "0.1.0",
+  "contract_version": "0.1",
+  "factory": "rrf_example_usrp_probe:create_adapter",
+  "device_types": ["usrp"],
+  "profiles": ["receive"],
+  "actions": ["health"]
+}

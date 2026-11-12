@@ -1,0 +1,220 @@
+{
+  "activation_changed": false,
+  "checks": {
+    "abrupt_restart_recovery": {
+      "journal_cleared": true,
+      "startup_native_open_refused": true,
+      "surviving_process_detected": true,
+      "verified_cgroup_cleanup": true
+    },
+    "application_rx": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "ready": true,
+      "received": 4096,
+      "serial": "32C78EE",
+      "uhd_version": "4.10.0.main-release"
+    },
+    "expired_start": {
+      "cleanup_serialized": true,
+      "outcome": {
+        "active_action_id": null,
+        "details": {},
+        "error": "cancelled",
+        "generation": 5,
+        "operation_id": "fb680538c73442a9ac1f540d5213d83a",
+        "phase": "complete",
+        "released": true,
+        "state": "ERROR"
+      },
+      "ownership_retained_until_hook_return": true,
+      "rx_before_local_revocation": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      }
+    },
+    "explicit_stop": {
+      "active_action_id": null,
+      "details": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "error": null,
+      "generation": 1,
+      "operation_id": "fe589f3bc5484f0d999bdd2e4fb51970",
+      "phase": "complete",
+      "released": true,
+      "state": "IDLE"
+    },
+    "injected_local_expiry_cleanup": {
+      "active_action_id": null,
+      "details": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "error": null,
+      "generation": 6,
+      "operation_id": "97bb02b41e3a43ce84ff464ff0d59518",
+      "phase": "complete",
+      "released": true,
+      "state": "IDLE"
+    },
+    "native_rx_after": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "native_rx_before": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "next_local_holder_rx": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "partial_start_cleanup": {
+      "active_action_id": null,
+      "details": {},
+      "error": "starting_failed",
+      "generation": 2,
+      "operation_id": "b23853d042dd4153aecd354cbc1aef97",
+      "phase": "complete",
+      "released": true,
+      "state": "ERROR"
+    },
+    "process_exit_cleanup": {
+      "active_action_id": null,
+      "details": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "error": "action_failed",
+      "generation": 3,
+      "operation_id": "95567d4175c14bd3b8fe687a697205fd",
+      "phase": "complete",
+      "released": true,
+      "state": "ERROR"
+    },
+    "reservation_still_external": true,
+    "rx_after_abrupt_restart": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "rx_after_delayed_stop": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "rx_after_expired_start": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "rx_after_partial_start": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "rx_after_process_exit": {
+      "channel": 0,
+      "frequency": 100000000.0,
+      "gain": 0.0,
+      "rate": 1000000.0,
+      "received": 4096
+    },
+    "stop_timeout_kept_ownership": {
+      "active_action_id": null,
+      "details": {
+        "channel": 0,
+        "frequency": 100000000.0,
+        "gain": 0.0,
+        "rate": 1000000.0,
+        "ready": true,
+        "received": 4096,
+        "serial": "32C78EE",
+        "uhd_version": "4.10.0.main-release"
+      },
+      "error": "timeout",
+      "generation": 4,
+      "operation_id": "f1d55a4ea20d4d2cbcaa9921f1919c59",
+      "phase": "complete",
+      "released": true,
+      "state": "ERROR"
+    }
+  },
+  "device_id": 40,
+  "expiry_test": "injected_local_revocation_under_real_external_reservation",
+  "external_reservation": {
+    "device_id": 40,
+    "expires_at": 1794272400.0,
+    "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1020",
+    "serial": "32C78EE"
+  },
+  "finished_at": 1794270282.7177567,
+  "format": "remoterf-usrp-handoff-evidence-1",
+  "passed": true,
+  "reservation_id": "52ae81ca-fd98-4e4c-8819-38cffa86247b:1020",
+  "route": "isolated_local_session_manager_and_runtime",
+  "serial": "32C78EE",
+  "source_sha256": {
+    "qualification_harness": "e901c2f6a95326ab6e4162d64a84e9ebbef207e18fb5c0cdcab3460a0f976fe7",
+    "remoteRF_server.server.dynamic_v2": "58a7483fd7193839dde54f9d06b604290bc19ffc33f2efece5150268d70a78c0",
+    "remoterf_device_core.integrations.ownership": "2cee05af32c6b0bd6a0bbdb9bf000fc6431c13fb9d77196fa0cba71b77fab750",
+    "remoterf_device_core.integrations.runtime": "cf5dd754bb0a76f1e9825644b1d6f07b0763f771e6703ad0ab5ef93bd84529e8",
+    "remoterf_device_core.integrations.supervision": "cf48a4535bae5ba61897389902cebeb2eeec9c8b98d4f15804924426e74deb8c",
+    "rrf_example_usrp_probe": "dc84908da450106ef247f34cba00ee11f468e4463753a545c70ed3eaeae2d40b",
+    "rrf_example_usrp_probe.worker": "bb64b530eadcd6f259341fa4103882479198b07789f5f599b872bcd93a28dc42",
+    "supervised_process_bootstrap": "275322866aabb19b24613acd8f2ba744ed617b1d4ae0e0bc7f612542927bc83d"
+  },
+  "stage": "complete",
+  "started_at": 1794270235.5299845,
+  "transmit": false,
+  "versions": {
+    "remoterf-device-core": "0.1.7.dev0",
+    "remoterf-example-usrp-probe": "0.1.0",
+    "remoterf-server": "1.7.23.dev0"
+  }
+}
