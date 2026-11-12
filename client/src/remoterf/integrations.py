@@ -151,7 +151,7 @@ class App:
         operation_id, data = self._require(), bytearray()
         while True:
             chunk = self._rpc("integration_fetch", {"operation_id": operation_id, "artifact": name,
-                                                "offset": len(data), "limit": MAX_FETCH_BYTES})
+                                                   "offset": len(data), "limit": MAX_FETCH_BYTES})
             raw = base64.b64decode(chunk["data"])
             data += raw
             if chunk["eof"]:
