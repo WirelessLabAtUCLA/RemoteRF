@@ -171,7 +171,7 @@ def _supervisor(cgroup_root, state_dir):
 
 
 def _arguments(physical_id=None, lease=None, owner_id=None, timeout=5):
-    if (type(timeout) not in (int, float) or not 0 <= timeout <= 30
+    if (type(timeout) not in (int, float) or not 0 <= timeout <= 600
             or physical_id is not None and (type(physical_id) is not str or not 1 <= len(physical_id) <= 256)
             or lease is not None and (type(lease) is not str or not 1 <= len(lease) <= 128)
             or owner_id is not None and (type(owner_id) is not str or not backend._OWNER.fullmatch(owner_id))):

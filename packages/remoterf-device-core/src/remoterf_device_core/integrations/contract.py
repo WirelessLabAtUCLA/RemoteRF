@@ -27,6 +27,10 @@ class Context:
     Its launch(..., required_while_running=True) declares a long-lived worker
     whose exit must cancel the application. The default False permits finite
     jobs. Monitoring is cached and never calls an adapter hook from status RPCs.
+    user_code is True only for integrations the operator lists in
+    integrations.json "user_code"; adapters must refuse code-bearing actions
+    otherwise. The *_timeout_s fields are the operator's per-integration bounds
+    for start, each action and stop/cleanup.
     """
 
     device_id: str
@@ -36,6 +40,10 @@ class Context:
     cancelled: Event
     selector: dict | None = None
     processes: object = None
+    user_code: bool = False
+    start_timeout_s: float = 30
+    action_timeout_s: float = 30
+    stop_timeout_s: float = 30
 
 
 class Adapter(Protocol):

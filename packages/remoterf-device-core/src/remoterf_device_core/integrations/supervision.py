@@ -546,7 +546,7 @@ class Scope:
                        or "\0" in key + value or len(key) + len(value) > 4096 for key, value in env.items())
                 or sum(len(key) + len(value) for key, value in env.items()) > 32768
                 or type(cwd) not in (str, Path) and not isinstance(cwd, Path)
-                or not Path(cwd).is_absolute() or type(timeout) not in (int, float) or not 0 < timeout <= 30
+                or not Path(cwd).is_absolute() or type(timeout) not in (int, float) or not 0 < timeout <= 600
                 or type(required_while_running) is not bool):
             raise IntegrationError("invalid_process", "invalid bounded process launch specification")
         with self._lock:
@@ -648,7 +648,7 @@ class Scope:
                 return False
 
     def stop(self, timeout=5.0):
-        if type(timeout) not in (int, float) or not 0 <= timeout <= 30:
+        if type(timeout) not in (int, float) or not 0 <= timeout <= 600:
             raise ValueError("invalid process cleanup timeout")
         with self._lock:
             self._accepting = False

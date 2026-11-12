@@ -1,1 +1,1 @@
-{"id":"org.remoterf.oai","version":"0.1.0","contract_version":"0.1","factory":"remoteRF_server.adapters.oai:create_adapter","device_types":["usrp"],"profiles":["gnb"],"actions":["health"]}
+{"id":"org.remoterf.oai","version":"0.2.0","contract_version":"0.1","factory":"remoteRF_server.adapters.oai:create_adapter","device_types":["usrp"],"profiles":["gnb"],"actions":["health","load_l1_plugin","unload_l1_plugin","run_xapp"]}

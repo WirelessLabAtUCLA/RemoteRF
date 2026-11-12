@@ -16,8 +16,8 @@ not deployment approval or hardware qualification.
 The current activation scope is one serial-addressed, lab-local plain `usrp`.
 Host-attached integrations return `unsupported_host`; Phaser and ambiguous or
 composite selectors cannot activate applications. Their existing native routes
-remain supported. OAI, user-submitted code and host integration execution are
-deferred.
+remain supported. Host integration execution is deferred. The bundled OAI gNB
+scaffold and opt-in user code (below) are for internal testing only.
 
 ## Public API on the existing USRP root
 
@@ -33,7 +33,7 @@ there is no second token-taking root or independent application reservation.
 | `integration_status` | `operation_id`; optional `action_id` | Cached operation or action snapshot. |
 | `integration_stop` | `operation_id` | Cancellation/cleanup snapshot; acknowledgement is not release proof. |
 | `integration_call` | `operation_id`, `action`, `parameters`, `request_key` | Asynchronous action snapshot with `action_id`. |
-| `integration_fetch` | `operation_id`, `artifact`, `offset`; optional `limit` (1–32768; default 32768) | `operation_id`, `artifact`, `offset`, `size`, `eof` and base64 `data` of at most `limit` raw bytes. |
+| `integration_fetch` | `operation_id`, `artifact`, `offset`; optional `limit` (1–393216; default 393216) | `operation_id`, `artifact`, `offset`, `size`, `eof` and base64 `data` of at most `limit` raw bytes. |
 
 Unknown fields are rejected. Configuration and parameters are objects. IDs,
 profiles, actions and request keys are nonempty strings of at most 128 characters;
@@ -71,6 +71,27 @@ while True:
         break
 radio.integration_stop({"operation_id": operation["operation_id"]})
 ```
+
+The client helper `remoterf.integrations` wraps the same calls:
+
+```python
+from remoterf.integrations import App, OaiGnb
+
+app = App(radio, "org.remoterf.usrp_probe", "receive", rate=1_000_000)
+app.frequency = 100_000_000          # configuration, settable until start
+with app:                            # start(), waits for RUNNING; stop() on exit
+    print(app.health())              # declared actions are methods
+    raw = app.fetch("grid-0001.bin")  # 384 KiB chunks until eof
+```
+
+`call(action, **params)` (or `app.<action>(...)`) waits for the action and
+returns its result. A result `"artifact": {"name", "dtype", "shape"}` is fetched
+and returned as a NumPy array; `{"name", "format": "bytes"|"pcap"|"json"}` as bytes
+or parsed JSON (returned directly when it is the only key, otherwise in place).
+Failures raise `IntegrationError` with `.code`. Request keys are generated once
+and reused when an RPC is retried. `OaiGnb(radio)` (`start_cell`/`stop_cell`) and
+`OaiUe(radio)` (`attach`/`detach`) use `org.remoterf.oai`; the server scaffold
+currently declares only the `gnb` profile.
 
 Start and action retries with identical inputs attach to their recorded outcome;
 changed inputs under the same key fail with `request_conflict`. Operations are
@@ -186,6 +207,35 @@ package/contract path with `sim_sdr` and no radio. The independently packaged
 same interface, supervised RX, and a `health` action; it never transmits. Neither
 package is installed or enabled automatically by the runtime.
 
+## OAI scaffold and user code
+
+`remoteRF_server.adapters.oai` (`org.remoterf.oai`, profile `gnb`) launches the
+operator's `REMOTERF_OAI_SOFTMODEM` with `REMOTERF_OAI_GNB_CONF`; it
+**transmits**. The softmodem environment adds `OAI_SHM_DIR=<work_dir>/shm` and
+`OAI_PLUGIN_CTRL=<work_dir>/plugin_ctrl.json`. Actions:
+
+| Action | Parameters | Result |
+|---|---|---|
+| `health` | none | Cached readiness. |
+| `load_l1_plugin` | `stage`, `c_code` | Compiles with `REMOTERF_OAI_CC` (default `/usr/bin/gcc`) `-O3 -shared -fPIC` as a supervised job; returns `ok`, `returncode` and the last 8 KiB of output. On success writes the control file. |
+| `unload_l1_plugin` | none | Writes the unload control record. |
+| `run_xapp` | `code`, `duration_s` (1–600) | Runs the code with the server's `python -I`, env `OAI_SHM_DIR` and `XAPP_OUTPUT=<work_dir>/artifacts/xapp-<n>.json`; SIGALRM ends it at `duration_s`. Returns `returncode`, output and `{"artifact": {"name", "format": "json"}}` when the file exists. |
+
+The three code actions fail unless `user_code` enables `org.remoterf.oai`. Like
+any failed action, a refusal or a job past its wait fails the operation and its
+cgroup cleanup stops the cell. Readiness, compile and stop waits end 5 s before
+the configured `start_timeout_s`, `action_timeout_s` and `stop_timeout_s`; keep
+`duration_s` below `action_timeout_s`. Each
+process scope retains at most 4 launches, so one cell allows 3 compile/xApp jobs.
+
+**Control-file protocol (what a patched OAI must read).** `OAI_PLUGIN_CTRL` is
+replaced atomically (`os.replace`) on every change. `{"seq": n, "stage": s,
+"path": "/abs/plugin-k.so"}` asks OAI to load that shared object at stage `s`;
+`{"seq": n, "stage": null}` unloads. `seq` increases by one per write; apply only
+a `seq` newer than the last one applied. Each load uses a new `.so` path. Stock
+OAI ignores the file; the patch and stage names must be verified against the
+pinned OAI build.
+
 ## Operator configuration
 
 The server reads `integrations.json` in its RemoteRF configuration root before
@@ -206,15 +256,31 @@ This example stays disabled:
     "7": {"serial": "EXACT_SERIAL", "integrations": ["org.acme.receiver"]}
   },
   "cgroup_root": "/sys/fs/cgroup/operator-delegated/remoterf",
-  "limits": {"org.acme.receiver": {"memory_mib": 1024, "max_pids": 256}}
+  "limits": {"org.acme.receiver": {"memory_mib": 1024, "max_pids": 256,
+                                   "start_timeout_s": 120, "action_timeout_s": 60}},
+  "user_code": []
 }
 ```
 
 Optional `limits` override the per-scope kernel limits by integration ID:
 `memory_mib` 16–65536 and `max_pids` 1–4096, integers only (booleans are
-rejected); unset fields keep the defaults. A malformed entry disables
+rejected); unset fields keep the defaults. `start_timeout_s`, `action_timeout_s`
+and `stop_timeout_s` (integers 1–600, default 30) bound that integration's start
+work, each action, and stop/cleanup (the adapter stop and the supervisor's
+scope stop each get `stop_timeout_s`, so cleanup's deadline is twice it). A cleanup that still cannot be verified at
+its deadline keeps the radio fenced. A malformed entry disables
 integrations. Entries for undeclared IDs are validated and ignored. Limits are
 read at startup and apply to scopes created afterwards.
+
+Optional top-level `user_code` lists integration IDs (default empty) whose
+adapters may run caller-supplied code; adapters receive it as the frozen
+`Context.user_code` flag (default `False`, contract stays `0.1`) and must refuse
+code-bearing actions without it. It is operator-only; no RPC can set it.
+
+> **Warning:** user code runs **unsandboxed as the lab server user** inside the
+> operation's cgroup (only the PID/memory limits apply). It can read and write
+> anything that user can. Keep `user_code` empty on any student-facing lab until
+> real sandboxing exists; it is for internal testing only.
 
 Manifest paths are operator-controlled, relative to this config file
 or absolute. `cgroup_root` must be an absolute operator-created path. Config
@@ -292,8 +358,9 @@ change applies even with integrations disabled. Legacy paths, master access,
 new opens and diagnostics must honor the same physical gate.
 
 Stop new starts before shutdown or rollback. Keep unresolved owners unavailable.
-Remove `limits` from `integrations.json` before rolling back to an older server:
-it rejects the unknown key and disables integrations.
+Remove `limits` (or its timeout fields) and `user_code` from `integrations.json`
+before rolling back to an older server: it rejects the unknown keys and disables
+integrations.
 Do not delete journals, kill a PID copied from a file, or remove an adapter to
 force reuse. Offline trusted recovery uses `CgroupSupervisor.describe/reopen`,
 identity-checked scope stop/release, and the ownership gate's positive verification;
@@ -327,17 +394,17 @@ are rejected. Normal UHD codecs and streaming remain on their existing paths.
 
 | Bound | Current default |
 |---|---|
-| Full encoded protobuf Invoke request | 128 KiB, below the relay request cap |
-| Plain object payload/reply | 64 KiB; exact built-in JSON types, signed 64-bit integers, finite floats, valid Unicode |
+| Full encoded protobuf Invoke request | 144 KiB (147,456 B), 75% of the 192 KiB Global relay request frame |
+| Plain object request / reply | 128 KiB request envelope; 64 KiB replies; exact built-in JSON types, signed 64-bit integers, finite floats, valid Unicode |
 | Payload shape | 16 levels, 4,096 value nodes; lists are allowed; no bytes, NumPy/native arrays, tuples or conversion hooks |
 | Manifest / registry / device declarations | 16 KiB per manifest; 64 entries each; operator files 64 KiB |
 | Discovery | At most 8 rows and 48 KiB before envelope headroom; cursor pagination |
 | Cached adapter status / action result | 48 KiB each; native refresh metadata 12 KiB |
 | Retained controller bindings / runtime operations / action records | 16 / 16 / 64; completed retry outcomes still count |
-| Start/action workers / cleanup workers | 4 / 4, bounded queues; 30-second work/cleanup deadlines |
+| Start/action workers / cleanup workers | 4 / 4, bounded queues; per-integration start/action/stop deadlines 1–600 s, default 30 |
 | Process scopes / launched processes per scope | 64 / 4 retained launches |
 | Process scope kernel limits | 128 PIDs, 512 MiB memory, no sub-cgroups; per-integration `limits` up to 4,096 PIDs, 64 GiB |
-| Artifact fetch | 32 KiB raw (43,692 base64 characters) per call, while `RUNNING` |
+| Artifact fetch | 384 KiB raw (524,288 base64 characters) per call, while `RUNNING`; the reply stays about 67% of the 768 KiB relay response frame |
 | Artifacts per operation | 256 entries, 256 MiB; checked after readiness and each action, not kernel-enforced |
 | Process logs | 64 KiB tail per stdout/stderr stream, continuously drained; not a remote artifact API |
 | Journal / shared native cleanup | 64 owners, 64 KiB; 4 cleanup workers, queue 64, at most 8,192 retained jobs |
@@ -351,8 +418,9 @@ bounds, not measured production capacity, latency or isolation guarantees.
 
 ## Version and schema migration gate
 
-Release versions are core `0.1.7`, server `1.7.23`, host `1.3.9` and client
-`2.13.13`; server/host pin that core. The four stock hashes below were approved on
+Release versions are core `0.1.8`, server `1.7.24`, host `1.3.10` and client
+`2.13.14`; server/host pin that core. The stock schemas and hashes are unchanged
+from core `0.1.7`. The four stock hashes below were approved on
 production Global on 2026-11-12 before release. USRP driver `0.0.9` and Phaser driver `0.1.2` include
 the generic root methods, including `integration_fetch`, in v2; no new protobuf method or OAI class is required.
 Both **v1 and v2 stock hashes change**, including the v1 version metadata:

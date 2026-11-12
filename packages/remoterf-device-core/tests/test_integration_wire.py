@@ -76,7 +76,7 @@ def test_duplicate_arguments_unknown_method_and_overload_are_rejected():
 
 
 def test_encoded_envelope_and_full_protobuf_frame_have_independent_limits():
-    for request in [invoke(' ' * 65536 + '{}'), invoke(json.dumps({'s': '\u2603' * 22000}))]:
+    for request in [invoke(' ' * 131072 + '{}'), invoke(json.dumps({'s': '\u2603' * 44000}))]:
         with pytest.raises(IntegrationError) as caught:
             decode_request(request)
         assert caught.value.code == 'payload_limit'
@@ -84,6 +84,24 @@ def test_encoded_envelope_and_full_protobuf_frame_have_independent_limits():
     request.session_id = 'x' * MAX_INVOKE_BYTES
     with pytest.raises(IntegrationError) as caught:
         decode_request(request)
+    assert caught.value.code == 'payload_limit'
+
+
+def test_large_start_request_fits_relay_headroom():
+    # Inline code/models: a full 128 KiB envelope is accepted, one byte more is not.
+    body = {'integration_id': 'x' * 128, 'profile': 'p' * 128, 'request_key': 'k' * 128, 'generation': 1,
+            'configuration': {'c_code': ''}}
+    body['configuration']['c_code'] = 'x' * (131072 - len(json.dumps(body, separators=(',', ':'))))
+    raw = json.dumps(body, separators=(',', ':'))
+    assert len(raw) == 131072
+    request = invoke(raw)
+    request.session_id = 's' * 36
+    request.handle = 'h' * 64
+    assert decode_request(request) == body
+    # Whole Invoke keeps >=25% headroom under the Global relay's 192 KiB request frame.
+    assert request.ByteSize() <= MAX_INVOKE_BYTES <= 0.75 * 196608
+    with pytest.raises(IntegrationError) as caught:
+        decode_request(invoke(raw[:-1] + ' }'))
     assert caught.value.code == 'payload_limit'
 
 

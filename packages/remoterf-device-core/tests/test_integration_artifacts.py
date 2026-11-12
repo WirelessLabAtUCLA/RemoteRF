@@ -7,8 +7,10 @@ import socket
 
 import pytest
 
-from remoterf_device_core.integrations import IntegrationError, object_data
+from remoterf_device_core.integrations import IntegrationError
 from remoterf_device_core.integrations import artifacts
+from remoterf_device_core.integrations.payload import MAX_FETCH_REPLY_BYTES
+from remoterf_device_core.integrations.wire import validate_result
 
 
 @pytest.fixture
@@ -25,15 +27,21 @@ def refused(code, call, *args):
 
 
 def test_chunked_read_eof_and_offset_past_end(work):
-    payload = os.urandom(70000)
+    payload = os.urandom(500000)
     (work / 'artifacts' / 'grid-0001.bin').write_bytes(payload)
     data, size = artifacts.read_chunk(work, 'grid-0001.bin', 0, artifacts.MAX_FETCH_BYTES)
-    assert size == len(payload) and data == payload[:32768]
-    # A full chunk fits the plain reply envelope as base64 text.
-    object_data({'operation_id': 'x' * 32, 'artifact': 'grid-0001.bin', 'offset': 0, 'size': size,
-                 'eof': False, 'data': base64.b64encode(data).decode()})
-    data, size = artifacts.read_chunk(work, 'grid-0001.bin', 65536, 32768)
-    assert data == payload[65536:] and 65536 + len(data) >= size
+    assert artifacts.MAX_FETCH_BYTES == 384 * 1024
+    assert size == len(payload) and data == payload[:artifacts.MAX_FETCH_BYTES]
+    # A full chunk with worst-case names fits the fetch reply budget, not the normal one.
+    reply = {'operation_id': 'x' * 128, 'artifact': 'a' * 128, 'offset': 2**62, 'size': 2**62,
+             'eof': False, 'data': base64.b64encode(data).decode()}
+    assert validate_result(reply, 'integration_fetch') == reply
+    with pytest.raises(IntegrationError):
+        validate_result(reply)
+    # Encoded reply keeps >=25% headroom under the relay's 768 KiB response frame.
+    assert MAX_FETCH_REPLY_BYTES <= 0.75 * 786432
+    data, size = artifacts.read_chunk(work, 'grid-0001.bin', 400000, artifacts.MAX_FETCH_BYTES)
+    assert data == payload[400000:] and 400000 + len(data) >= size
     assert artifacts.read_chunk(work, 'grid-0001.bin', 10**6, 16) == (b'', size)
 
 
@@ -42,7 +50,7 @@ def test_names_are_validated_before_io(work, name):
     refused('invalid_request', artifacts.read_chunk, work, name, 0, 1)
 
 
-@pytest.mark.parametrize('offset,limit', [(-1, 1), (2**63, 1), (True, 1), (0, 0), (0, 32769), (0, False), (1.0, 1)])
+@pytest.mark.parametrize('offset,limit', [(-1, 1), (2**63, 1), (True, 1), (0, 0), (0, 384 * 1024 + 1), (0, False), (1.0, 1)])
 def test_offset_and_limit_bounds(work, offset, limit):
     (work / 'artifacts' / 'a').write_bytes(b'x')
     refused('invalid_request', artifacts.read_chunk, work, 'a', offset, limit)

@@ -76,7 +76,7 @@ def test_generic_routes_never_use_native_decode_or_dispatch(routed, monkeypatch,
 
 @pytest.mark.parametrize('route', ['local', 'bridge', 'device_rpc', 'direct_dispatch'])
 @pytest.mark.parametrize('raw', ['{"configuration":{"__uhd_type__":"TimeSpec"}}',
-                                  '{"x":1,"x":2}', '{"x":NaN}', '{"x":"' + 'a'*65536 + '"}'])
+                                  '{"x":1,"x":2}', '{"x":NaN}', '{"x":"' + 'a'*131072 + '"}'])
 def test_malformed_application_payload_is_rejected_before_any_native_decoder(routed, monkeypatch, route, raw):
     manager, session, controller = routed
     native_decode = Mock(side_effect=AssertionError('native decoder must not run'))

@@ -20,7 +20,7 @@ from uuid import uuid4
 from . import artifacts
 from .contract import Context
 from .ownership import Gate
-from .payload import IntegrationError, object_data
+from .payload import IntegrationError, MAX_FETCH_REPLY_BYTES, MAX_REQUEST_BYTES, object_data
 
 
 class _Pool:
@@ -78,14 +78,19 @@ class Binding:
 
 class Runtime:
     def __init__(self, registry, *, capacity=16, workers=4, action_capacity=64,
-                 timeout=30.0, clock=time.monotonic):
+                 timeout=30.0, timeouts=None, user_code=(), clock=time.monotonic):
+        # timeouts: operator {integration_id: {start|action|stop_timeout_s: seconds}}.
+        timeouts = {key: dict(value) for key, value in (timeouts or {}).items()}
         if (not 1 <= workers <= capacity <= 64 or not 1 <= action_capacity <= 256
-                or not 0 < timeout < 3600):
+                or not 0 < timeout < 3600
+                or any(not 0 < value < 3600 for row in timeouts.values() for value in row.values())):
             raise ValueError("invalid runtime bounds")
         self.registry = registry
         self.capacity = capacity
         self.action_capacity = action_capacity
         self.timeout = timeout
+        self.timeouts = timeouts
+        self.user_code = frozenset(user_code)
         self.clock = clock
         self._lock = RLock()
         self._operations = {}
@@ -103,6 +108,9 @@ class Runtime:
     def _watch(self):
         while not self._exit.wait(0.05):
             self.poll()
+
+    def _timeout(self, integration_id, kind):
+        return self.timeouts.get(integration_id, {}).get(kind, self.timeout)
 
     @staticmethod
     def _scope(binding):
@@ -140,10 +148,16 @@ class Runtime:
                       fingerprint=fingerprint, key=key, cancelled=cancelled, adapter=None,
                       active=True, cleanup=False, cleanup_attempted=False, released=False,
                       active_action=None, actions={}, action_keys={},
-                      release_attempted=False, native_released=False, deadline=self.clock() + self.timeout,
+                      release_attempted=False, native_released=False,
+                      deadline=self.clock() + self._timeout(integration_id, "start_timeout_s"),
                       context=Context(binding.device_id, binding.device_type, binding.generation,
                                       binding.work_dir, cancelled, selector=selector,
-                                      processes=binding.processes), details={})
+                                      processes=binding.processes,
+                                      user_code=integration_id in self.user_code,
+                                      start_timeout_s=self._timeout(integration_id, "start_timeout_s"),
+                                      action_timeout_s=self._timeout(integration_id, "action_timeout_s"),
+                                      stop_timeout_s=self._timeout(integration_id, "stop_timeout_s")),
+                      details={})
             self._operations[op["id"]] = op
             self._keys[key] = op["id"]
             self._work.queue.put_nowait(lambda: self._start(op))
@@ -191,7 +205,8 @@ class Runtime:
             op["actions"][record["id"]] = record
             op["action_keys"][request_key] = record["id"]
             self._actions[record["id"]] = record
-            op.update(active=True, active_action=record["id"], deadline=self.clock() + self.timeout)
+            op.update(active=True, active_action=record["id"],
+                      deadline=self.clock() + self._timeout(integration, "action_timeout_s"))
             # At most one start/action per retained operation uses this queue.
             self._work.queue.put_nowait(lambda: self._call(op, record))
             return self._action_snapshot(op, record)
@@ -301,7 +316,7 @@ class Runtime:
                 op["adapter"] = adapter
             self._check(op)
             self._phase(op, "validating")
-            normalized = object_data(adapter.validate(op["profile"], op["configuration"]))
+            normalized = object_data(adapter.validate(op["profile"], op["configuration"]), max_bytes=MAX_REQUEST_BYTES)
             self._check(op)
             self._phase(op, "starting")
             adapter.start(op["profile"], normalized)
@@ -318,6 +333,8 @@ class Runtime:
             self._fail(op, exc)
         finally:
             with self._lock:
+                # Retry identity is the fingerprint; never retain a large body.
+                op.pop("configuration", None)
                 op["active"] = False
                 if op["cancelled"].is_set():
                     self._schedule_cleanup(op)
@@ -325,7 +342,9 @@ class Runtime:
     def _fail(self, op, exc):
         with self._lock:
             code = exc.code if isinstance(exc, IntegrationError) else f"{op['phase']}_failed"
-            if code == "cancelled" and op["error"] is not None:
+            # An adapter raising because it was cancelled keeps the cause (e.g. timeout).
+            if op["error"] is not None and (code == "cancelled" or not isinstance(exc, IntegrationError)
+                                            and op["cancelled"].is_set()):
                 code = op["error"]
             op.update(state="ERROR", error=code)
             op["cancelled"].set()
@@ -336,7 +355,9 @@ class Runtime:
 
     def _schedule_cleanup(self, op):
         if not op["active"] and not op["cleanup_attempted"] and not op["released"]:
-            op.update(cleanup=True, cleanup_attempted=True, deadline=self.clock() + self.timeout)
+            # Adapter stop and the supervisor's scope stop each get one stop budget.
+            op.update(cleanup=True, cleanup_attempted=True,
+                      deadline=self.clock() + 2 * self._timeout(op["integration"], "stop_timeout_s"))
             self._cleanup.queue.put_nowait(lambda: self._stop(op))
 
     def _stop(self, op):
@@ -406,7 +427,8 @@ class Runtime:
         # Authority or cancellation may change during the read: return no bytes then.
         self._fetchable(binding, operation_id)
         return object_data({"operation_id": operation_id, "artifact": artifact, "offset": offset, "size": size,
-                            "eof": offset + len(data) >= size, "data": base64.b64encode(data).decode("ascii")})
+                            "eof": offset + len(data) >= size, "data": base64.b64encode(data).decode("ascii")},
+                           max_bytes=MAX_FETCH_REPLY_BYTES)
 
     def _fetchable(self, binding, operation_id):
         if not binding.authority():

@@ -50,6 +50,8 @@ class Configuration:
     cgroup_root: Path | None = None
     errors: tuple = ()
     limits: dict = field(default_factory=dict)
+    timeouts: dict = field(default_factory=dict)
+    user_code: frozenset = frozenset()
 
     @classmethod
     def load(cls, path):
@@ -57,7 +59,7 @@ class Configuration:
         if not path.exists():
             return cls()
         raw = read_object(path)
-        if (set(raw) - {'version', 'enabled', 'manifests', 'devices', 'cgroup_root', 'limits'}
+        if (set(raw) - {'version', 'enabled', 'manifests', 'devices', 'cgroup_root', 'limits', 'user_code'}
                 or type(raw.get('version')) is not int or raw['version'] != 1
                 or type(raw.get('enabled', False)) is not bool):
             raise IntegrationError('invalid_configuration', 'invalid integration deployment configuration')
@@ -96,22 +98,32 @@ class Configuration:
         rows = raw.get('limits', {})
         if type(rows) is not dict or len(rows) > 64:
             raise IntegrationError('invalid_configuration', 'invalid resource limits')
-        limits = {}
+        limits, timeouts = {}, {}
+        timeout_keys = ('start_timeout_s', 'action_timeout_s', 'stop_timeout_s')
         for integration_id, row in rows.items():
-            if (type(row) is not dict or set(row) - {'memory_mib', 'max_pids'}
+            if (type(row) is not dict or set(row) - {'memory_mib', 'max_pids', *timeout_keys}
                     or any(type(row[key]) is not int for key in row)
                     or not 16 <= row.get('memory_mib', 16) <= 65536
-                    or not 1 <= row.get('max_pids', 1) <= 4096):
+                    or not 1 <= row.get('max_pids', 1) <= 4096
+                    or any(not 1 <= row.get(key, 30) <= 600 for key in timeout_keys)):
                 raise IntegrationError('invalid_configuration', 'invalid resource limits')
             if integration_id in declared:
+                timeouts[integration_id] = {key: row[key] for key in timeout_keys if key in row}
                 # Stored as CgroupSupervisor.create keyword overrides.
                 limits[integration_id] = entry = {}
                 if 'max_pids' in row:
                     entry['max_pids'] = row['max_pids']
                 if 'memory_mib' in row:
                     entry['memory_bytes'] = row['memory_mib'] << 20
+        # Operator-only: integrations allowed to run caller-supplied code.
+        user_code = raw.get('user_code', [])
+        if type(user_code) is not list or len(user_code) > 64 or any(type(i) is not str for i in user_code):
+            raise IntegrationError('invalid_configuration', 'invalid user_code integrations')
+        if any(i not in declared for i in user_code):
+            errors.append('adapter_metadata_unavailable')
         return cls(Registry(manifests, enabled=enabled), raw.get('enabled', False), devices,
-                   Path(cgroup) if cgroup else None, tuple(errors), limits)
+                   Path(cgroup) if cgroup else None, tuple(errors), limits, timeouts,
+                   frozenset(i for i in user_code if i in declared))
 
     def physical_mapping(self, records, *, unresolved=()):
         if not self.enabled and not unresolved:

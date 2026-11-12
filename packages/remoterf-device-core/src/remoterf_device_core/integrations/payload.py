@@ -25,6 +25,12 @@ RESERVED_KEYS = frozenset({
     "__args__", "__kwargs__",
 })
 MAX_ENVELOPE_BYTES = 64 * 1024
+# integration_start/integration_call envelopes. The whole Invoke must stay at
+# least 25% under the Global relay's 192 KiB request frame.
+MAX_REQUEST_BYTES = 128 * 1024
+# One maximum artifact chunk (384 KiB raw, 512 KiB base64) plus reply fields;
+# at least 25% under the relay's 768 KiB response frame.
+MAX_FETCH_REPLY_BYTES = 540 * 1024
 MAX_DEPTH = 16
 MAX_ITEMS = 4096
 
@@ -36,7 +42,7 @@ This budget covers the JSON envelope, not an entire relayed RPC. Bulk data
 must use a separately bounded top-level binary transfer. Integers are int64;
 bytes/arrays, custom objects, non-finite floats and protocol tags are rejected.
 """
-    if type(max_bytes) is not int or not 0 < max_bytes <= MAX_ENVELOPE_BYTES:
+    if type(max_bytes) is not int or not 0 < max_bytes <= MAX_FETCH_REPLY_BYTES:
         raise ValueError("max_bytes must be within the integration envelope limit")
     remaining = MAX_ITEMS
     text_bytes = 0

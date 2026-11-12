@@ -15,7 +15,7 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from .contract import Adapter, Context, CONTRACT_VERSION
-from .payload import IntegrationError, object_data
+from .payload import IntegrationError, MAX_REQUEST_BYTES, object_data
 
 
 _ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+")
@@ -152,7 +152,7 @@ class Registry:
         definition = self._admit(integration_id, device_id, device_type)
         if type(action) is not str or action not in definition.actions:
             raise IntegrationError("unsupported_action", "integration action is not declared")
-        return object_data(parameters)
+        return object_data(parameters, max_bytes=MAX_REQUEST_BYTES)
 
     def validate_start(self, integration_id: str, *, device_id: str, device_type: str,
                        profile: str, configuration: dict) -> dict:
@@ -160,7 +160,7 @@ class Registry:
         definition = self._admit(integration_id, device_id, device_type)
         if type(profile) is not str or profile not in definition.profiles:
             raise IntegrationError("unsupported_profile", "integration profile is not declared")
-        return object_data(configuration)
+        return object_data(configuration, max_bytes=MAX_REQUEST_BYTES)
 
     def _admit(self, integration_id: str, device_id: str, device_type: str) -> Manifest:
         definition = self._definition(integration_id)
