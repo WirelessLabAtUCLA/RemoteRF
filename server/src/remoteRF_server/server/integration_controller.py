@@ -11,6 +11,7 @@ from threading import RLock
 import time
 
 from remoterf_device_core.integrations import CONTRACT_VERSION, IntegrationError, object_data
+from remoterf_device_core.integrations.payload import MAX_REQUEST_BYTES
 from remoterf_device_core.integrations.artifacts import ARTIFACTS, MAX_FETCH_BYTES
 from remoterf_device_core.integrations.deployment import Configuration, scope_id, read_object
 from remoterf_device_core.integrations.ownership import Journal
@@ -20,9 +21,10 @@ from remoterf_device_core.native_lifetime import submit_cleanup
 
 class DeferredScope:
     """No filesystem/process work on RPC; prepare runs after durable ownership."""
-    def __init__(self, supervisor, owner_id, work_dir, limits=None):
+    def __init__(self, supervisor, owner_id, work_dir, limits=None, stop_timeout=5.0):
         self.supervisor, self.owner_id, self.work_dir = supervisor, owner_id, work_dir
         self.limits = limits or {}
+        self.stop_timeout = stop_timeout
         self.scope = None
         self.attempted = False
 
@@ -54,7 +56,7 @@ class DeferredScope:
                 pass
 
     def stop_if_prepared(self):
-        if self.scope is not None and not self.scope.stop():
+        if self.scope is not None and not self.scope.stop(timeout=self.stop_timeout):
             raise IntegrationError('recovery_required', 'supervised processes did not finish cleanup')
 
     def __getattr__(self, name):
@@ -64,7 +66,7 @@ class DeferredScope:
 
 
 def _fields(request, required=(), optional=()):
-    request = object_data(request)
+    request = object_data(request, max_bytes=MAX_REQUEST_BYTES)
     if not set(required) <= set(request) or set(request) - set(required) - set(optional):
         raise IntegrationError('invalid_request', 'integration request fields do not match the method')
     return request
@@ -205,7 +207,8 @@ class Controller:
                         owner = scope_id(gate.physical_id, session.session_id, generation, request_key)
                         directory = self.state_dir / 'work' / owner
                         scope = DeferredScope(self.supervisor, owner, directory,
-                                              self.config.limits.get(integration_id))
+                                              self.config.limits.get(integration_id),
+                                              self.config.timeouts.get(integration_id, {}).get('stop_timeout_s', 5.0))
                         binding = manager.integration_binding(session.session_id, work_dir=directory,
                                                               resources_released=scope.resources_released)
                         binding = replace(binding, selector={'serial': self.config.devices[session.gid]['serial']},
@@ -214,7 +217,8 @@ class Controller:
                         self._bindings[binding_key] = (binding, scope)
                         created_binding = True
                 if self._runtime is None:
-                    self._runtime = Runtime(self.registry)
+                    self._runtime = Runtime(self.registry, timeouts=self.config.timeouts,
+                                            user_code=self.config.user_code)
                 try:
                     result = self._runtime.start(binding, integration_id, profile, request['configuration'], request_key=request_key)
                 except Exception:

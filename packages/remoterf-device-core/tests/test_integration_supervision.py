@@ -340,6 +340,21 @@ def test_required_flag_rejects_non_boolean_without_launch(fake_cgroups, tmp_path
     assert caught.value.code == 'invalid_process'
 
 
+@pytest.mark.parametrize('timeout', [0, 601, True, '5'])
+def test_operator_timeouts_are_bounded_at_600_seconds(fake_cgroups, tmp_path, monkeypatch, timeout):
+    create, root, state = fake_cgroups
+    scope = create().create('bounded')
+    monkeypatch.setattr(mod.subprocess, 'Popen', Mock(side_effect=AssertionError('must not launch')))
+    with pytest.raises(IntegrationError) as caught:
+        scope.launch([sys.executable], env={}, cwd=tmp_path, timeout=timeout)
+    assert caught.value.code == 'invalid_process'
+    if timeout != 0:
+        with pytest.raises(ValueError):
+            scope.stop(timeout=timeout)
+    assert scope.stop(timeout=600)  # an empty scope releases immediately
+    scope.close()
+
+
 def test_selector_failure_latches_for_all_scopes_and_retains_unverified_logs(fake_cgroups, tmp_path, monkeypatch):
     create, root, state = fake_cgroups
     supervisor = create()

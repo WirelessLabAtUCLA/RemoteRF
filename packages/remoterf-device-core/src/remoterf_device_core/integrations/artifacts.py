@@ -22,7 +22,7 @@ from .supervision import _open_dir
 
 ARTIFACTS = "artifacts"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-MAX_FETCH_BYTES = 32 * 1024
+MAX_FETCH_BYTES = 384 * 1024
 MAX_ENTRIES = 256
 # ponytail: detection not enforcement; per-op tmpfs/project quota if disk exhaustion is seen
 QUOTA_BYTES = 256 * 1024 * 1024

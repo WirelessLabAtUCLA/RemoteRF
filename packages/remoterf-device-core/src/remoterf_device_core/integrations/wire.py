@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import json
 
-from .payload import IntegrationError, MAX_ENVELOPE_BYTES, object_data
+from .payload import (IntegrationError, MAX_ENVELOPE_BYTES, MAX_FETCH_REPLY_BYTES, MAX_REQUEST_BYTES,
+                      object_data)
 
 
 INTEGRATION_METHODS = (
@@ -22,7 +23,7 @@ INTEGRATION_METHODS = (
     "integration_status", "integration_stop", "integration_call", "integration_fetch",
 )
 INTEGRATION_OVERLOAD = "request"
-MAX_INVOKE_BYTES = 128 * 1024
+MAX_INVOKE_BYTES = 144 * 1024
 
 
 def _overload(overload_id):
@@ -40,9 +41,9 @@ def validate_arguments(args, positional_args=None, *, overload_id="") -> dict:
     if type(positional_args) is not list:
         raise IntegrationError("invalid_request", "integration positional arguments must be a list")
     if set(args) == {"request"} and not positional_args:
-        return object_data(args["request"])
+        return object_data(args["request"], max_bytes=MAX_REQUEST_BYTES)
     if not args and len(positional_args) == 1:
-        return object_data(positional_args[0])
+        return object_data(positional_args[0], max_bytes=MAX_REQUEST_BYTES)
     raise IntegrationError("invalid_request", "integration methods require exactly one request object")
 
 
@@ -65,7 +66,7 @@ def _json(value, *, positional):
     raw = value.json_value
     # Permit the two outer array brackets for the positional wire form. Count
     # actual wire text as well as the normalized envelope; whitespace is not free.
-    limit = MAX_ENVELOPE_BYTES + (2 if positional else 0)
+    limit = MAX_REQUEST_BYTES + (2 if positional else 0)
     if len(raw) > limit or len(raw.encode("utf-8")) > limit:
         raise IntegrationError("payload_limit", "encoded integration request exceeds its budget")
     try:
@@ -98,6 +99,10 @@ def decode_request(request) -> dict:
     raise IntegrationError("invalid_request", "unexpected integration argument")
 
 
-def validate_result(value) -> dict:
-    """Bound a reply before native snapshot conversion or DynamicValue encoding."""
-    return object_data(value)
+def validate_result(value, method=None) -> dict:
+    """Bound a reply before native snapshot conversion or DynamicValue encoding.
+
+    Only an artifact chunk gets the larger fetch-reply budget.
+    """
+    return object_data(value, max_bytes=MAX_FETCH_REPLY_BYTES if method == "integration_fetch"
+                       else MAX_ENVELOPE_BYTES)

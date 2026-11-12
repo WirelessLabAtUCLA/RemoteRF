@@ -22,13 +22,15 @@ class Scope:
     def __init__(self, owner, limits=None):
         self.owner, self.limits = owner, limits
         self.stops = 0
+        self.stop_timeouts = []
         self.closed = False
     def resources_released(self):
         return True
     def resource_failure(self):
         return None
-    def stop(self):
+    def stop(self, timeout=5.0):
         self.stops += 1
+        self.stop_timeouts.append(timeout)
         return True
     def close(self):
         self.closed = True
@@ -167,6 +169,29 @@ def test_operator_limits_reach_only_their_integration_scope(controlled):
     assert rig.supervisor.scopes[1].limits == {}
 
 
+def test_operator_timeouts_and_user_code_reach_runtime_context_and_scope(controlled, monkeypatch):
+    rig = controlled
+    iid = rig.definition.integration_id
+    contexts = []
+    monkeypatch.setattr(rig.controller.registry, 'create', lambda integration, context: contexts.append(context) or rig.adapter)
+    rig.config.timeouts = {iid: {'start_timeout_s': 120, 'stop_timeout_s': 45}}
+    rig.config.user_code = frozenset({iid})
+    stopped(rig, running(rig))
+    assert contexts[0].user_code is True
+    assert (contexts[0].start_timeout_s, contexts[0].action_timeout_s, contexts[0].stop_timeout_s) == (120, 30, 45)
+    assert rig.supervisor.scopes[0].stop_timeouts == [45]
+
+
+def test_user_code_defaults_off_and_is_not_settable_by_request(controlled, monkeypatch):
+    rig = controlled
+    contexts = []
+    monkeypatch.setattr(rig.controller.registry, 'create', lambda integration, context: contexts.append(context) or rig.adapter)
+    request = dict(rig.start_request(), user_code=True)
+    code_from(lambda: rig.invoke('start', request), 'invalid_request')
+    stopped(rig, running(rig))
+    assert contexts[0].user_code is False and rig.supervisor.scopes[0].stop_timeouts == [5.0]
+
+
 def test_cancelled_before_release_can_retry_same_generation_with_new_resource_owner(controlled, monkeypatch):
     rig = controlled
     entered, proceed = Event(), Event()
@@ -252,7 +277,7 @@ def test_fetch_reads_prepared_artifacts_outside_controller_lock_until_stop(contr
     rig = controlled
     operation = running(rig)
     work = rig.controller.state_dir / 'work' / rig.supervisor.scopes[0].owner
-    (work / 'artifacts' / 'grid.bin').write_bytes(b'x' * 40000)
+    (work / 'artifacts' / 'grid.bin').write_bytes(b'x' * 400000)
     fetch = rig.controller._runtime.fetch
     held = []
     def probe(*args):
@@ -261,10 +286,12 @@ def test_fetch_reads_prepared_artifacts_outside_controller_lock_until_stop(contr
     monkeypatch.setattr(rig.controller._runtime, 'fetch', probe)
     request = {'operation_id': operation['operation_id'], 'artifact': 'grid.bin', 'offset': 0}
     first = rig.invoke('fetch', request)
-    assert first['size'] == 40000 and not first['eof'] and len(base64.b64decode(first['data'])) == 32768
-    last = rig.invoke('fetch', {**request, 'offset': 32768, 'limit': 32768})
-    assert last['eof'] and len(base64.b64decode(last['data'])) == 40000 - 32768
+    # The default chunk is the 384 KiB maximum and passes the fetch-only reply bound.
+    assert first['size'] == 400000 and not first['eof'] and len(base64.b64decode(first['data'])) == 393216
+    last = rig.invoke('fetch', {**request, 'offset': 393216, 'limit': 393216})
+    assert last['eof'] and len(base64.b64decode(last['data'])) == 400000 - 393216
     assert held == [False, False]
+    code_from(lambda: rig.invoke('fetch', {**request, 'limit': 393217}), 'invalid_request')
     code_from(lambda: rig.invoke('fetch', {**request, 'artifact': '../grid.bin'}), 'invalid_request')
     code_from(lambda: rig.invoke('fetch', {**request, 'extra': 1}), 'invalid_request')
     code_from(lambda: rig.invoke('fetch', {'operation_id': operation['operation_id'], 'artifact': 'grid.bin'}),

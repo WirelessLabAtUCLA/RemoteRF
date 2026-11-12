@@ -65,11 +65,39 @@ def test_legacy_qualifications_key_is_rejected(tmp_path):
     assert_code('invalid_configuration', lambda: Configuration.load(path))
 
 
-def limits_config(tmp_path, definition, limits):
+def limits_config(tmp_path, definition, limits, **extra):
     (tmp_path / 'adapter.json').write_text(json.dumps({**definition.describe(), 'factory': definition.factory}))
     (tmp_path / 'integrations.json').write_text(json.dumps(dict(version=1, manifests=['adapter.json'],
-                                                                limits=limits)))
+                                                                limits=limits, **extra)))
     return Configuration.load(tmp_path / 'integrations.json')
+
+
+def test_operator_timeouts_stay_out_of_cgroup_limits(installed, tmp_path):
+    definition, package, distributions = installed
+    iid = definition.integration_id
+    config = limits_config(tmp_path, definition, {iid: {'max_pids': 8, 'start_timeout_s': 600, 'action_timeout_s': 1,
+                                                        'stop_timeout_s': 90}, 'org.missing.adapter': {'stop_timeout_s': 5}})
+    assert config.limits == {iid: {'max_pids': 8}}
+    assert config.timeouts == {iid: {'start_timeout_s': 600, 'action_timeout_s': 1, 'stop_timeout_s': 90}}
+    assert Configuration().timeouts == {}
+
+
+@pytest.mark.parametrize('row', [{'start_timeout_s': 0}, {'action_timeout_s': 601}, {'stop_timeout_s': True},
+                                 {'start_timeout_s': 30.0}, {'stop_timeout_s': '30'}, {'start_timeout_s': None}])
+def test_malformed_operator_timeouts_fail_closed(installed, tmp_path, row):
+    definition, package, distributions = installed
+    assert_code('invalid_configuration', lambda: limits_config(tmp_path, definition, {definition.integration_id: row}))
+
+
+def test_user_code_is_operator_listed_and_declared_only(installed, tmp_path):
+    definition, package, distributions = installed
+    assert Configuration().user_code == frozenset()
+    assert limits_config(tmp_path, definition, {}).user_code == frozenset()
+    config = limits_config(tmp_path, definition, {}, user_code=[definition.integration_id, 'org.missing.adapter'])
+    assert config.user_code == {definition.integration_id}
+    assert config.errors == ('adapter_metadata_unavailable',)
+    for value in ['org.example.adapter', [1], [True], {'org.example.adapter': True}, ['x'] * 65]:
+        assert_code('invalid_configuration', lambda: limits_config(tmp_path, definition, {}, user_code=value))
 
 
 def test_operator_limits_are_converted_and_undeclared_ids_ignored(installed, tmp_path):

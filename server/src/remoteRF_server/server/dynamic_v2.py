@@ -1336,7 +1336,7 @@ class SessionManager:
                     raise IntegrationError("unsupported_device", "integrations require a configured plain USRP")
                 # Application control must remain reachable while the native
                 # gate is owned. Never interpret these arguments/results as UHD.
-                return validate_result(self.integrations.dispatch(self, session, method_name, request)), []
+                return validate_result(self.integrations.dispatch(self, session, method_name, request), method_name), []
             except IntegrationError as exc:
                 raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=method_name) from None
         session = self.get(session_id)

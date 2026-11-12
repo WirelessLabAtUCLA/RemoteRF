@@ -135,6 +135,19 @@ def test_hung_start_times_out_but_never_releases_ownership(rig):
     wait_for(lambda: runtime.status(binding, op)['released'])
 
 
+def test_start_raising_on_cancel_keeps_timeout_error(rig):
+    runtime, binding, state, adapter, entered, proceed, start = rig
+    runtime.timeout = 0.05
+
+    def start_waits_for_cancel(profile, configuration):
+        next(iter(runtime._operations.values()))['cancelled'].wait(5)
+        raise RuntimeError('start cancelled')
+    adapter.start = start_waits_for_cancel
+    op = start()['operation_id']
+    wait_for(lambda: runtime.status(binding, op)['released'])
+    assert runtime.status(binding, op)['error'] == 'timeout'
+
+
 @pytest.mark.parametrize('failure', ['stop', 'verify', 'native_release', 'restore', 'bad_result'])
 def test_cleanup_failures_stay_owned_until_explicit_reconciliation(rig, failure):
     runtime, binding, state, adapter, entered, proceed, start = rig
@@ -597,6 +610,71 @@ def test_selector_is_validated_before_claim_and_copied_into_context(rig):
     selector['serial'] = 'different'
     assert created[0].selector == {'serial': 'one'}
     assert created[0].processes is processes
+
+
+def test_operator_timeouts_user_code_and_retention_are_per_integration(rig):
+    runtime, binding, state, adapter, entered, proceed, start = rig
+    iid = 'org.example.test'
+    created = []
+    runtime.registry.create = lambda integration, context: created.append(context) or adapter
+    runtime.timeouts = {iid: {'start_timeout_s': 45, 'action_timeout_s': 600, 'stop_timeout_s': 90}}
+    runtime.user_code = frozenset({iid})
+    operation_id = start(config={'code': 'x' * 100000})['operation_id']
+    op = runtime._operations[operation_id]
+    assert 44 < op['deadline'] - time.monotonic() <= 45
+    wait_for(lambda: runtime.status(binding, operation_id)['state'] == 'RUNNING' and not op['active'])
+    context = created[0]
+    assert context.user_code is True
+    assert (context.start_timeout_s, context.action_timeout_s, context.stop_timeout_s) == (45, 600, 90)
+    # Retry identity is the fingerprint; the large body is not retained.
+    assert 'configuration' not in op
+    assert start(config={'code': 'x' * 100000})['operation_id'] == operation_id
+    with pytest.raises(IntegrationError):
+        start(config={'code': 'y'})
+    runtime.call(binding, operation_id, 'increment', {}, request_key='a')
+    assert 599 < op['deadline'] - time.monotonic() <= 600
+    wait_for(lambda: not op['active'])
+    runtime.stop(binding, operation_id)
+    assert 179 < op['deadline'] - time.monotonic() <= 180  # adapter + scope stop budgets
+    wait_for(lambda: runtime.status(binding, operation_id)['released'])
+
+
+def test_context_defaults_keep_existing_adapters_working(rig):
+    from remoterf_device_core.integrations.contract import CONTRACT_VERSION, Context
+    context = Context('7', 'usrp', 1, '/tmp/x', Event(), None, None)
+    assert CONTRACT_VERSION == '0.1'
+    assert context.user_code is False
+    assert (context.start_timeout_s, context.action_timeout_s, context.stop_timeout_s) == (30, 30, 30)
+    runtime, binding, state, adapter, entered, proceed, start = rig
+    created = []
+    runtime.registry.create = lambda integration, context: created.append(context) or adapter
+    runtime.timeouts = {'org.other.app': {'start_timeout_s': 600}}
+    runtime.user_code = frozenset({'org.other.app'})
+    operation_id = start()['operation_id']
+    wait_for(lambda: runtime.status(binding, operation_id)['state'] == 'RUNNING')
+    assert created[0].user_code is False and created[0].start_timeout_s == runtime.timeout == 2
+
+
+def test_configured_stop_timeout_fences_uncertain_cleanup(rig):
+    runtime, binding, state, adapter, entered, proceed, start = rig
+    op = start()['operation_id']
+    wait_for(lambda: runtime.status(binding, op)['state'] == 'RUNNING')
+    stop_entered, finish = Event(), Event()
+    def stop():
+        stop_entered.set()
+        finish.wait()
+        state['application'] = False
+    adapter.stop = stop
+    runtime.timeouts = {'org.example.test': {'stop_timeout_s': 0.03}}
+    try:
+        runtime.stop(binding, op)
+        wait_for(lambda: runtime.status(binding, op)['error'] == 'timeout')
+        assert binding.gate.snapshot()['blocked']
+        with pytest.raises(IntegrationError):
+            runtime.recover(binding, op, verify=lambda: True)
+    finally:
+        finish.set()
+    wait_for(lambda: runtime.status(binding, op)['released'])
 
 
 def test_durable_claim_records_resource_owner_and_finalizer_runs_after_stop_error(rig):
