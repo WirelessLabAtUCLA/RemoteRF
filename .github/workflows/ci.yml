@@ -68,8 +68,10 @@ jobs:
               pip install $core -e . pytest
               pytest tests --ignore-glob='*hardware*' -q
               pytest ../packages/remoterf-device-core/tests -q
-              # Harnesses import the probe and the client (it pins another federation-core, so it is not installed here).
-              PYTHONPATH=../client/src:../examples/integrations/usrp_probe/src pytest ../examples/integrations/usrp_probe/tests ../tools/qualification/tests -q ;;
+              # Harnesses read the installed probe's version and import the client (which pins
+              # another federation-core, so it is put on the path instead of installed).
+              pip install ../examples/integrations/usrp_probe
+              PYTHONPATH=../client/src pytest ../examples/integrations/usrp_probe/tests ../tools/qualification/tests -q ;;
             host)
               pip install $core -e . pytest pyjwt # tests/test_direct_host.py imports jwt
               PYTHONPATH=src pytest tests -q ;;
