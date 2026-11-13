@@ -759,6 +759,9 @@ def migrate_gate_e(db_dir: str | Path) -> None:
         migrate_gate_e_usergroups_schema(conn)
 
 
+ADMIN_GROUP = "admin"  # built-in group seeded by UserGroupHandler: every device, never lost, never shared
+
+
 def migrate_gate_f_usergroups_schema(conn: sqlite3.Connection) -> None:
     """Add only destination code restrictions and durable redemption receipts."""
 

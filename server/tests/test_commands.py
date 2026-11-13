@@ -210,7 +210,7 @@ class NonInteractiveGroupCommandsTests(unittest.TestCase):
         value = json.loads(output)
         self.assertEqual(value["group_name"], "ee123")
         self.assertEqual(value["devices_whitelist"], [3, 7])
-        group = self.handler.get_all_user_groups(include_users=False)[0]
+        group = self.handler.get_all_user_groups(include_users=False)[-1]  # [0] is the built-in admin group
         self.assertEqual(group["devices_whitelist"], [3, 7])
         self.assertEqual((group["max_reservations"], group["max_reservation_time_sec"]), (4, 900))
         self.assertEqual((group["max_horizon_sec"], group["lifetime_sec"], group["lan_only"]),
@@ -290,7 +290,7 @@ class NonInteractiveGroupCommandsTests(unittest.TestCase):
         self.assertEqual(value["devices_whitelist"], [1, 2])
         self.assertEqual(value["shared_with"], ["lab-b"])
         share.assert_called_once_with(str(group_id), ["lab-b"])
-        row = self.handler.get_all_user_groups(include_users=False)[0]
+        row = self.handler.get_all_user_groups(include_users=False)[-1]
         self.assertEqual((row["max_reservations"], row["max_reservation_time_sec"]), (6, 1200))
         self.assertEqual((row["max_horizon_sec"], row["lifetime_sec"], row["lan_only"]),
                          (86400, 0, False))
@@ -318,7 +318,7 @@ class NonInteractiveGroupCommandsTests(unittest.TestCase):
         rc, output = self.run_shell(["groups", "remove", str(group_id), "--yes", "--json"])
         self.assertEqual(rc, 0, output)
         self.assertEqual(json.loads(output)["group_id"], group_id)
-        self.assertEqual(self.handler.get_all_user_groups(include_users=False), [])
+        self.assertEqual([g["group_name"] for g in self.handler.get_all_user_groups(include_users=False)], ["admin"])
         rc, output = self.run_shell(["groups", "remove"])
         self.assertEqual(rc, 1)
         self.assertIn("requires a group and --yes", output)

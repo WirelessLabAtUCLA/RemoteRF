@@ -24,7 +24,7 @@ from functools import wraps
 from typing import Optional, Tuple, List
 
 from ..common.utils import *
-from .federation.migrations import migrate_gate_f_usergroups_schema
+from .federation.migrations import ADMIN_GROUP, migrate_gate_f_usergroups_schema
 from .global_onboarding import RELAYED
 
 DEFAULT_HORIZON_SEC = 7 * 86400  # how far ahead a reservation may start; 0 = no limit
@@ -97,6 +97,19 @@ class UserGroupHandler:
         ''')
 
         migrate_gate_f_usergroups_schema(self.db)  # also adds UserGroups.lan_only
+
+        # A lab's own narrower or expiring 'admin' group keeps its members, limits and
+        # shares under a new name, so nobody silently gains every device.
+        self.cursor.execute(
+            "UPDATE UserGroups SET group_name = ? || '-old-' || group_id WHERE group_name = ?"
+            " AND (devices_whitelist != '[]' OR lifetime_sec != 0)",
+            (ADMIN_GROUP, ADMIN_GROUP),
+        )
+        self.cursor.execute(
+            "INSERT OR IGNORE INTO UserGroups (group_name, devices_whitelist, max_reservation_time_sec,"
+            " max_reservations, lifetime_sec, created_at) VALUES (?, '[]', 3600, 999, 0, ?)",
+            (ADMIN_GROUP, datetime.now()),
+        )
         
         self.cursor.close()
         self.db.commit()
@@ -312,7 +325,10 @@ class UserGroupHandler:
             if group_id <= 0:
                 return False
 
-            self.cursor.execute("SELECT 1 FROM UserGroups WHERE group_id = ? LIMIT 1", (group_id,))
+            self.cursor.execute(
+                "SELECT 1 FROM UserGroups WHERE group_id = ? AND group_name != ? LIMIT 1",
+                (group_id, ADMIN_GROUP),
+            )
             if self.cursor.fetchone() is None:
                 return False
 
@@ -346,8 +362,15 @@ class UserGroupHandler:
             if group_id <= 0:
                 return False
 
-            self.cursor.execute("SELECT 1 FROM UserGroups WHERE group_id = ? LIMIT 1", (group_id,))
-            if self.cursor.fetchone() is None:
+            self.cursor.execute("SELECT group_name FROM UserGroups WHERE group_id = ? LIMIT 1", (group_id,))
+            row = self.cursor.fetchone()
+            if row is None:
+                return False
+            if row[0] == ADMIN_GROUP and (
+                (group_name is not None and str(group_name).strip() != ADMIN_GROUP)
+                or devices_whitelist
+                or (lifetime_sec is not None and int(lifetime_sec) != 0)
+            ):
                 return False
 
             # dynamic update

@@ -56,7 +56,7 @@ from remoterf_federation_core import ContractError, FederationError, OwnerSigned
 from .. import global_onboarding as g
 from .contracts import ContractStore
 from .enrollment import UNENROLL_CODE
-from .migrations import migrate_gate_f_usergroups_schema
+from .migrations import ADMIN_GROUP, migrate_gate_f_usergroups_schema
 from .trust import TrustedKeyStore
 
 CAPABILITIES = ["DEVICE_CONTROL", "DEVICE_READ", "DEVICE_RESERVE", "FEDERATED_ENROLL", "PERMISSIONS_READ"]
@@ -661,11 +661,18 @@ def _queueing(clusters: dict, name: str) -> bool:
     return name == GLOBAL and GLOBAL not in clusters and g.participating()
 
 
+def _refuse_admin(group_name: str) -> None:
+    if group_name == ADMIN_GROUP:
+        raise ClusterError(f"the {ADMIN_GROUP} group covers every device and cannot be shared")
+
+
 def _queue_public(ref: str, on: bool) -> str:
     from . import global_home
 
     with _usergroups() as conn:
         group_id, group_name = _group(conn, ref)
+    if on:
+        _refuse_admin(group_name)
     state = global_home.load()
     queued = state.setdefault("public_groups", [])
     if on == (group_id in queued):
@@ -682,6 +689,7 @@ def attach_group(name: str, ref: str) -> str:
     cluster = _find(clusters, name)
     with _usergroups() as conn:
         group_id, group_name = _group(conn, ref)
+        _refuse_admin(group_name)
         if group_id in cluster.get("groups", []):
             raise ClusterError(f"{group_name} is already attached to {name}")
         cluster.setdefault("groups", []).append(group_id)

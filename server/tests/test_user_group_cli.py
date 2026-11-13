@@ -203,7 +203,8 @@ class LanOnlyGroupTests(unittest.TestCase):
         self.assertFalse(h.user_is_lan_only(uid=7))
         with self.relayed():
             self.assertEqual(h.get_users_devices(uid=7), [16])
-        self.assertEqual(h.get_all_user_groups(include_users=False)[0]["lan_only"], False)
+        (row,) = [g for g in h.get_all_user_groups(include_users=False) if g["group_id"] == self.gid]
+        self.assertEqual(row["lan_only"], False)
 
     def test_relay_peers_are_the_tunnel_target(self) -> None:
         from unittest import mock
@@ -216,6 +217,87 @@ class LanOnlyGroupTests(unittest.TestCase):
             self.assertTrue(g.is_relayed("ipv4:127.0.0.1:5"))
             self.assertFalse(g.is_relayed("ipv4:164.67.195.77:41234"))
             self.assertFalse(g.is_relayed("ipv6:[2607:f010::1]:41234"))
+
+
+class AdminGroupTests(unittest.TestCase):
+    """The built-in admin group always exists and covers every device."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from remoteRF_server.server import user_group_handler as m
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = mock.patch.object(m, "get_db_dir", return_value=Path(tmp.name))
+        root.start()
+        self.addCleanup(root.stop)
+        self.m = m
+        self.db = Path(tmp.name) / "usergroups.db"
+        self.h = m.UserGroupHandler()
+
+    def admin(self) -> dict:
+        (row,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_name"] == "admin"]
+        return row
+
+    def sql(self, statement: str) -> None:
+        import sqlite3
+
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(statement)
+
+    def test_seeded_once_with_defaults_and_restored(self) -> None:
+        self.m.UserGroupHandler()
+        row = self.admin()
+        self.assertEqual(
+            (row["devices_whitelist"], row["max_reservation_time_sec"], row["max_reservations"],
+             row["lifetime_sec"], row["lan_only"]),
+            ([], 3600, 999, 0, False),
+        )
+        self.assertEqual(self.h.get_all_enrollment_codes(), [])
+        self.sql("DELETE FROM UserGroups WHERE group_name='admin'")
+        self.m.UserGroupHandler()
+        self.assertEqual(self.admin()["max_reservations"], 999)
+
+    def test_a_labs_own_narrow_admin_group_is_renamed_not_widened(self) -> None:
+        old = self.admin()["group_id"]
+        self.sql(f"UPDATE UserGroups SET devices_whitelist='[3]', lifetime_sec=60 WHERE group_id={old}")
+        self.sql(f"INSERT INTO UsersLookup(user_id, group_id) VALUES (7, {old})")
+        self.m.UserGroupHandler()
+        groups = {g["group_name"]: g for g in self.h.get_all_user_groups(include_users=True)}
+        self.assertEqual((groups[f"admin-old-{old}"]["devices_whitelist"], groups[f"admin-old-{old}"]["users"]),
+                         ([3], [7]))
+        self.assertEqual((groups["admin"]["devices_whitelist"], groups["admin"]["users"]), ([], []))
+        self.assertNotEqual(groups["admin"]["group_id"], old)
+
+    def test_code_enrolls_and_covers_devices_added_later(self) -> None:
+        from unittest import mock
+
+        gid = self.admin()["group_id"]
+        self.h.create_enrollment_codes(code_names=["A1"], group_id=gid, uses=1, duration_sec=0)
+        self.assertTrue(self.h.enroll_user_with_code(uid=7, code_name="A1"))
+        with mock.patch("remoteRF_server.server.device_manager.get_all_devices_str",
+                        return_value={0: "a", 42: "new"}):
+            self.assertEqual(self.h.get_users_devices(uid=7), [0, 42])
+        self.assertEqual(self.h.get_users_max_reservation_time(uid=7, device_id=42), (True, 3600))
+        self.assertEqual(
+            self.h.get_group_quota_for_device(uid=7, device_id=42, reserved_device_ids=[42])[:3],
+            (True, 1, 999),
+        )
+
+    def test_cannot_be_deleted_renamed_narrowed_or_expired(self) -> None:
+        gid = self.admin()["group_id"]
+        self.assertFalse(self.h.delete_user_group(group_id=gid))
+        self.assertFalse(self.h.edit_user_group(group_id=gid, group_name="staff"))
+        self.assertFalse(self.h.edit_user_group(group_id=gid, devices_whitelist=[4]))
+        self.assertFalse(self.h.edit_user_group(group_id=gid, lifetime_sec=60))
+        self.assertEqual((self.admin()["group_name"], self.admin()["devices_whitelist"]), ("admin", []))
+        self.assertTrue(self.h.edit_user_group(group_id=gid, max_reservation_time_sec=7200, max_reservations=5))
+        self.assertEqual((self.admin()["max_reservation_time_sec"], self.admin()["max_reservations"]), (7200, 5))
+        self.m.UserGroupHandler()  # a restart keeps the edited limits
+        self.assertEqual(self.admin()["max_reservations"], 5)
 
 
 if __name__ == "__main__":

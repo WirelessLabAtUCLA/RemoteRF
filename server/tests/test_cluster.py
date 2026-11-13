@@ -369,6 +369,17 @@ class ClusterFlowTests(unittest.TestCase):
             with cluster._usergroups() as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM ClusterAccounts").fetchone()[0], 0)
 
+    def test_the_admin_group_is_never_shared(self):
+        with self.server(self.A):
+            cluster.create("lab")
+            with cluster._usergroups() as conn:
+                conn.execute("INSERT INTO UserGroups(group_name,max_reservation_time_sec,max_reservations,"
+                             "lifetime_sec) VALUES ('admin',3600,999,0)")
+            with self.assertRaises(cluster.ClusterError):
+                cluster.attach_group("lab", "admin")
+            with self.assertRaises(cluster.ClusterError):
+                cluster._queue_public("admin", True)
+
     def test_a_group_is_shared_into_exactly_the_clusters_named(self):
         with self.server(self.A):
             for name in ("one", "two"):
