@@ -107,14 +107,44 @@ def sample_rates(ctx):
     return "1, 2.5, 10, 20, 3 MS/s read back"
 
 
+def _lockouts(ctx):
+    from remoterf_device_core.drivers.adalm_pluto.pluto_schema import parse_lockouts
+    try:
+        return parse_lockouts(ctx.get("init")) or {}
+    except ValueError as exc:
+        raise Skip(f"invalid lockouts: {exc}") from exc
+
+
+def _check_tone(ctx, gain):
+    cfg = _lockouts(ctx)
+    if not cfg.get("tx_enabled", True):
+        raise Skip("TX is disabled on this device")
+    if "tx_min_freq" in cfg and not (
+        cfg["tx_min_freq"] <= 915e6 - FS / 2 and 915e6 + FS / 2 <= cfg["tx_max_freq"]
+    ):
+        raise Skip("tone occupied band is outside this device's TX range")
+    if gain > cfg.get("tx_max_gain_db", gain):
+        raise Skip("tone gain is above this device's TX limit")
+
+
 def lo_tuning(ctx):
     schema = ctx["schema"]
+    try:
+        cfg = _lockouts(ctx)
+    except Skip:
+        cfg = None
     freqs = (400e6, 915e6, 2.4e9, 3.5e9)  # inside the stock AD9363 range
+    tx_freqs = []
     for f in freqs:
         schema.set_rx_lo(int(f))
-        schema.set_tx_lo(int(f))
         _close(schema.get_rx_lo(), f, 1e3, "RX LO")
-        _close(schema.get_tx_lo(), f, 1e3, "TX LO")
+        if cfg is not None and cfg.get("tx_min_freq", f) <= f <= cfg.get("tx_max_freq", f):
+            schema.set_tx_lo(int(f))
+            _close(schema.get_tx_lo(), f, 1e3, "TX LO")
+            tx_freqs.append(f)
+    if len(tx_freqs) != len(freqs):
+        tx = ", ".join(f"{f / 1e6:g}" for f in tx_freqs)
+        return f"RX LO 400 MHz-3.5 GHz read back; TX LO {tx} MHz read back" if tx else "RX LO 400 MHz-3.5 GHz read back; TX LO skipped by lockouts"
     return "RX/TX LO 400 MHz-3.5 GHz read back"
 
 
@@ -193,6 +223,7 @@ def _prepare_tone(schema, lo):
 
 
 def loopback_tone(ctx):
+    _check_tone(ctx, TX_MIN_DB)
     schema = ctx["schema"]
     _prepare_tone(schema, 915e6)
     values = {}
@@ -214,6 +245,7 @@ def loopback_tone(ctx):
 def coax_loopback(ctx):
     if not ctx["init"].get("multi_tap"):
         raise Skip("not a Multi-Tap")
+    _check_tone(ctx, max(COAX_TX_DB))
     schema = ctx["schema"]
     _prepare_tone(schema, 915e6)
     schema.set_loopback(0)

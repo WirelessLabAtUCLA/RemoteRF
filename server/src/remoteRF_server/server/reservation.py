@@ -71,7 +71,7 @@ def _fanout(call, empty):
 
 # What remoterf 2.9+ sends a lab it is linked to (core lan.lan_secret).
 _LAN_SECRET = re.compile(r"[0-9a-f]{64}")
-from .user_group_handler import user_group_handler
+from .user_group_handler import ADMIN_GROUP, user_group_handler
 from . import global_onboarding
 from .transport_counters import create_table as create_transport_days
 from .global_onboarding import CLIENT_VERSION, MIN_CLIENT_VERSION, RELAYED, client_is_current, lan_only_hint
@@ -1856,7 +1856,7 @@ class ReservationHandler:
         reservation of this exact principal that is live right now, else None."""
 
         row = self.cursor.execute(
-            "SELECT f.local_account_id, r.device_id, r.username, r.start_time, r.end_time "
+            "SELECT f.local_account_id, r.device_id, r.username, r.start_time, r.end_time, r.salt, r.hash "
             "FROM FederatedReservations f JOIN Reservations r ON r.res_id = f.res_id "
             "WHERE f.res_id = ? AND f.issuer_deployment_id = ? AND f.remote_subject_id = ?",
             (int(reservation_id), canonical_uuid(issuer_deployment_id), canonical_uuid(remote_subject_id)),
@@ -1866,7 +1866,7 @@ class ReservationHandler:
             account = links.lookup(canonical_uuid(issuer_deployment_id), canonical_uuid(remote_subject_id))
             if account is not None:
                 row = self.cursor.execute(
-                    "SELECT a.acc_id, r.device_id, r.username, r.start_time, r.end_time "
+                    "SELECT a.acc_id, r.device_id, r.username, r.start_time, r.end_time, r.salt, r.hash "
                     "FROM Reservations r JOIN Accounts a ON a.username = r.username "
                     "WHERE r.res_id = ? AND a.acc_id = ?",
                     (int(reservation_id), account),
@@ -1883,7 +1883,38 @@ class ReservationHandler:
         return {
             "local_account_id": int(row[0]), "device_id": int(row[1]), "username": row[2],
             "end_time": _parse_reservation_datetime(row[4]).timestamp(),
+            "salt": row[5], "hash": row[6],
         }
+
+    @db_connection
+    def federated_rpc_reservation(
+        self, *, issuer_deployment_id: str, remote_subject_id: str, device_id: int,
+    ) -> tuple[str, str] | None:
+        """The caller's live reservation token pair, never the device manager's cached holder."""
+        issuer = canonical_uuid(issuer_deployment_id)
+        subject = canonical_uuid(remote_subject_id)
+        account = links.lookup(issuer, subject)
+        if account is not None:
+            rows = self.cursor.execute(
+                "SELECT r.start_time, r.end_time, r.salt, r.hash FROM Reservations r "
+                "JOIN Accounts a ON a.username = r.username WHERE a.acc_id = ? AND r.device_id = ?",
+                (account, int(device_id)),
+            ).fetchall()
+        else:
+            rows = self.cursor.execute(
+                "SELECT r.start_time, r.end_time, r.salt, r.hash FROM Reservations r "
+                "JOIN FederatedReservations f ON f.res_id = r.res_id "
+                "WHERE f.issuer_deployment_id = ? AND f.remote_subject_id = ? AND r.device_id = ?",
+                (issuer, subject, int(device_id)),
+            ).fetchall()
+        moment = datetime.now()
+        for start, end, salt, hashed in rows:
+            try:
+                if _parse_reservation_datetime(start) <= moment < _parse_reservation_datetime(end):
+                    return salt, hashed
+            except ValueError:
+                continue
+        return None
 
     @db_connection
     def federated_active_reservation(
@@ -1957,6 +1988,7 @@ class ReservationHandler:
     @db_connection
     def update_devices(self):
         devices = get_all_devices()  # whatever your local inventory is
+        holders = {str(k).strip(): value for k, value in get_registered_devices().items()}
 
         # Build a lookup: canonical string -> original key in `devices`
         # (handles int keys, str keys, etc.)
@@ -1991,11 +2023,21 @@ class ReservationHandler:
 
                 # If this reservation corresponds to a local device, remove it from the "clear later" list.
                 orig_key = key_by_str.pop(dev_id, None)
-                if orig_key is not None:
-                    devices.pop(orig_key, None)  # safe even if already removed
+                previous = devices.pop(orig_key, None) if orig_key is not None else holders.get(dev_id)
 
                 # Apply reservation token/state for this device_id (local or virtual)
-                set_device(dev_id, reservation[5] or "", reservation[6] or "")
+                held = (reservation[5] or "", reservation[6] or "")
+                if previous is None or tuple(previous[1:]) != held:
+                    relayed = RELAYED.set(True)
+                    try:
+                        bypass = ADMIN_GROUP in user_group_handler.get_groups_user_in(
+                            uid=self.get_uid(reservation[1])
+                        )
+                    finally:
+                        RELAYED.reset(relayed)
+                    if bypass:
+                        print(f"lockout bypass on: {dev_id} (gid {int(dev_id)})")
+                    set_device(dev_id, *held, bypass=bypass)
 
                 reservations_now += 1
 

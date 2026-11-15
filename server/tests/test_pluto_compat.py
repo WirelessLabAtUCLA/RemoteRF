@@ -218,7 +218,9 @@ class PlutoCompatTests(unittest.TestCase):
         self.assertNotIn("set_tx_channel_names", idl["setters"])
 
     def test_legacy_pluto_inventory_type_resolves_to_packaged_schema(self) -> None:
-        with patch.object(PlutoSchema, "make_device", return_value=self.device):
+        with patch.object(PlutoSchema, "make_device", return_value=self.device), patch.object(
+            device_manager, "get_driver_class", return_value=PlutoSchema
+        ) as driver:
             schema, ident, dtype = device_manager._connect_from_record(
                 {
                     "TYPE": "pluto",
@@ -227,6 +229,7 @@ class PlutoCompatTests(unittest.TestCase):
                 }
             )
 
+        driver.assert_called_once_with("adalm_pluto")
         self.assertIsInstance(schema, PlutoSchema)
         self.assertEqual(ident, "104473f6")
         self.assertEqual(dtype, "adalm_pluto")
@@ -374,6 +377,9 @@ class FakeAd936xRate:
     def _get_iio_attr(self, channel_name, attr_name, output):
         assert (channel_name, attr_name, output) == ("out", "voltage_filter_fir_en", False)
         return self.fir_en
+
+    def disable_dds(self):
+        self.dds_enabled = [False]
 
     def tx_destroy_buffer(self):
         pass

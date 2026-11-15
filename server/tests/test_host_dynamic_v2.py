@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from contextlib import contextmanager, nullcontext
 from unittest.mock import patch
 
 from remoteRF_server.common.grpc import grpc_pb2
@@ -84,11 +86,16 @@ class HostDynamicV2ProxyTests(unittest.TestCase):
                 raise AssertionError(f"unexpected operation {operation}")
             return {"wire": map_arg(response.SerializeToString())}
 
+        @contextmanager
+        def acquire(token):
+            if token != "invalid":
+                yield 7, self.device
+            else:
+                raise RuntimeError("invalid token")
+
         self.patches = [
-            patch(
-                "remoteRF_server.server.host_dynamic_v2.resolve_gid_for_token",
-                return_value=7,
-            ),
+            patch("remoteRF_server.server.host_dynamic_v2.acquire_device", acquire),
+            patch("remoteRF_server.server.host_dynamic_v2.resolve_gid_for_token", side_effect=lambda token: None if token == "invalid" else 7),
             patch(
                 "remoteRF_server.server.host_dynamic_v2.get_device_by_id",
                 return_value=(self.device, "salt", "hash"),
@@ -164,15 +171,26 @@ class HostDynamicV2ProxyTests(unittest.TestCase):
         sent = []
 
         class Registry:
-            def send_control(self, host_id, *, kind, device_id, payload):
+            def send_control(self, host_id, *, kind, device_id, payload, drop_on_failure=False):
                 sent.append((host_id, kind, device_id, payload, [item[2] for item in calls]))
                 return True
 
         calls = self.forwarded
+        closed = threading.Event()
+        close_gid = self.proxy.close_gid
+        picked = []
+        def close(gid, session_ids=None):
+            picked.append(session_ids)  # chosen before the thread runs, not by it
+            try:
+                close_gid(gid, session_ids)
+            finally:
+                closed.set()
         with patch.object(host_dynamic_v2, "host_session_proxy", self.proxy), patch(
             "remoteRF_server.server.host_dynamic_v2.hts.get_tunnel_registry", return_value=Registry()
-        ):
+        ), patch.object(self.proxy, "close_gid", side_effect=close):
             host_dynamic_v2._end_host_reservation(7)
+            self.assertTrue(closed.wait(2))
+        self.assertEqual(picked, [["host-session"]])
         self.assertFalse(self.proxy.is_remote_session("host-session"))
         # The frame goes before the lab closes its routes (its CloseSession forward).
         self.assertEqual(sent[0][:3], ("lab-host", "reservation_end", "7"))
@@ -239,6 +257,7 @@ class HostLabCopyTests(unittest.TestCase):
         for item in (
             patch("remoteRF_server.server.host_dynamic_v2.hts.get_tunnel_registry", return_value=Registry()),
             patch("remoteRF_server.server.host_dynamic_v2.get_device_schema", side_effect=lambda gid: self.schema),
+            patch("remoteRF_server.server.host_dynamic_v2.acquire_device", side_effect=lambda _: nullcontext((7, self.device))),
             patch("remoteRF_server.server.host_dynamic_v2.resolve_gid_for_token", return_value=7),
             patch("remoteRF_server.server.host_dynamic_v2.get_device_by_id", return_value=(self.device, "s", "h")),
         ):

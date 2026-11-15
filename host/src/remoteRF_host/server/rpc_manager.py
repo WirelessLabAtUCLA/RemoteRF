@@ -78,16 +78,33 @@ class RpcManager:
             pass
         return a
 
-    def run_rpc(self, *, function_name, args) -> dict:
+    def run_rpc(self, *, function_name, args, expected_epoch=None) -> dict:
         from contextlib import nullcontext
-        from .device_manager import hardware_access, get_local_device_context
+        from .device_manager import hardware_access, get_local_device_context, reset_before_rpc
+        args = dict(args)
+        tag_arg = args.pop("__rrf_reservation_tag", None)
+        try:
+            tag = None if tag_arg is None else unmap_arg(tag_arg)
+        except Exception:
+            tag = None
+        if tag_arg is not None and not isinstance(tag, str):
+            return {"Error": map_arg("The reservation on this device changed; call again.")}
         gid = self._resolve_gid(args)
-        if gid is None or function_name.startswith(("DynamicV2:", "IDL:")) or function_name == "echo":
+        if (gid is None or function_name.startswith("IDL:") or function_name == "echo"
+                or (function_name.startswith("DynamicV2:") and tag is None)):
             return self._run_admitted(function_name=function_name, args=args)
         try:
             context = get_local_device_context(gid) or {}
-            with hardware_access.native(gid), context.get("io_lock", nullcontext()):
-                return self._run_admitted(function_name=function_name, args=args)
+            dynamic_v2 = function_name.startswith("DynamicV2:")
+            # v2 ops run after admission, as at HEAD; OpenSession stays in one hold so a stale open can't land after the next holder's.
+            run_after = dynamic_v2 and function_name != "DynamicV2:OpenSession"
+            access = nullcontext() if dynamic_v2 else hardware_access.native(gid)
+            with access, context.get("io_lock", nullcontext()):
+                if "epoch" in context:
+                    reset_before_rpc(gid, context["epoch"] if expected_epoch is None else expected_epoch, context["schema"], tag, reset=not dynamic_v2)
+                if not run_after:
+                    return self._run_admitted(function_name=function_name, args=args)
+            return self._run_admitted(function_name=function_name, args=args)
         except Exception as exc:
             return {"Error": map_arg(str(exc))}
 

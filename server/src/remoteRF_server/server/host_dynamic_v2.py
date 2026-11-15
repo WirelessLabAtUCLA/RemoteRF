@@ -22,15 +22,19 @@ import time
 from dataclasses import dataclass
 
 from remoterf_device_core.manifest import builtin_hashes
+from remoterf_device_core.integrations import IntegrationError
 
 from ..common.grpc import grpc_pb2
 from ..common.idl.v2 import SCHEMA_VERSION
 from ..common.utils import map_arg, unmap_arg
 from ..host import host_tunnel_server as hts
 from .device_manager import (
+    ReservationChangedError,
     VirtualDevice,
+    acquire_device,
     get_device_by_id,
     get_device_schema,
+    parse_mastertoken,
     register_reservation_end_callback,
     resolve_gid_for_token,
 )
@@ -67,6 +71,7 @@ class HostSessionRoute:
     gid: int
     host_id: str
     device_id: str
+    reservation_tag: str = ""
 
 
 class HostDynamicV2Proxy:
@@ -83,13 +88,21 @@ class HostDynamicV2Proxy:
         return device if isinstance(device, VirtualDevice) else None
 
     def route_for_token(self, token: str) -> tuple[int, VirtualDevice] | None:
-        gid = resolve_gid_for_token(token)
-        if gid is None:
+        try:
+            gid = resolve_gid_for_token(token)
+            if gid is None or self._virtual_for_gid(gid) is None:
+                return None
+            # Schema/session routing has always allowed master tokens on held
+            # devices; admission must bind them to the current holder's tag.
+            parsed = parse_mastertoken(token)
+            if parsed and not parsed[1]:
+                token = f"{token}_force"
+            with acquire_device(token) as (gid, device):
+                return (int(gid), device) if isinstance(device, VirtualDevice) else None
+        except ReservationChangedError as exc:
+            raise RemoteRFReservationError(str(exc)) from exc
+        except (RuntimeError, IntegrationError):
             return None
-        device = self._virtual_for_gid(gid)
-        if device is None:
-            return None
-        return int(gid), device
 
     def is_remote_session(self, session_id: str) -> bool:
         with self._lock:
@@ -129,7 +142,10 @@ class HostDynamicV2Proxy:
             host_id=host_id,
             device_id=device_id,
             function_name=f"DynamicV2:{operation}",
-            args={"wire": map_arg(request.SerializeToString())},
+            args={
+                "wire": map_arg(request.SerializeToString()),
+                "__rrf_reservation_tag": map_arg(route.reservation_tag),
+            },
             timeout_sec=float(timeout_sec),
         )
 
@@ -205,6 +221,7 @@ class HostDynamicV2Proxy:
                 gid=gid,
                 host_id=device.host_id,
                 device_id=device.device_id,
+                reservation_tag=device.reservation_tag,
             )
             with self._lock:
                 if response.session_id in self._sessions:
@@ -255,13 +272,17 @@ class HostDynamicV2Proxy:
             timeout_sec=timeout,
         )
 
-    def close_gid(self, gid: int) -> None:
+    def gid_sessions(self, gid: int) -> list[str]:
         with self._lock:
-            session_ids = [
+            return [
                 session_id
                 for session_id, route in self._sessions.items()
                 if route.gid == int(gid)
             ]
+
+    def close_gid(self, gid: int, session_ids: list[str] | None = None) -> None:
+        if session_ids is None:
+            session_ids = self.gid_sessions(gid)
         for session_id in session_ids:
             try:
                 self.close_session(
@@ -303,9 +324,13 @@ def _end_host_reservation(gid: int) -> None:
     if device is not None and registry is not None:
         registry.send_control(
             device.host_id, kind="reservation_end", device_id=device.device_id,
-            payload={"at": time.time()},
+            payload={"at": time.time()}, drop_on_failure=True,
         )
-    host_session_proxy.close_gid(gid)
+    # CloseSession waits for a tunnel reply; Connect's inbound thread also
+    # needs the reservation lock to resync, so never wait here under that lock.
+    # Pick the sessions now: the next holder may open its own before the thread runs.
+    sessions = host_session_proxy.gid_sessions(gid)
+    threading.Thread(target=host_session_proxy.close_gid, args=(gid, sessions), daemon=True).start()
 
 
 register_reservation_end_callback(_end_host_reservation)
