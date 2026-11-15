@@ -298,10 +298,15 @@ class HostSession:
         info(f"[session] closing host_id={self.host_id!r} sess={self.session_uuid} peer={self.peer}")
         self.alive = False
 
-        try:
-            self.out_q.put_nowait(None)
-        except Exception:
-            exception(f"[session] close: failed to enqueue sentinel host_id={self.host_id!r} sess={self.session_uuid}")
+        while True:
+            try:
+                self.out_q.put_nowait(None)
+                break
+            except queue.Full:
+                try:
+                    self.out_q.get_nowait()
+                except queue.Empty:
+                    pass
 
         with self.inflight_lock:
             for rid, fut in list(self.inflight.items()):
@@ -827,17 +832,24 @@ class HostTunnelRegistry:
         with self._lock:
             return self._hosts.get(host_id)
 
-    def send_control(self, host_id: str, *, kind: str, device_id: str, payload: Optional[dict] = None) -> bool:
+    def send_control(self, host_id: str, *, kind: str, device_id: str, payload: Optional[dict] = None, drop_on_failure: bool = False) -> bool:
         with self._lock:
             sess = self._hosts.get(host_id)
-        if sess is None or not sess.alive:
+        if sess is None:
             return False
-        return sess.send(host_tunnel_pb2.HostFrame(
+        if not sess.alive:
+            if drop_on_failure:
+                self.drop_host_if_match(host_id, sess)
+            return False
+        sent = sess.send(host_tunnel_pb2.HostFrame(
             control=host_tunnel_pb2.Control(
                 kind=str(kind), device_id=str(device_id),
                 payload=json.dumps(payload) if payload is not None else "",
             )
         ))
+        if not sent and drop_on_failure:
+            self.drop_host_if_match(host_id, sess)
+        return sent
 
     def request_control(self, host_id: str, *, kind: str, device_id: str, payload: dict, timeout: float) -> Optional[dict]:
         with self._lock:
@@ -908,9 +920,12 @@ class HostTunnelRegistry:
         info(f"[registry] forget_host done: host_id={host_id!r} known={known} devices={dids}")
         return dids if known else None
 
-    def heartbeat(self, host_id: str, unix_ms: int = 0) -> None:
+    def heartbeat(self, host_id: str, unix_ms: int = 0, *, session: HostSession | None = None) -> None:
         now = int(unix_ms) or now_ms()
         with self._lock:
+            current = self._hosts.get(host_id)
+            if current is None or not current.alive or (session is not None and current is not session):
+                return
             hs = self._host_status.get(host_id) or HostStatus(host_id=host_id)
             hs.online = True
             hs.last_seen_ms = now
@@ -1207,6 +1222,8 @@ class HostTunnelRegistry:
             deadline_unix_ms=int(deadline_unix_ms or 0),
         )
         rpc_req.request.CopyFrom(request)
+        if "reservation_tag" not in sess.capabilities:
+            rpc_req.request.args.pop("__rrf_reservation_tag", None)
 
         frame = host_tunnel_pb2.HostFrame(rpc_request=rpc_req)
 
@@ -1414,6 +1431,8 @@ class HostTunnelServicer(host_tunnel_pb2_grpc.HostTunnelServicer):
 
             try:
                 for frame in request_iterator:
+                    if stop.is_set() or (session is not None and not session.alive):
+                        break
                     which = frame.WhichOneof("msg")
                     if which is None:
                         warn(f"[inbound] frame with no msg peer={peer} stream_sess={stream_uuid}")
@@ -1484,6 +1503,9 @@ class HostTunnelServicer(host_tunnel_pb2_grpc.HostTunnelServicer):
                             return
 
                         self.registry.persist_host_meta_from_hello(hello)
+                        if "reservation_tag" in session.capabilities:
+                            from ..server.device_manager import resync_host_reservations
+                            resync_host_reservations(host_id)
 
                         _send_lab_info(self.registry, session)
 
@@ -1621,7 +1643,7 @@ class HostTunnelServicer(host_tunnel_pb2_grpc.HostTunnelServicer):
                                 info(f"[inbound] META_RESPONSE applying {len(devs)} devices to registry host_id={host_id!r}")
                                 try:
                                     self.registry.announce_devices(host_id, devs)
-                                    self.registry.heartbeat(host_id, now_ms())
+                                    self.registry.heartbeat(host_id, now_ms(), session=session)
                                 except ValueError as e:
                                     error(f"[inbound] META_RESPONSE INVALID_ARGUMENT host_id={host_id!r} err={e}")
                                     fatal["code"] = "INVALID_ARGUMENT"
@@ -1683,7 +1705,7 @@ class HostTunnelServicer(host_tunnel_pb2_grpc.HostTunnelServicer):
                         if session is not None and host_id is not None:
                             ms = int(getattr(frame.heartbeat, "unix_ms", 0) or 0) or now_ms()
                             session.last_heartbeat_ms = ms
-                            self.registry.heartbeat(host_id, ms)
+                            self.registry.heartbeat(host_id, ms, session=session)
                             info(f"[inbound] HEARTBEAT host_id={host_id!r} unix_ms={ms} stream_sess={stream_uuid}")
                         else:
                             warn(
@@ -1748,6 +1770,9 @@ class HostTunnelServicer(host_tunnel_pb2_grpc.HostTunnelServicer):
                     time.sleep(0.05)
                     continue
 
+                if not session.alive:
+                    _cleanup("session-closed")
+                    break
                 try:
                     out = session.out_q.get(timeout=0.5)
                 except queue.Empty:
@@ -1759,6 +1784,9 @@ class HostTunnelServicer(host_tunnel_pb2_grpc.HostTunnelServicer):
                     )
                     continue
 
+                if not session.alive:
+                    _cleanup("session-closed")
+                    break
                 if out is None:
                     info(f"[Connect] outbound sentinel -> end stream peer={peer} stream_sess={stream_uuid} host_id={host_id or '?'}")
                     _cleanup("outbound-sentinel")

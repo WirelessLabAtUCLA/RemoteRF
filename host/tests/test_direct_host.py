@@ -56,7 +56,7 @@ class DirectHostGrantTests(unittest.TestCase):
             .sign(self.ca_key, hashes.SHA256())
         )
         self.host = direct_host.DirectHost(
-            host_id="lab-host", key_path=Path(self.tmp.name) / "direct.key", run_call=lambda *_: {},
+            host_id="lab-host", key_path=Path(self.tmp.name) / "direct.key", run_call=lambda *_, **kw: {},
         )
         public_key = serialization.load_pem_public_key(self.host.public_key_pem().encode())
         self.host.configure({
@@ -133,7 +133,7 @@ class DirectHostGrantTests(unittest.TestCase):
 
     def test_private_key_is_created_0600(self):
         key_path = Path(self.tmp.name) / "new" / "direct.key"
-        host = direct_host.DirectHost(host_id="lab-host", key_path=key_path, run_call=lambda *_: {})
+        host = direct_host.DirectHost(host_id="lab-host", key_path=key_path, run_call=lambda *_, **kw: {})
         host.public_key_pem()
         self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
 
@@ -322,7 +322,7 @@ class DirectHostGrantTests(unittest.TestCase):
         maximum = 0
         lock = threading.Lock()
 
-        def run_call(gid, request):
+        def run_call(gid, request, expected_epoch=None):
             nonlocal active, maximum
             with lock:
                 active += 1
@@ -393,7 +393,7 @@ class DirectHostLoopbackTests(DirectHostGrantTests):
         super().setUp()
         self.calls = []
 
-        def run_call(gid, request):
+        def run_call(gid, request, expected_epoch=None):
             self.calls.append((gid, request.function_name))
             return {"value": map_arg("ok")}
 
@@ -536,10 +536,10 @@ class TunnelDirectControlTests(unittest.TestCase):
                 return "public key"
 
         hello = self._agent(Direct())._hello_frame().hello
-        self.assertEqual(list(hello.capabilities), ["direct"])
+        self.assertEqual(list(hello.capabilities), ["reservation_tag", "direct"])
         self.assertEqual(hello.tls_public_key, "public key")
         hello = self._agent(None)._hello_frame().hello
-        self.assertEqual(list(hello.capabilities), [])
+        self.assertEqual(list(hello.capabilities), ["reservation_tag"])
         self.assertEqual(hello.tls_public_key, "")
 
     def test_direct_offer_answers_and_reservation_end_closes(self):
@@ -757,13 +757,13 @@ class TunnelDirectControlTests(unittest.TestCase):
             agent._setup_relay()
             self.assertEqual(stat.S_IMODE((Path(directory) / "relay_ed25519").stat().st_mode), 0o600)
             hello = agent._hello_frame().hello
-            self.assertEqual(hello.capabilities, ["direct", "relay"])
+            self.assertEqual(hello.capabilities, ["reservation_tag", "direct", "relay"])
             self.assertEqual(hello.relay_ssh_public_key, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest")
 
             unavailable = make_agent()
             with mock.patch("remoteRF_host.server.tunnel_agent.shutil.which", return_value=None):
                 unavailable._setup_relay()
-            self.assertEqual(unavailable._hello_frame().hello.capabilities, ["direct"])
+            self.assertEqual(unavailable._hello_frame().hello.capabilities, ["reservation_tag", "direct"])
 
             disabled = make_agent()
             with mock.patch.dict(os.environ, {"HOSTRF_RELAY": "0"}), mock.patch(
@@ -771,7 +771,7 @@ class TunnelDirectControlTests(unittest.TestCase):
             ) as which:
                 disabled._setup_relay()
             which.assert_not_called()
-            self.assertEqual(disabled._hello_frame().hello.capabilities, ["direct"])
+            self.assertEqual(disabled._hello_frame().hello.capabilities, ["reservation_tag", "direct"])
 
     def test_connected_is_reported_only_after_the_first_lab_frame(self):
         import grpc

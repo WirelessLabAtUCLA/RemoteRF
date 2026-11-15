@@ -28,6 +28,12 @@ class FakePluto:
         self.rx_buffer_size = 1024
         self.destroyed = 0
 
+    def disable_dds(self):
+        self.dds_enabled = [False]
+
+    def tx_destroy_buffer(self):
+        pass
+
     def rx_destroy_buffer(self):
         self.destroyed += 1
 

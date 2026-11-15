@@ -202,7 +202,7 @@ class RpcManager:
             key = 'error' if function_name.startswith("IDL:") else 'a'
             return {key: map_arg(str(e))}
 
-    def run_device_rpc_for_gid(self, *, gid: int, function_name: str, args: dict) -> dict:
+    def run_device_rpc_for_gid(self, *, gid: int, function_name: str, args: dict, expected_reservation: tuple[str, str] | None = None) -> dict:
         """Run an ordinary device RPC against an already-authorized device.
 
         The federated device path uses this: the destination has already
@@ -216,13 +216,18 @@ class RpcManager:
             # Dynamic v2 keeps its own session locking, as it does natively.
             from .dynamic_v2_bridge import run_bridge
 
-            return run_bridge(operation=function_name.split(":")[1], args=args, gid=int(gid))
+            return run_bridge(operation=function_name.split(":")[1], args=args, gid=int(gid), expect=expected_reservation)
         if not self._looks_like_device_rpc(function_name):
             raise ValueError(f"not a device RPC: {function_name!r}")
-        with acquire_device_by_gid(int(gid)) as (resolved, dev):
-            return self._dispatch_acquired(
-                function_name=function_name, args=args, gid=resolved, dev=dev
-            )
+        from remoterf_device_core.v2_errors import RemoteRFPolicyError
+        from .device_manager import ReservationChangedError
+        try:
+            with acquire_device_by_gid(int(gid), expected_reservation=expected_reservation) as (resolved, dev):
+                return self._dispatch_acquired(
+                    function_name=function_name, args=args, gid=resolved, dev=dev
+                )
+        except (RemoteRFPolicyError, ReservationChangedError) as exc:
+            return {"a": map_arg(str(exc))}
 
     def _dispatch_acquired(
         self, *, function_name: str, args: dict, gid: int, dev: object
@@ -252,6 +257,7 @@ class RpcManager:
             fwd_args = dict(args)
             fwd_args.pop('a', None)
             fwd_args['g'] = map_arg(int(gid))
+            fwd_args['__rrf_reservation_tag'] = map_arg(dev.reservation_tag)
             results = hts.handle_host_device(
                 hts.get_tunnel_registry(create=False),
                 host_id=dev.host_id,

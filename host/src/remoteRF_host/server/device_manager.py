@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 from concurrent.futures import Future
@@ -26,7 +27,7 @@ from ..common.idl import ensure_default_driver_files, get_driver_class, load_dri
 from ..common.idl.host_drivers import _packaged_schema_path, _seed_default_driver
 from ..common.idl.schema import load_builtin_drivers
 from ..common.utils import get_devices_config_path, get_drivers_dir
-from ..common.utils.host_logging import error, warn
+from ..common.utils.host_logging import error, info, warn
 
 from remoterf_device_core.hardware_access import AccessTable
 hardware_access = AccessTable()
@@ -46,6 +47,10 @@ class _DeviceState:
     dtype: str
     init: Dict[str, Any]
     io_lock: threading.RLock = field(default_factory=threading.RLock)
+    reset_pending: bool = False
+    epoch: int = 0
+    reservation_tag: str = ""
+    lockout_bypass: bool = False
 
 
 _devices: Dict[int, _DeviceState] = {}
@@ -177,6 +182,34 @@ def _connect_from_record(rec: Dict[str, Any]):
         warn(f"No driver registered for device_type={dtype!r} - skipping", component="hostrf.device_manager")
         return (None, ident, dtype)
 
+    pluto = any(cls.__name__ == "PlutoSchema" for cls in schema_cls.__mro__)
+    cfg = None
+    try:
+        from remoterf_device_core.drivers.adalm_pluto.lockout_keys import LOCKOUT_KEYS
+        try:
+            from remoterf_device_core.drivers.adalm_pluto.pluto_schema import parse_lockouts
+        except Exception:  # no libiio: fine unless this device needs the parser
+            if pluto:
+                raise
+            parse_lockouts = None
+        has_keys = any(isinstance(key, str) and key.lower() in LOCKOUT_KEYS for key in init_kwargs)
+        if has_keys and not pluto:
+            raise ValueError("lockout keys require a Pluto-derived driver")
+        cfg = parse_lockouts(init_kwargs) if pluto else None
+        if cfg is not None and (
+            getattr(getattr(schema_cls, "dispatch", None), "__qualname__", "") != "PlutoSchema.dispatch"
+            or not callable(getattr(schema_cls, "configure_lockouts", None))
+        ):
+            raise ValueError("the serving driver has no lockout guard")
+    except Exception as exc:
+        try:
+            serving_file = inspect.getfile(schema_cls)
+        except TypeError:
+            serving_file = schema_cls.__module__
+        message = f"lockouts invalid on {rec.get('NAME') or dtype}: {exc}; device left offline (serving file: {serving_file})"
+        warn(message, component="hostrf.device_manager")
+        return (None, ident, dtype)
+
     if bool(getattr(schema_cls, "session_scoped", False)):
         try:
             schema = schema_cls()
@@ -197,6 +230,14 @@ def _connect_from_record(rec: Dict[str, Any]):
 
     schema = schema_cls()
     schema.bind(raw_dev)
+    if cfg is not None or (pluto and callable(getattr(schema, "configure_lockouts", None))):
+        try:
+            schema.configure_lockouts(cfg)
+        except Exception as exc:
+            warn(f"lockouts invalid on {rec.get('NAME') or dtype}: {exc}; device left offline (serving file: {inspect.getfile(schema_cls)})", component="hostrf.device_manager")
+            return (None, ident, dtype)
+        if cfg is not None:
+            info(f"lockouts active: {rec.get('NAME') or dtype}", component="hostrf.device_manager")
     return (schema, ident, dtype)
 
 
@@ -399,6 +440,14 @@ def _reload_devices_unfenced(*, force: bool) -> bool:
             tmp_ser[int(gid)] = ident
 
     with _state_lock:
+        for gid, st in tmp_devices.items():
+            previous = _devices.get(gid)
+            if previous is not None:
+                st.io_lock = previous.io_lock
+                st.reset_pending = previous.reset_pending
+                st.epoch = previous.epoch
+                st.reservation_tag = previous.reservation_tag
+                st.lockout_bypass = previous.lockout_bypass
         _devices.clear()
         _devices.update(tmp_devices)
 
@@ -525,6 +574,8 @@ def get_local_device_context(device_id: int) -> dict[str, Any] | None:
             "name": st.name,
             "reserved": True,
             "io_lock": st.io_lock,
+            "epoch": st.epoch,
+            "reservation_tag": st.reservation_tag,
         }
 
 
@@ -543,9 +594,12 @@ def _run_hook(gid: int, name: str, failed: str) -> Optional[Future]:
     from .dynamic_v2 import session_manager
     with _state_lock:
         st = _devices.get(gid)
-        hook = getattr(st.schema if st else None, name, None)
-        if not callable(hook):
+        if st is None:
             return None
+        hook = getattr(st.schema, name, None)
+        if not callable(hook) and not callable(getattr(st.schema, "lockout_after_hook", None)):
+            return None
+        epoch = st.epoch
         if _reservation_hook_counts.get(gid, 0) >= 64:
             raise RuntimeError("device reservation hook queue is full")
         previous = _reservation_hooks.get(gid)
@@ -559,7 +613,12 @@ def _run_hook(gid: int, name: str, failed: str) -> Optional[Future]:
                 current = _devices.get(gid) is st
             if current:
                 with st.io_lock, hardware_access.native(gid):
-                    hook()
+                    with _state_lock:
+                        if _devices.get(gid) is not st:
+                            return
+                    _reset_locked(st)
+                    if name == "prepare_for_holder" and st.epoch == epoch:
+                        _invoke_hook(st, "prepare")
         except BaseException as exc:
             warn(f"{failed} gid={gid} failed: {exc}", component="hostrf.device_manager")
         finally:
@@ -583,8 +642,55 @@ def _run_hook(gid: int, name: str, failed: str) -> Optional[Future]:
     return future
 
 
-def prepare_reservation(device_id: int | str) -> Optional[Future]:
+def set_lockout_bypass(device_id: int | str, bypass: bool = False, tag: str = "") -> None:
+    with _state_lock:
+        st = _devices.get(int(device_id))
+        if st is not None:
+            st.lockout_bypass = bool(bypass)
+            if st.schema is not None:
+                # Only admission under io_lock may elevate an RPC's bypass.
+                st.schema.lockout_bypass = False
+            st.reservation_tag = tag
+            st.epoch += 1
+
+
+def _invoke_hook(st: _DeviceState, kind: str) -> None:
+    hook = getattr(st.schema, "reset_for_next_holder" if kind == "reset" else "prepare_for_holder", None)
+    failed = True
+    try:
+        if callable(hook):
+            hook()
+        failed = False
+    finally:
+        after = getattr(st.schema, "lockout_after_hook", None)
+        if callable(after):
+            after(kind, failed=failed)
+
+
+def _reset_locked(st: _DeviceState) -> None:
+    if st.reset_pending:
+        st.reset_pending = False
+        _invoke_hook(st, "reset")
+
+
+def reset_before_rpc(gid: int, epoch: int, schema: object, tag: str | None = None, reset: bool = True) -> None:
+    """Under io_lock: reject a queued call from an earlier holder, then quiet TX (v2 leaves the reset to the queued hook)."""
+    with _state_lock:
+        st = _devices.get(gid)
+        if st is None or st.epoch != epoch or st.schema is not schema or (tag is not None and tag != st.reservation_tag):
+            raise RuntimeError("The reservation on this device changed; call again.")
+        schema.lockout_bypass = st.lockout_bypass
+    if reset:
+        _reset_locked(st)
+
+
+def prepare_reservation(device_id: int | str, bypass: bool = False, tag: str = "", resync: bool = False) -> Optional[Future]:
     """The lab started a reservation on this device: ready it (a switched Pluto boots) for the holder."""
+    set_lockout_bypass(device_id, bypass, tag)
+    if resync:
+        return None
+    if bypass:
+        info(f"lockout bypass on: device {device_id} (gid {int(device_id)})", component="hostrf.device_manager")
     return _run_hook(int(device_id), "prepare_for_holder", "preparing")
 
 
@@ -592,6 +698,14 @@ def end_reservation(device_id: int | str) -> Optional[Future]:
     """The lab ended this device's reservation: close its sessions, then reset it for the next holder."""
     gid = int(device_id)
     with _state_lock:
+        st = _devices.get(gid)
+        if st is not None:
+            if st.schema is not None:
+                st.schema.lockout_bypass = False
+            st.lockout_bypass = False
+            st.reservation_tag = ""
+            st.reset_pending = True
+            st.epoch += 1
         callbacks = tuple(_reservation_end_callbacks)
     for callback in callbacks:
         try:

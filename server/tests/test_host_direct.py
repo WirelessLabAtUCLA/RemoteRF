@@ -87,12 +87,12 @@ def test_lab_info_and_grant_use_lab_identity(tmp_path, monkeypatch):
 
     monkeypatch.setattr(host_direct.time, "time", lambda: 1000.25)
     claims = verify_eddsa_jwt(
-        host_direct.issue_grant("lab-host", 7, "reservation-9", 5000),
+        host_direct.issue_grant("lab-host", 7, "reservation-9", 5000, "authorized"),
         load_private_key(identity_dir).public_key(),
     )
     assert claims == {
         "iss": "deployment-1", "aud": "lab-host", "gid": 7, "rid": "reservation-9", "jti": claims["jti"],
-        "iat": 1000.25, "exp": 1120,
+        "iat": 1000.25, "exp": 1120, "reservation_tag": "authorized",
     }
     assert len(claims["jti"]) == 32
 

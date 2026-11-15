@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+from functools import partial
 import json
 import math
 import os
@@ -74,7 +75,7 @@ class DirectHost:
         self.host_id = host_id
         self.key_path = Path(key_path)
         self.cert_path = self.key_path.with_suffix(".crt")
-        self.run_call = run_call  # (gid, GenericRPCRequest) -> {name: Argument}
+        self.run_call = run_call  # (gid, GenericRPCRequest, expected_epoch=...) -> {name: Argument}
         self._clock = clock
         self._relay_hello_seconds = relay_hello_seconds
         self._relay_idle_seconds = relay_idle_seconds
@@ -186,7 +187,12 @@ class DirectHost:
 
     def refresh(self, gid: int, token: str) -> None:
         claims = self.verify(token, gid)
+        from .device_manager import get_local_device_context
+        tag = (get_local_device_context(gid) or {}).get("reservation_tag", "")
         with self._lock:
+            previous = self._grants.get(int(gid))
+            bound = previous.get("_reservation_tag", tag) if previous and previous["rid"] == claims["rid"] else tag
+            claims["_reservation_tag"] = claims.get("reservation_tag", bound)
             if claims["iat"] <= self._ended.get(int(gid), float("-inf")) or claims["jti"] in self._revoked:
                 raise PermissionError("grant is not for this device now")
             self._grants[int(gid)] = claims
@@ -205,6 +211,7 @@ class DirectHost:
                 or claims["rid"] != rid
                 or claims["exp"] <= time.time()
                 or claims["jti"] in self._revoked
+                or not self._tag_matches(gid, claims)
             ):
                 return GRANT_ENDED
         return None
@@ -428,6 +435,12 @@ class DirectHost:
                 threading.Thread(target=self._loop.run_forever, name="hostrf-direct", daemon=True).start()
             return self._loop
 
+    @staticmethod
+    def _tag_matches(gid: int, claims: dict) -> bool:
+        from .device_manager import get_local_device_context
+        current = (get_local_device_context(gid) or {}).get("reservation_tag", "")
+        return claims.get("_reservation_tag", current) == current
+
     def _grant_is_current(self, gid: int, rid: str) -> bool:
         with self._lock:
             claims = self._grants.get(gid)
@@ -436,6 +449,7 @@ class DirectHost:
                 and claims["rid"] == rid
                 and claims["exp"] > time.time()
                 and claims["jti"] not in self._revoked
+                and self._tag_matches(gid, claims)
             )
 
     def _require_current_grant(self, gid: int, rid: str) -> None:
@@ -443,6 +457,8 @@ class DirectHost:
             raise PermissionError(GRANT_ENDED)
 
     async def _serve_call(self, gid: int, rid: str, request) -> tuple[dict, bool]:
+        from .device_manager import get_local_device_context
+        epoch = (get_local_device_context(gid) or {}).get("epoch")
         refused = self._refusal(gid, rid, request.function_name)
         drop = refused == GRANT_ENDED
         if refused is not None:
@@ -452,7 +468,17 @@ class DirectHost:
             refused = self._refusal(gid, rid, request.function_name)
             if refused is None:
                 try:
-                    results = await asyncio.get_running_loop().run_in_executor(None, self.run_call, gid, request)
+                    from ..common.grpc import grpc_pb2
+                    tagged = grpc_pb2.GenericRPCRequest()
+                    tagged.CopyFrom(request)
+                    with self._lock:
+                        claims = self._grants.get(gid)
+                        tag = claims.get("_reservation_tag") if claims else None
+                    tagged.args.pop("__rrf_reservation_tag", None)
+                    if tag is not None:
+                        tagged.args["__rrf_reservation_tag"].CopyFrom(map_arg(tag))
+                    call = partial(self.run_call, gid, tagged, expected_epoch=epoch)
+                    results = await asyncio.get_running_loop().run_in_executor(None, call)
                 except Exception as exc:  # device exceptions are normal RPC results
                     results = {"a": map_arg(str(exc))}
                 refused = self._refusal(gid, rid, request.function_name)

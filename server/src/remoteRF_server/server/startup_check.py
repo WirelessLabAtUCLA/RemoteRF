@@ -85,6 +85,10 @@ def _restore_power(st) -> None:
         reserved = bool(st.salt and st.hsh)
     if not reserved:
         st.dev.call_power_down()
+    else:
+        settle = getattr(st.dev, "lockout_settle", None)
+        if callable(settle):
+            settle()
 
 
 def _check(st) -> None:

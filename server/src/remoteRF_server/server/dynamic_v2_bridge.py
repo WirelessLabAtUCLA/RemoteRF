@@ -65,9 +65,9 @@ def _wire_arg(args: dict) -> bytes:
     return wire
 
 
-def _token(gid: int) -> str:
+def _token(gid: int, expect=None) -> str:
     try:
-        return reservation_bridge_token(gid)
+        return reservation_bridge_token(gid, expect)
     except RuntimeError as exc:
         raise RemoteRFReservationError(str(exc)) from None
 
@@ -179,12 +179,12 @@ class SampleTunnelBridge:
 _SAMPLE_BRIDGE = SampleTunnelBridge()
 
 
-def run_bridge(*, operation: str, args: dict, gid: int) -> dict:
+def run_bridge(*, operation: str, args: dict, gid: int, expect=None) -> dict:
     """Execute one serialized v2 protobuf request for an authorized federated caller."""
     operation = str(operation or "")
     wire = _wire_arg(args)
     try:
-        response = _dispatch(operation, wire, gid)
+        response = _dispatch(operation, wire, gid, expect)
     except RemoteRFError as exc:
         # A closed session or a mismatched device is the Client's to handle,
         # typed as the servicer would type it, not an opaque relay failure.
@@ -209,17 +209,17 @@ def _fit_sample_payload(response) -> None:
     response.capabilities_json = json.dumps(capabilities, sort_keys=True, separators=(",", ":"))
 
 
-def _dispatch(operation: str, wire: bytes, gid: int):
+def _dispatch(operation: str, wire: bytes, gid: int, expect=None):
     if operation == "Negotiate":
         request = grpc_pb2.NegotiateRequest.FromString(wire)
         response = _CONTROL.Negotiate(request, None)
     elif operation == "GetSchema":
         request = grpc_pb2.GetSchemaRequest.FromString(wire)
-        request.token = _token(gid)
+        request.token = _token(gid, expect)
         response = _CONTROL.GetSchema(request, None)
     elif operation == "OpenSession":
         request = grpc_pb2.OpenSessionRequest.FromString(wire)
-        request.token = _token(gid)
+        request.token = _token(gid, expect)
         response = _CONTROL.OpenSession(request, None)
         _fit_sample_payload(response)
     elif operation == "Invoke":

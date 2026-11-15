@@ -403,11 +403,11 @@ class FederatedProxyTests(GateCFixture):
                 ),
             )
         with (
-            patch("remoteRF_server.server.reservation.get_all_devices", return_value={8: object()}),
+            patch("remoteRF_server.server.reservation.get_all_devices", return_value={8: (object(), "", "")}),
             patch("remoteRF_server.server.reservation.set_device") as set_device,
         ):
             self.reservations.update_devices()
-        set_device.assert_called_once_with("8", token_salt, token_hash)
+        set_device.assert_called_once_with("8", token_salt, token_hash, bypass=False)
 
 
 class LegacyAuthTypeReadinessTests(unittest.TestCase):

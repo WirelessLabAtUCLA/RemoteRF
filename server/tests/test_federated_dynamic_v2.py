@@ -131,6 +131,21 @@ class FederatedBridgeTests(unittest.TestCase):
         )
         self.assertIn("no active reservation", schema.error.message)
 
+    def test_token_requests_remain_bound_to_the_authorized_reservation(self):
+        for operation, request_type, response_type in (
+            ("GetSchema", grpc_pb2.GetSchemaRequest, grpc_pb2.GetSchemaResponse),
+            ("OpenSession", grpc_pb2.OpenSessionRequest, grpc_pb2.OpenSessionResponse),
+        ):
+            with self.subTest(operation=operation), patch.object(bridge._CONTROL, operation) as dispatch:
+                results = RpcManager().run_device_rpc_for_gid(
+                    gid=GID, function_name=f"DynamicV2:{operation}:WIRE",
+                    args={"wire": map_arg(request_type().SerializeToString())},
+                    expected_reservation=("previous", "holder"),
+                )
+                response = response_type.FromString(unmap_arg(results["wire"]))
+                self.assertIn("no active reservation", response.error.message)
+                dispatch.assert_not_called()
+
     def test_a_bridge_token_lives_exactly_as_long_as_its_reservation(self):
         token = device_manager.reservation_bridge_token(GID)
         device_manager.set_device(GID, "a1", "h1")  # the same reservation, refreshed

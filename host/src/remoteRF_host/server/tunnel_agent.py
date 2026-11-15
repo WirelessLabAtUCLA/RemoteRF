@@ -653,6 +653,9 @@ class HostTunnelAgent:
         if hasattr(hello, "host_token"):
             hello.host_token = self._host_token
 
+        if hasattr(hello, "capabilities"):
+            hello.capabilities.append("reservation_tag")
+
         direct = getattr(self, "_direct_host", None)
         if direct is not None and hasattr(hello, "capabilities") and hasattr(hello, "tls_public_key"):
             try:
@@ -996,7 +999,19 @@ class HostTunnelAgent:
             if gid not in self._devices or not callable(prepare_reservation):
                 warn(f"reservation_start for unknown gid={gid}", component="hostrf.tunnel_agent")
                 return
-            prepare_reservation(gid)  # queued: the boot runs off this loop
+            try:
+                payload = json.loads(str(ctl.payload)) if ctl.payload else {}
+                if not isinstance(payload, dict):
+                    raise ValueError("payload is not an object")
+                bypass = payload.get("lockout_bypass", False) is True
+                tag = payload.get("tag", "")
+                if not isinstance(tag, str):
+                    raise ValueError("tag is not a string")
+                resync = payload.get("resync", False) is True
+            except Exception as exc:
+                warn(f"Invalid {kind} payload: {exc}", component="hostrf.tunnel_agent")
+                bypass, tag, resync = False, "", False
+            prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
             info(f"Reservation started on device {gid}: preparing device.", component="hostrf")
             return
         try:
@@ -1080,7 +1095,7 @@ class HostTunnelAgent:
             raise ValueError(f"Unknown local_device_id/gid={gid_i} for this host.")
         return str(gid_i), gid_i
 
-    def _handle_rpc_request(self, req: host_pb2.RpcRequest) -> None:
+    def _handle_rpc_request(self, req: host_pb2.RpcRequest, expected_epoch=None) -> None:
         req_id = str(req.req_id)
         _ = self._register_cancel(req_id)
 
@@ -1107,7 +1122,7 @@ class HostTunnelAgent:
             except Exception:
                 pass
 
-            results_any = rpc_manager.run_rpc(function_name=greq.function_name, args=args_map)
+            results_any = rpc_manager.run_rpc(function_name=greq.function_name, args=args_map, expected_epoch=expected_epoch)
 
             gresp = generic_pb2.GenericRPCResponse()
             results = _coerce_argument_map(results_any)
@@ -1148,7 +1163,7 @@ class HostTunnelAgent:
         finally:
             self._consume_cancel(req_id)
 
-    def _run_direct_call(self, gid: int, greq) -> Dict[str, Any]:
+    def _run_direct_call(self, gid: int, greq, expected_epoch=None) -> Dict[str, Any]:
         excluded = {"a", "token", "device_name", "g", "gid", "device_id"}
         args_map = {
             str(key): value
@@ -1159,7 +1174,7 @@ class HostTunnelAgent:
         args_map["g"] = _argument_string(gid_s)
         args_map["gid"] = _argument_string(gid_s)
         args_map["device_id"] = _coerce_argument(int(gid))
-        results_any = rpc_manager.run_rpc(function_name=greq.function_name, args=args_map)
+        results_any = rpc_manager.run_rpc(function_name=greq.function_name, args=args_map, expected_epoch=expected_epoch)
         return _coerce_argument_map(results_any)
 
     # -------- outbound stream --------
@@ -1272,9 +1287,15 @@ class HostTunnelAgent:
                             )
                         which = frame.WhichOneof("msg")
                         if which == "rpc_request":
+                            from .device_manager import get_local_device_context
+                            try:
+                                _, gid = self._resolve_request_gid(frame.rpc_request)
+                                epoch = (get_local_device_context(gid) or {}).get("epoch")
+                            except ValueError:
+                                epoch = None
                             threading.Thread(
                                 target=self._handle_rpc_request,
-                                args=(frame.rpc_request,),
+                                args=(frame.rpc_request, epoch),
                                 daemon=True,
                                 name=f"rpc_{frame.rpc_request.req_id}",
                             ).start()
@@ -1341,6 +1362,12 @@ class HostTunnelAgent:
                                 self._direct_host.close_all()
                             except Exception:
                                 exception("Direct path tunnel-loss cleanup failed.", component="hostrf.tunnel_agent")
+                        if callable(end_reservation):
+                            for gid in list(self._devices):
+                                try:
+                                    end_reservation(gid)
+                                except Exception:
+                                    exception(f"Reservation tunnel-loss cleanup failed for gid={gid}.", component="hostrf.tunnel_agent")
                         try:
                             from .dynamic_v2_bridge import close_all_bridge_sessions
 
@@ -1350,10 +1377,6 @@ class HostTunnelAgent:
                                     f"Closed {closed} Dynamic v2 host session(s) after tunnel loss.",
                                     component="hostrf.tunnel_agent",
                                 )
-                            # A reservation_end may be lost with the tunnel.
-                            if callable(end_reservation):
-                                for gid in list(self._devices):
-                                    end_reservation(gid)
                         except Exception:
                             exception(
                                 "Dynamic v2 tunnel-loss cleanup failed.",

@@ -57,10 +57,12 @@ class FakeRpcManager:
     def __init__(self):
         self.device_calls = []
         self.control_calls = []
+        self.expected_reservations = []
         self.response = {"value": map_arg(42)}
 
-    def run_device_rpc_for_gid(self, *, gid, function_name, args):
+    def run_device_rpc_for_gid(self, *, gid, function_name, args, expected_reservation=None):
         self.device_calls.append((gid, function_name, dict(args)))
+        self.expected_reservations.append(expected_reservation)
         if function_name.endswith(":explode"):
             raise RuntimeError("device disappeared / not connected")
         if function_name.endswith(":SET"):
@@ -417,6 +419,10 @@ def test_reserve_is_idempotent_per_request_and_authorizes_device_rpc(world):
     assert _decode(executed["payload"]["response_b64"]) == {"value": 42}
     gid, function_name, args = world["rpc"].device_calls[-1]
     assert (gid, function_name) == (world["allowed"], "test:ip:CALL0")
+    with sqlite3.connect(world["reservations"].filepath) as conn:
+        expected = conn.execute("SELECT salt, hash FROM Reservations WHERE res_id = ?",
+            (reservation["reservation_id"],)).fetchone()
+    assert world["rpc"].expected_reservations[-1] == expected
     assert "a" not in args
 
     # A setter's empty response frame is a valid ok result, not an error.
@@ -800,3 +806,35 @@ def test_contract_without_device_capability_cannot_reach_hardware(tmp_path, worl
     issued = issue(pair)
     response = executor.execute("2", issued.grant, issued.request.json)
     assert response["error"] is None
+
+
+def test_federated_direct_call_keeps_its_authorized_reservation_pair(world, monkeypatch):
+    from remoteRF_server.server import direct_path
+    world["enroll"](devices=[world["allowed"]])
+    start, end = _window(-5)
+    reserved, _ = world["call"]("device_reserve", local_device_id=str(world["allowed"]),
+        start_time=start, end_time=end)
+    rid = reserved["payload"]["reservation"]["reservation_id"]
+    captured = {}
+    def offer(*args, bound):
+        captured.update(bound)
+        return {}
+    monkeypatch.setattr(direct_path, "offer_bound", offer)
+    opened, _ = world["call"]("direct_open", reservation_id=str(rid), ice="{}")
+    assert opened["status"] == "ok", opened
+    assert captured["authorize"]("test:ip:CALL0") is None
+    captured["run"]("test:ip:CALL0", {})
+    with sqlite3.connect(world["reservations"].filepath) as conn:
+        expected = conn.execute("SELECT salt, hash FROM Reservations WHERE res_id = ?", (rid,)).fetchone()
+    assert world["rpc"].expected_reservations[-1] == expected
+
+
+def test_reservation_ending_before_finalize_keeps_business_error(world, monkeypatch):
+    world["enroll"](devices=[world["allowed"]])
+    start, end = _window(-5)
+    world["call"]("device_reserve", local_device_id=str(world["allowed"]), start_time=start, end_time=end)
+    monkeypatch.setattr(ReservationHandler, "federated_rpc_reservation", lambda *a, **kw: None)
+    result, _ = world["call"]("device_rpc", local_device_id=str(world["allowed"]),
+        request_b64=_frame("test:ip:CALL0"))
+    assert result["status"] == "error" and result["error_code"] == "no_active_reservation"
+    assert world["rpc"].device_calls == []

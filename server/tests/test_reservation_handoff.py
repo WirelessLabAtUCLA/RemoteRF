@@ -127,7 +127,7 @@ class HostReservationStartTests(unittest.TestCase):
         sent = []
 
         class Registry:
-            def send_control(self, host_id, *, kind, device_id, payload):
+            def send_control(self, host_id, *, kind, device_id, payload, drop_on_failure=False):
                 sent.append((host_id, kind, device_id, payload))
                 return True
 
@@ -145,7 +145,10 @@ class HostReservationStartTests(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][:3], ("host-1", "reservation_start", "d1"))
-        self.assertEqual(set(sent[0][3]), {"at"})
+        self.assertEqual(set(sent[0][3]), {"at", "lockout_bypass", "tag", "resync"})
+        self.assertIs(sent[0][3]["lockout_bypass"], False)
+        self.assertEqual(sent[0][3]["tag"], device_manager.reservation_tag("s1", "h1"))
+        self.assertIs(sent[0][3]["resync"], False)
 
 
 if __name__ == "__main__":

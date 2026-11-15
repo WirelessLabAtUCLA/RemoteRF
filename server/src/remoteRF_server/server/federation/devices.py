@@ -69,7 +69,7 @@ PAGE_BYTES = MAX_DEVICE_RPC_RESPONSE_FRAME_BYTES - 4096
 PAGE_TTL_SECONDS = 30
 
 
-def run_bound_rpc(rpc_manager, *, device_id: int, function_name: str, args) -> dict:
+def run_bound_rpc(rpc_manager, *, device_id: int, function_name: str, args, expected_reservation=None) -> dict:
     """One RPC against a device the caller was already authorized for.
 
     The HOME never holds this deployment's device bearer token, and a
@@ -85,7 +85,7 @@ def run_bound_rpc(rpc_manager, *, device_id: int, function_name: str, args) -> d
         args["device_id"] = map_arg(int(device_id))
         return rpc_manager.run_rpc(function_name=function_name, args=args)
     return rpc_manager.run_device_rpc_for_gid(
-        gid=int(device_id), function_name=function_name, args=args
+        gid=int(device_id), function_name=function_name, args=args, expected_reservation=expected_reservation
     )
 
 
@@ -496,9 +496,20 @@ class ServerDeviceRpcHandler(_DeviceHandlerBase):
             results = self._page(key, args)
         else:
             try:
+                expected = None
+                if function_name != self.IDL_FUNCTION:
+                    expected = self.reservations.federated_rpc_reservation(
+                        issuer_deployment_id=action.claims["iss"],
+                        remote_subject_id=action.claims["sub"], device_id=device_id,
+                    )
+                    if expected is None:
+                        raise FederationBusinessError("no_active_reservation")
                 results = run_bound_rpc(
-                    self.rpc, device_id=device_id, function_name=function_name, args=args
+                    self.rpc, device_id=device_id, function_name=function_name, args=args,
+                    expected_reservation=expected,
                 )
+            except FederationBusinessError:
+                raise
             except Exception:
                 logger.warning("federated call %s on device %s failed", function_name[:200], device_id, exc_info=True)
                 raise FederationBusinessError("device_unavailable") from None
@@ -607,7 +618,10 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
         )
 
         def run(function_name, args):
-            return run_bound_rpc(rpc, device_id=device_id, function_name=function_name, args=args)
+            return run_bound_rpc(
+                rpc, device_id=device_id, function_name=function_name, args=args,
+                expected_reservation=(live["salt"], live["hash"]),
+            )
 
         try:
             from .. import device_manager, direct_path
@@ -620,6 +634,7 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
                 answer = host_direct.offer(
                     device, payload["ice"], rid=str(reservation_id), reservation_end=live["end_time"],
                     still_live=lambda: authorize("get_time_now") is None,
+                    tag=device_manager.reservation_tag(live["salt"], live["hash"]),
                 )
                 if answer is not None:
                     return {**result, "status": "ok", "error_code": None, "payload": {"ice": json.dumps(answer)}}

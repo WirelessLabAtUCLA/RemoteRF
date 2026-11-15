@@ -122,7 +122,7 @@ def lab_info(host_id: str, tls_public_key: str) -> dict | None:
         return None
 
 
-def issue_grant(host_id: str, gid: int, rid: str, reservation_end: float) -> str:
+def issue_grant(host_id: str, gid: int, rid: str, reservation_end: float, tag: str = "") -> str:
     state_dir, state, _hostname = _identity()
     now = time.time()
     claims = {
@@ -130,6 +130,7 @@ def issue_grant(host_id: str, gid: int, rid: str, reservation_end: float) -> str
         "aud": str(host_id),
         "gid": int(gid),
         "rid": str(rid),
+        "reservation_tag": tag,
         "jti": uuid4().hex,
         "iat": now,
         "exp": int(min(float(reservation_end), now + 120)),
@@ -140,7 +141,7 @@ def issue_grant(host_id: str, gid: int, rid: str, reservation_end: float) -> str
     )
 
 
-def _start_refresher(host_id: str, gid: int, rid: str, reservation_end: float, still_live, session) -> None:
+def _start_refresher(host_id: str, gid: int, rid: str, reservation_end: float, still_live, session, tag: str = "") -> None:
     key = (host_id, int(gid))
     with _refresh_lock:
         old = _refreshers.pop(key, None)
@@ -193,7 +194,7 @@ def _start_refresher(host_id: str, gid: int, rid: str, reservation_end: float, s
             schedule()
             return
         try:
-            grant = issue_grant(host_id, gid, rid, reservation_end)
+            grant = issue_grant(host_id, gid, rid, reservation_end, tag)
         except Exception as exc:
             logger.warning("host direct grant refresh unavailable for %s: %s", host_id, exc)
             schedule()
@@ -260,7 +261,7 @@ def _valid_answer(answer: object) -> bool:
         return False
 
 
-def offer(device, ice: str, *, rid: str, reservation_end: float, still_live) -> dict | None:
+def offer(device, ice: str, *, rid: str, reservation_end: float, still_live, tag: str = "") -> dict | None:
     """Ask the owning Host to answer ICE, leaving callers to use lab fallback."""
     host_id = str(getattr(device, "host_id", "") or "")
     gid = int(getattr(device, "gid"))
@@ -286,7 +287,7 @@ def offer(device, ice: str, *, rid: str, reservation_end: float, still_live) -> 
         def ask():
             return registry.request_control(
                 host_id, kind="direct_offer", device_id=str(gid), timeout=_OFFER_TIMEOUT_SECONDS,
-                payload={"ice": ice, "grant": issue_grant(host_id, gid, rid, reservation_end)},
+                payload={"ice": ice, "grant": issue_grant(host_id, gid, rid, reservation_end, tag)},
             )
 
         response = ask()
@@ -314,7 +315,7 @@ def offer(device, ice: str, *, rid: str, reservation_end: float, still_live) -> 
         slot = getattr(registry, "relay_slot_for_host", lambda _host_id: None)(host_id)
         if isinstance(relay, dict) and slot is not None:
             answer["relay"] = {"session": relay["session"], "endpoint": slot["endpoint"]}
-        _start_refresher(host_id, gid, rid, reservation_end, still_live, session)
+        _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag)
         return answer
     finally:
         _finish_offer(host_id, failed=failed)
