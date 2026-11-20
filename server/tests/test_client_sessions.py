@@ -267,6 +267,11 @@ class ReservationBucketsTests(unittest.TestCase):
         return {bucket: (n, round(seconds)) for bucket, n, seconds in rows}
 
     @staticmethod
+    def local(db, device_id):
+        rows = db.execute("SELECT bucket, reservations FROM ReservationLocalBuckets WHERE device_id = ?", (device_id,))
+        return dict(rows.fetchall())
+
+    @staticmethod
     def days(db, device_id):
         rows = db.execute("SELECT day, reservations, seconds FROM ReservationDays WHERE device_id = ?", (device_id,))
         return {day: (n, round(seconds)) for day, n, seconds in rows}
@@ -286,12 +291,16 @@ class ReservationBucketsTests(unittest.TestCase):
         days = {"2099-11-01": (1, 3600), "2099-11-04": (1, 2 * 3600)}  # the first starts the UTC day before
         self.assertEqual(self.days(db, 1), days)
         self.assertEqual(self.days(db, ALIAS_BASE), {})
+        local = {"h02": 1, "d0": 1, "h12": 1, "d2": 1}  # the lab's own clock, no conversion
+        self.assertEqual(self.local(db, 1), local)
+        self.assertEqual(self.local(db, ALIAS_BASE), {})
         # Let them end; moving them back by UPDATE fires no trigger.
         db.execute("UPDATE Reservations SET start_time = datetime(start_time, '-100 years'), "
                    "end_time = datetime(end_time, '-100 years')")
         db.execute("DELETE FROM Reservations WHERE end_time < ?", (datetime.now(),))  # purge: no change
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.days(db, 1), days)
+        self.assertEqual(self.local(db, 1), local)
 
     def test_a_cancel_gives_back_like_the_totals_and_never_below_zero(self):
         from datetime import datetime, timedelta
@@ -306,6 +315,7 @@ class ReservationBucketsTests(unittest.TestCase):
         self.assertEqual(values(2), [(1, 2 * 3600)] * 4)
         db.execute("DELETE FROM Reservations WHERE device_id = 2")  # cancel before start: all given back
         self.assertEqual(values(2), [(0, 0)] * 4)
+        self.assertEqual(set(self.local(db, 2).values()), {0})
         for n, seconds in values(3):  # booked an hour after its start: only the rest counts
             self.assertEqual(n, 1)
             self.assertAlmostEqual(seconds, 3600, delta=2)
@@ -313,10 +323,13 @@ class ReservationBucketsTests(unittest.TestCase):
         for n, seconds in values(3):
             self.assertEqual(n, 1)
             self.assertAlmostEqual(seconds, 0, delta=2)
+        self.assertEqual(set(self.local(db, 3).values()), {1})
         for table in ("ReservationBuckets", "ReservationDays"):
             db.execute(f"UPDATE {table} SET reservations = 0, seconds = 0 WHERE device_id = 4")
+        db.execute("UPDATE ReservationLocalBuckets SET reservations = 0 WHERE device_id = 4")
         db.execute("DELETE FROM Reservations WHERE device_id = 4")
         self.assertEqual(values(4), [(0, 0)] * 4)  # never negative
+        self.assertEqual(set(self.local(db, 4).values()), {0})
 
     def test_buckets_seed_from_old_rows_once(self):
         import time
@@ -336,9 +349,12 @@ class ReservationBucketsTests(unittest.TestCase):
         self.assertEqual(self.buckets(db, ALIAS_BASE), {})
         self.assertEqual(self.days(db, 1), days)
         self.assertEqual(self.days(db, ALIAS_BASE), {})
+        self.assertEqual(self.local(db, 1), {"h02": 2, "d0": 2})
+        self.assertEqual(self.local(db, ALIAS_BASE), {})
         self.handler()  # a restart does not seed again
         self.assertEqual(self.buckets(db, 1), expected)
         self.assertEqual(self.days(db, 1), days)
+        self.assertEqual(self.local(db, 1), {"h02": 2, "d0": 2})
         with mock.patch.dict("os.environ", {"TZ": "UTC0"}):
             time.tzset()
             self.handler()  # nor one under another TZ, where the rows map to h02/d0/2026-11-02

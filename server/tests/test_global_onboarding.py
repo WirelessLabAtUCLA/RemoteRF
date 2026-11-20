@@ -6,6 +6,8 @@ from unittest import mock
 
 from remoteRF_server.server import global_onboarding as g
 
+LOCAL_ZERO = {"tz": mock.ANY, "by_hour": [0] * 24, "by_weekday": [0] * 7}
+
 
 class ConsentTests(unittest.TestCase):
     def setUp(self):
@@ -511,7 +513,7 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["reservations"], 5)
         self.assertEqual(payload["transport"], {"days": []})
         self.assertEqual(payload["usage"],  # not on global
-                         {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
+                         {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": [], "local": LOCAL_ZERO})
         self.assertEqual(
             sorted(entry["type"] for entry in payload["devices"]),
             ["adalm_pluto", "usrp_2901"],
@@ -544,7 +546,7 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(payload["proxies"], 0)
         self.assertEqual(payload["reservations"], 0)
         self.assertEqual(payload["devices"], [])
-        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
+        self.assertEqual(payload["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": [], "local": LOCAL_ZERO})
         self.assertEqual(payload["transport"], {"days": []})
         self.assertIsNone(payload["cert_sha256"])
 
@@ -596,8 +598,13 @@ class StatusReportTests(TunnelTests):
                 (5, "all", 1, 60.0), (5, "h23", 1, 60.0), (5, "d4", 1, 60.0),  # gone from devices.yml
                 (7, "all", 0, 0.0), (7, "h01", 0, 0.0), (7, "d1", 0, 0.0),  # every reservation cancelled
             ])
+            conn.execute("CREATE TABLE ReservationLocalBuckets (device_id INTEGER, bucket TEXT, reservations INTEGER, "
+                         "PRIMARY KEY (device_id, bucket))")
+            conn.executemany("INSERT INTO ReservationLocalBuckets VALUES (?,?,?)", [
+                (0, "h12", 2), (0, "h22", 1), (0, "d0", 3), (1, "h12", 9), (1, "d0", 9)])
         shared = [{"devices": [0, 5]}, {"devices": [7]}]
-        with mock.patch.object(cluster, "groups", return_value=shared) as groups:
+        with mock.patch.object(cluster, "groups", return_value=shared) as groups, \
+                mock.patch.dict("os.environ", {"TZ": ":America/Los_Angeles"}):
             usage = g.usage_summary()
         groups.assert_called_once_with(cluster.GLOBAL)
 
@@ -605,10 +612,12 @@ class StatusReportTests(TunnelTests):
         self.assertEqual(usage["by_weekday"], [0, 0, 0, 0, 1, 0, 3])
         self.assertEqual(usage["by_type"], {"adalm_pluto": {"reservations": 3, "seconds": 5400},
                                             "unknown": {"reservations": 1, "seconds": 60}})
+        self.assertEqual(usage["local"], {"tz": "America/Los_Angeles", "by_hour": [0] * 12 + [2] + [0] * 9 + [1, 0],
+                                          "by_weekday": [3, 0, 0, 0, 0, 0, 0]})
 
         with mock.patch.object(cluster, "groups", side_effect=cluster.ClusterError("no cluster named global")):
             self.assertEqual(g.usage_summary(),
-                             {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []})
+                             {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": [], "local": LOCAL_ZERO})
 
     def days_table(self, rows):
         import sqlite3
@@ -756,6 +765,7 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS),
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport", "usage"},
@@ -776,6 +786,7 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS),
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport", "usage"},
@@ -795,6 +806,7 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual(sent, [
             set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS),
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport", "usage"},
@@ -813,10 +825,11 @@ class StatusReportTests(TunnelTests):
             g.send_status()
         self.assertEqual([set(status) for status in sent], [
             set(g.STATUS_FIELDS),
+            set(g.STATUS_FIELDS),
             set(g.STATUS_FIELDS) - {"transport"},
             set(g.STATUS_FIELDS) - {"transport"},
         ])
-        self.assertEqual(sent[2]["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
+        self.assertEqual(sent[3]["usage"], {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}})
 
     def test_status_drops_transport_first_for_an_older_global(self):
         self.activate()
@@ -830,9 +843,23 @@ class StatusReportTests(TunnelTests):
         with mock.patch.object(g, "call", side_effect=old_global):
             g.send_status()
         self.assertEqual([set(status) for status in sent], [
-            set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"transport"}
+            set(g.STATUS_FIELDS), set(g.STATUS_FIELDS), set(g.STATUS_FIELDS) - {"transport"}
         ])
-        self.assertIn("by_device", sent[1]["usage"])
+        self.assertIn("by_device", sent[2]["usage"])
+
+    def test_status_drops_only_local_usage_for_a_global_that_predates_it(self):
+        self.activate()
+        sent = []
+
+        def global_with_by_device(method, path, body):
+            sent.append(body["status"])
+            if "local" in body["status"]["usage"]:
+                raise g.GlobalError("invalid_status")
+
+        with mock.patch.object(g, "call", side_effect=global_with_by_device):
+            g.send_status()
+        self.assertEqual([set(status) for status in sent], [set(g.STATUS_FIELDS)] * 2)
+        self.assertEqual(set(sent[1]["usage"]), {"by_hour", "by_weekday", "by_type", "by_device"})
 
     def test_status_gives_up_when_even_the_oldest_note_is_refused(self):
         self.activate()
@@ -840,7 +867,7 @@ class StatusReportTests(TunnelTests):
         with mock.patch.object(g, "call", side_effect=g.GlobalError("invalid_status")) as call:
             with self.assertRaises(g.GlobalError):
                 g.send_status()
-        self.assertEqual(call.call_count, 6)
+        self.assertEqual(call.call_count, 7)
 
     def test_reports_only_flow_once_active(self):
         self.join()
