@@ -925,12 +925,19 @@ def usage_summary() -> dict:
     weekday they start, reservations and seconds reserved per device type, and
     per device by the UTC day they start over the last 31 days.
 
-    Counts only (ReservationBuckets, ReservationDays); all zero when nothing is shared there.
+    `local` repeats the hour and weekday counts in the lab's own time zone, named by `tz`.
+
+    Counts only (ReservationBuckets, ReservationDays, ReservationLocalBuckets); all zero when
+    nothing is shared there.
     """
+    import time
     from datetime import datetime, timedelta, timezone
     from .federation import cluster
 
-    usage = {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": []}
+    tz = os.environ.get("TZ", "").lstrip(":") or os.path.realpath("/etc/localtime").partition("zoneinfo/")[2]
+    tz = re.sub(r"[^A-Za-z0-9_+/-]", "", tz or time.tzname[0])[:64] or "UTC"
+    local = {"tz": tz, "by_hour": [0] * 24, "by_weekday": [0] * 7}
+    usage = {"by_hour": [0] * 24, "by_weekday": [0] * 7, "by_type": {}, "by_device": [], "local": local}
     try:
         shared = {int(d) for group in cluster.groups(cluster.GLOBAL) for d in group["devices"]}
     except Exception:  # noqa: BLE001 - not in the global cluster (yet), or its state is unreadable
@@ -948,6 +955,10 @@ def usage_summary() -> dict:
             totals["seconds"] = min(totals["seconds"] + seconds, 2**31)
         else:
             usage["by_hour" if bucket[0] == "h" else "by_weekday"][int(bucket[1:])] += n
+    for device_id, bucket, n in _rows(_db_dir() / "reservations.db",
+                                      "SELECT device_id, bucket, reservations FROM ReservationLocalBuckets"):
+        if device_id in shared:
+            local["by_hour" if bucket[0] == "h" else "by_weekday"][int(bucket[1:])] += n
     busiest = sorted((kv for kv in by_type.items() if kv[1]["reservations"]), key=lambda kv: -kv[1]["reservations"])
     usage["by_type"] = dict(busiest[:64])  # Global takes at most 64 types
 
@@ -1060,13 +1071,15 @@ def send_status() -> None:
 
     payload = status_payload()
     # A Global older than a field refuses the note: drop the newest first
-    # (`transport`, `usage.by_device`, `usage`, then `reservations`), then
-    # `proxies`/`reserved_s`, as the note was before each of them.
-    without_transport = {k: v for k, v in payload.items() if k != "transport"}
+    # (`usage.local`, `transport`, `usage.by_device`, `usage`, then `reservations`),
+    # then `proxies`/`reserved_s`, as the note was before each of them.
+    older = dict(payload, usage={k: v for k, v in payload["usage"].items() if k != "local"})
+    without_transport = {k: v for k, v in older.items() if k != "transport"}
     steps = [
         payload,
+        older,
         without_transport,
-        dict(without_transport, usage={k: v for k, v in payload["usage"].items() if k != "by_device"}),
+        dict(without_transport, usage={k: v for k, v in older["usage"].items() if k != "by_device"}),
     ]
     for drop in (("usage",), ("usage", "reservations"), ("usage", "reservations", "proxies", "reserved_s")):
         steps.append({k: v for k, v in without_transport.items() if k not in drop})

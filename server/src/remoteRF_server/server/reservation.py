@@ -264,6 +264,8 @@ class ReservationHandler:
         hour = lambda r: f"'h' || strftime('%H', {r}.start_time, 'utc')"  # noqa: E731
         day = lambda r: f"'d' || ((CAST(strftime('%w', {r}.start_time, 'utc') AS INTEGER) + 6) % 7)"  # noqa: E731
         utc_date = lambda r: f"date({r}.start_time, 'utc')"  # noqa: E731
+        local_hour = lambda r: f"'h' || strftime('%H', {r}.start_time)"  # noqa: E731
+        local_day = lambda r: f"'d' || ((CAST(strftime('%w', {r}.start_time) AS INTEGER) + 6) % 7)"  # noqa: E731
         length = lambda r: f"(julianday({r}.end_time) - julianday({r}.start_time)) * 86400"  # noqa: E731
         # A booking made after its start counts only from now on.
         held = '''MAX(0, (julianday(NEW.end_time) - julianday(MAX(NEW.start_time, datetime('now', 'localtime')))) * 86400)'''
@@ -313,6 +315,29 @@ class ReservationHandler:
         WHEN OLD.device_id < 1000000 BEGIN
             UPDATE ReservationDays SET {cancel}
             WHERE device_id = OLD.device_id AND day = {utc_date("OLD")};
+        END;
+        -- The same hour and weekday counts in the lab's local (wall-clock) time,
+        -- `usage.local`. Own table: older Servers read every ReservationBuckets
+        -- name as h<n>/d<n>, so a rollback must not find new names there.
+        CREATE TABLE IF NOT EXISTS ReservationLocalBuckets (device_id INTEGER NOT NULL, bucket TEXT NOT NULL,
+            reservations INTEGER NOT NULL, PRIMARY KEY (device_id, bucket));
+        INSERT INTO ReservationLocalBuckets
+            SELECT device_id, bucket, COUNT(*) FROM (
+                SELECT device_id, {local_hour("r")} AS bucket FROM Reservations r
+                UNION ALL SELECT device_id, {local_day("r")} FROM Reservations r)
+            WHERE device_id < 1000000 AND NOT EXISTS (SELECT 1 FROM ReservationLocalBuckets)
+            GROUP BY device_id, bucket;
+        CREATE TRIGGER IF NOT EXISTS reservation_local_buckets_ins AFTER INSERT ON Reservations
+        WHEN NEW.device_id < 1000000 BEGIN
+            INSERT INTO ReservationLocalBuckets VALUES
+                (NEW.device_id, {local_hour("NEW")}, 1), (NEW.device_id, {local_day("NEW")}, 1)
+            ON CONFLICT (device_id, bucket) DO UPDATE SET reservations = reservations + 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS reservation_local_buckets_del AFTER DELETE ON Reservations
+        WHEN OLD.device_id < 1000000 BEGIN
+            UPDATE ReservationLocalBuckets
+            SET reservations = MAX(reservations - (OLD.start_time > datetime('now', 'localtime')), 0)
+            WHERE device_id = OLD.device_id AND bucket IN ({local_hour("OLD")}, {local_day("OLD")});
         END;
         COMMIT;
         ''')
