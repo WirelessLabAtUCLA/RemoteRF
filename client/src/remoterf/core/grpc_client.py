@@ -491,7 +491,9 @@ def _lab(t, x, dep, connection):
     if "why" not in results:
         _told.discard(t)
     elif connection is None and first and os.getenv("REMOTERF_AUTO_RESERVE", "1") != "0":
-        if _auto_reserve(t):
+        booked = _auto_reserve(t)
+        if booked:
+            x = booked.rpartition("@")[0] or x  # the device it booked, as the lab names it
             for attempt in range(11):
                 try:
                     fresh = exchange()
@@ -518,18 +520,32 @@ def _key(s):
     return re.sub(r"[\s_]+", "_", s).strip("_")
 
 
+def _fold(s):
+    return _key(s.replace("-", "_")).casefold()
+
+
+def _same_handle(items, x, handle_of):
+    """The items whose handle is `x` as typed (_key), else, when they all share
+    one handle, those equal to it with '-' as '_' and case ignored (_fold)."""
+    items = [i for i in items if handle_of(i)]
+    if not _fold(x):
+        return []
+    exact = [i for i in items if _key(handle_of(i) or "") == _key(x)]
+    if exact:
+        return exact
+    near = [i for i in items if _fold(handle_of(i) or "") == _fold(x)]
+    return near if len({_key(handle_of(i)) for i in near}) == 1 else []
+
+
 def _global_handle(x, dep):
     """A handle on a device Global lists for this user, as its ref (None: no match)."""
-    key = _key(x)
     try:
         backend = federated_backend()
         dep_id = _deployment_id(dep)
     except Exception:  # noqa: BLE001 - not logged in to Global, or no such slug
         return None
-    matches = [
-        d for d in backend.devices()["devices"]
-        if key and d.get("deployment_id") == dep_id and _key(d.get("handle") or "") == key
-    ]
+    matches = _same_handle([d for d in backend.devices()["devices"] if d.get("deployment_id") == dep_id],
+                           x, lambda d: d.get("handle"))
     if len(matches) > 1:
         raise RuntimeError(f"{x}@{dep}: more than one device has that handle")
     if not matches:
@@ -556,13 +572,13 @@ def _auto_reserve(handle):
         booked = ops.auto_reserve(ops.saved_session(), handle)
     except Exception as exc:  # noqa: BLE001 - routing must still work as it did before
         print(f"{handle}: not reserved automatically: {getattr(exc, 'message', exc)}", file=sys.stderr)
-        return False
+        return None
     until = datetime.fromtimestamp(booked["end_ts"]).strftime("%H:%M")
     reference = booked.get("reservation_id")
     cancel = f" Cancel: remoterf cancel {reference} --confirm" if reference is not None else ""
     print(f"{handle}: reserved for you until {until} (the current {booked['slot_minutes']}-minute slot).{cancel}",
           file=sys.stderr)
-    return True
+    return booked.get("handle") or handle
 
 
 class RemoteRFRpcError(RuntimeError, grpc.RpcError):

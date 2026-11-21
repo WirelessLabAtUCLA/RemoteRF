@@ -27,3 +27,8 @@ def device_name_key(name: str) -> str:
     """A device name as typed and matched: whitespace and '_' are interchangeable,
     runs collapse and the ends are ignored ('pluto A' == 'pluto_A'). Case is kept."""
     return re.sub(r"[\s_]+", "_", name).strip("_")
+
+
+def handle_fold(name: str) -> str:
+    """A handle typed loosely: also '-' as '_' and any case ('rtl_sdr_00' is RTL-SDR_00)."""
+    return device_name_key(name.replace("-", "_")).casefold()

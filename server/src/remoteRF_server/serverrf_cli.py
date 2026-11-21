@@ -763,9 +763,9 @@ _HANDLE_LIKE_NAME_MSG = "name must not end in ' [<word>]': clients read that as 
 def _name_problem(name: str, gid: Optional[int] = None) -> Optional[str]:
     """Why device `gid` (None: one not added yet) cannot be named `name`. A name is
     also the device's handle, so it must be addressable and unique, with spaces
-    and '_' alike (device_name_key)."""
+    and '_' alike, '-' as '_' and any case (handle_fold)."""
     from remoterf_federation_core import is_device_handle
-    from remoteRF_server.common.utils import device_name_key
+    from remoteRF_server.common.utils import device_name_key, handle_fold
 
     if _HANDLE_LIKE_NAME.search(name):
         return _HANDLE_LIKE_NAME_MSG
@@ -778,7 +778,7 @@ def _name_problem(name: str, gid: Optional[int] = None) -> Optional[str]:
     except ValueError as exc:
         return str(exc)
     other = next((g for g, r in sorted(recs.items())
-                  if g != gid and device_name_key(str(r.get("NAME") or "")) == key), None)
+                  if g != gid and handle_fold(str(r.get("NAME") or "")) == handle_fold(key)), None)
     if other is not None:
         return f"a device named {recs[other]['NAME']!r} already exists (#{other})"
     return None
