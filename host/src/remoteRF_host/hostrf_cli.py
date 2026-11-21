@@ -28,7 +28,7 @@ from typing import Optional, Tuple, Dict, List, Any
 
 from .config.cert_fetcher import fetch_and_save_ca_cert
 from .common.idl import ensure_default_driver_files
-from .common.utils import device_name_key
+from .common.utils import device_name_key, handle_fold
 from .common.utils.db_location import get_devices_config_path, get_host_config_dir, get_remoterf_root
 from .drivers.usrp.profiles import inventory_for_profile
 
@@ -666,10 +666,10 @@ def _check_name(recs: Dict[int, Dict[str, Any]], gid: int, name: str) -> bool:
             "be only spaces/'_', or start with 'rfg_' or 'bridge-'"
         )
     else:
-        clash = next((g for g, r in recs.items() if g != gid and device_name_key(str(r.get("name") or "")) == key), None)
+        clash = next((g for g, r in recs.items() if g != gid and handle_fold(str(r.get("name") or "")) == handle_fold(key)), None)
         if clash is None:
             return True
-        msg = f"a device named {recs[clash].get('name')!r} already exists (#{clash}); spaces and '_' count as the same"
+        msg = f"a device named {recs[clash].get('name')!r} already exists (#{clash}); spaces, '_', '-' and case count as the same"
     print(f"ERROR: {msg}", file=sys.stderr)
     return False
 

@@ -36,7 +36,7 @@ from contextlib import contextmanager
 
 from remoterf_federation_core import is_device_handle
 
-from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, device_name_key
+from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, device_name_key, handle_fold
 from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_builtin_drivers,
                                  load_drivers, override_stale)
 from ..host import host_tunnel_server as hts
@@ -1385,9 +1385,18 @@ def _handle_owners() -> Dict[str, int]:
     return owners
 
 def find_device_id_by_handle(handle: str) -> Optional[int]:
-    """The gid owning `handle` as typed (device_name_key, case-sensitive), or None."""
+    """The gid owning `handle` as typed (device_name_key), else the one device name
+    equal to it loosely (handle_fold: 'rtl_sdr_00' finds RTL-SDR_00), or None.
+    Names of devices away right now count too: a loose spelling never lands on
+    the neighbour of a device that is briefly unannounced."""
     _sync_host_devices()
-    return _handle_owners().get(device_name_key(str(handle)))
+    key = device_name_key(str(handle))
+    with _state_lock:
+        names = {_name_handle(st.name) for st in _devices.values()} - {""}
+    if key not in names:
+        near = {h for h in names if handle_fold(h) == handle_fold(key)}
+        key = near.pop() if len(near) == 1 else ""
+    return _handle_owners().get(key) if key else None
 
 def handle_report() -> Dict[int, str]:
     """gid -> its handle, or why it was ignored, for devices whose name is addressable."""

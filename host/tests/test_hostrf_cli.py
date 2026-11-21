@@ -118,6 +118,7 @@ class HostRfCliTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("ERROR: a device named 'pluto A' already exists (#0)", err)
         self.assertNotIn("Added device", out)
+        self.assertEqual(self.run_cli("--device", "--add", "--rtl-sdr", "1:PLUTO-a:index=0")[0], 2)  # folds alike
         for bad in ("a@lab", "rfg_x", "bridge-1", "Pluto\u200bA", "__"):
             rc, _, err = self.run_cli("--device", "--add", "--pluto", f"1:{bad}:456456")
             self.assertEqual(rc, 2, bad)

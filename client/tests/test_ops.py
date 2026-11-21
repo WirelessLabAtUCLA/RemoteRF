@@ -462,3 +462,14 @@ def test_nothing_reaches_stdout(lab, home, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
     grpc_client._finish(reply)  # the shell still shows it
     assert "Invalid login credentials." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("typed", ["Pluto_A@ucla", "pluto-a@ucla", "PLUTO A@ucla"])
+def test_a_lab_handle_resolves_leniently_without_an_exact_match(lab, typed):
+    assert ops._resolve(lab, typed)[0] == "Pluto_A@ucla"
+
+
+def test_a_global_handle_resolves_leniently_without_an_exact_match(home):
+    assert ops._resolve(home, "PLUTO-01@ucla")[0] == "Pluto_01@ucla"
+    with pytest.raises(ops.RemoteRFOpsError):
+        ops._resolve(home, "Pluto01@ucla")

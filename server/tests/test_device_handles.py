@@ -58,7 +58,12 @@ class HandleTableTests(_Devices):
         dm._devices[7] = _state(name="pluto A")
         for typed in ("pluto A", "pluto_A", " pluto\tA ", "pluto__A"):
             self.assertEqual(dm.find_device_id_by_handle(typed), 7, typed)
-        self.assertIsNone(dm.find_device_id_by_handle("Pluto_A"))  # case-sensitive
+        for typed in ("Pluto_A", "PLUTO-a"):  # no exact match: '-' as '_', any case
+            self.assertEqual(dm.find_device_id_by_handle(typed), 7, typed)
+        dm._devices[8] = _state(name="RTL-SDR 00")
+        for typed in ("RTL-SDR_00", "rtl_sdr_00", "RTL_SDR 00"):
+            self.assertEqual(dm.find_device_id_by_handle(typed), 8, typed)
+        self.assertIsNone(dm.find_device_id_by_handle("RTLSDR_00"))
         self.assertEqual([dm._name_handle(n) for n in ("a@b", "a:b", "rfg_x", "bridge-x", " _ ")], [""] * 5)
 
     def test_duplicates_go_to_local_first_then_the_lowest_id(self):
@@ -68,11 +73,16 @@ class HandleTableTests(_Devices):
         })
         self.assertEqual(dm.find_device_id_by_handle("A"), 11)
         self.assertEqual(dm.find_device_id_by_handle("B"), 12)
-        self.assertIsNone(dm.find_device_id_by_handle("b"))  # exact, case-sensitive
+        self.assertEqual(dm.find_device_id_by_handle("b"), 12)  # leniently, one handle
         self.assertIsNone(dm.find_device_id_by_handle(""))
         self.assertEqual(dm.handle_report(), {
             10: "A ignored (duplicate name)", 11: "A", 12: "B", 13: "B ignored (duplicate name)",
         })
+        dm._devices.update({15: _state("local", "Rx A"), 16: _state("local", "rx-a")})
+        self.assertEqual(dm.find_device_id_by_handle("rx-a"), 16)  # exact first
+        self.assertIsNone(dm.find_device_id_by_handle("RX_A"))  # two handles fold alike
+        dm._devices[16].handle = ""  # rx-a briefly unannounced: never fold onto Rx A
+        self.assertIsNone(dm.find_device_id_by_handle("rx-a"))
         labels = dm._local_devices_str_snapshot()
         self.assertEqual((labels[12], labels[13]), ("B (online)", "B (online)"))
         described = {d["id"]: d.get("handle") for d in dm.describe_devices([11, 12, 13, 14])}
@@ -329,10 +339,11 @@ class DeviceTokenExchangeTests(_Devices):
         self.assertEqual(reply["res_id"], res_id)
         self.assertEqual(dm.resolve_gid_for_token(reply["Token"]), GID)
         self.assertEqual(self._exchange("Pluto A")["Token"], reply["Token"])
+        self.assertEqual(self._exchange("pluto-a")["Token"], reply["Token"])
 
     def test_anything_that_is_not_a_handle_comes_back_unchanged(self):
         self._reserve("alice")
-        for h in ("pluto A", "Ab3__xY9-kLm_", "bridge-1-x"):  # a miss is never rewritten
+        for h in ("Pluto B", "Ab3__xY9-kLm_", "bridge-1-x"):  # a miss is never rewritten
             self.assertEqual(self._exchange(h), {"Token": h})
 
     def test_a_super_token_passes_through_to_the_device_plane(self):
@@ -428,7 +439,7 @@ class CliHandleTests(unittest.TestCase):
     def test_a_taken_or_unaddressable_name_adds_nothing(self):
         cli = self.cli
         self.assertEqual(cli.cmd_devices_add(["pluto", "Pluto A", "--serial", "S1"]), 0)
-        for bad, why in (("Pluto_A", "a device named 'Pluto A' already exists (#0)"), ("Pluto__A ", "already exists"),
+        for bad, why in (("Pluto_A", "a device named 'Pluto A' already exists (#0)"), ("Pluto__A ", "already exists"), ("pluto-a", "already exists"),
                          ("a@b", "can't contain '@'"), ("a:b", "can't contain"), ("rfg_x", "can't start with"),
                          ("bridge-x", "can't start with")):
             with mock.patch("sys.stderr") as err:

@@ -27,7 +27,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import grpc
 
 from .common.utils import map_arg, str_to_list, unmap_arg
-from .core.grpc_client import _key, is_global_token
+from .core.grpc_client import _key, _same_handle, is_global_token
 from .core.messages import explain
 from .deployment.http import AccountBackendError
 
@@ -544,15 +544,16 @@ def _resolve(s, handle):
                 raise RemoteRFOpsError("deployment_unreachable", explain("route_unavailable", where=lab)) from None
             dep = None
         matches = [(f"{d['handle']}@{lab}", d["device_id"], d) for d in devices
-                   if dep and d.get("deployment_id") == dep and _key(d.get("handle") or "") == key]
+                   if dep and d.get("deployment_id") == dep and d.get("handle")]
     elif lab != s.home:
         raise RemoteRFOpsError("unknown_handle", f"This login is at {s.home}; it can't reach devices at {lab}.")
     else:
         matches = []
         for row in native_rows(_results(s.account.get_devices()), s.home):
             h = None if row["away"] else _name_and_handle(row["name"])[1]
-            if h and _key(h) == key:
+            if h:
                 matches.append((f"{h}@{lab}", row["id"], row))
+    matches = _same_handle(matches, name, lambda m: m[0].rpartition("@")[0])
     if not matches:
         raise RemoteRFOpsError("unknown_handle", f"No device {name}@{lab} is visible to this account.")
     # Two devices with one name: the lab's handle drives the lowest id.

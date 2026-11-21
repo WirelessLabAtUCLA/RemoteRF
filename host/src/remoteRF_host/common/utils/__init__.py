@@ -26,6 +26,11 @@ def device_name_key(name: str) -> str:
     return re.sub(r"[\s_]+", "_", name).strip("_")
 
 
+def handle_fold(name: str) -> str:
+    """A handle typed loosely: also '-' as '_' and any case ('rtl_sdr_00' is RTL-SDR_00)."""
+    return device_name_key(name.replace("-", "_")).casefold()
+
+
 def _missing_dependency(name: str, exc: Exception):
     message = f"{name} is unavailable because an optional dependency failed to import: {exc}"
 

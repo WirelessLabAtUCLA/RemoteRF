@@ -256,6 +256,18 @@ def test_an_active_handle_auto_reserves_and_retries_for_the_token(monkeypatch, r
     assert "Cancel: remoterf cancel 123 --confirm" in err
 
 
+def test_auto_reserve_exchanges_the_handle_it_booked(monkeypatch, routes, capsys):
+    _login(monkeypatch)
+    monkeypatch.delenv("REMOTERF_AUTO_RESERVE")
+    monkeypatch.setattr(ops, "saved_session", lambda: object())
+    monkeypatch.setattr(ops, "auto_reserve", lambda s, handle: {
+        "reservation_id": "7", "handle": "Pluto-A@ucla", "end_ts": 1767291000, "slot_minutes": 30})
+    routes.replies["ACC:device_token"] = lambda args: (
+        {"Token": "bridge-7", "res_id": 7} if args["h"] == "Pluto-A" else {"Token": args["h"], "why": "no"})
+    assert grpc_client.device_route("pluto_a@ucla") == grpc_client.DeviceRoute("bridge-7", "active", res_id=7)
+    assert [a["h"] for f, a in routes.calls if f == "ACC:device_token"] == ["pluto_a", "Pluto-A"]
+
+
 @pytest.mark.parametrize("reason", ["the current slot is not free", "reservation quota reached"])
 def test_an_active_handle_auto_reserve_failure_keeps_the_old_fallback(monkeypatch, routes, capsys, reason):
     _login(monkeypatch)
@@ -293,7 +305,7 @@ def test_a_refresh_when_a_reservation_ends_does_not_book_the_next_slot(monkeypat
 def test_a_lab_error_while_waiting_for_the_token_keeps_the_first_answer(monkeypatch, routes):
     _login(monkeypatch)
     monkeypatch.delenv("REMOTERF_AUTO_RESERVE")
-    monkeypatch.setattr(grpc_client, "_auto_reserve", lambda handle: True)
+    monkeypatch.setattr(grpc_client, "_auto_reserve", lambda handle: handle)
     replies = iter([{"Token": "PlutoA", "why": "no active reservation of yours on PlutoA right now"},
                     {"ace": "Invalid login credentials."}])
     routes.replies["ACC:device_token"] = lambda args: next(replies)
@@ -481,6 +493,13 @@ def test_a_global_user_handle_maps_to_the_listed_device(monkeypatch, routes):
     with pytest.raises(RuntimeError) as exc:
         grpc_client.device_route("PlutoB@ucla")
     assert str(exc.value) == _unreachable("ucla")
+    # No exact match: '-' as '_' and any case, while that names one handle.
+    listing["devices"][1]["handle"] = "RTL-SDR_00"
+    assert grpc_client.device_route("rtl_sdr_00@ucla") == grpc_client.DeviceRoute(REF, "global")
+    listing["devices"].append({"deployment_id": DEST, "handle": "RTL_SDR_00", "device_id": "x:2"})
+    assert grpc_client.device_route("RTL_SDR_00@ucla") == grpc_client.DeviceRoute("x:2", "global")
+    with pytest.raises(RuntimeError):
+        grpc_client.device_route("rtl-sdr-00@ucla")
     assert routes.calls == []
 
 
@@ -497,7 +516,7 @@ def test_a_global_handle_auto_reserves_only_without_a_live_reservation(monkeypat
     monkeypatch.setattr(grpc_client, "federated_backend", lambda: backend)
     monkeypatch.setattr(homes, "discover", lambda host: {"deployment_id": DEST})
     booked = []
-    monkeypatch.setattr(grpc_client, "_auto_reserve", lambda handle: booked.append(handle) or True)
+    monkeypatch.setattr(grpc_client, "_auto_reserve", lambda handle: booked.append(handle) or handle)
     assert grpc_client.device_route("PlutoA@ucla") == grpc_client.DeviceRoute(REF, "global")
     assert booked == expected
 
