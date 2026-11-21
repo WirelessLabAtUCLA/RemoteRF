@@ -42,23 +42,6 @@ Beyond standalone lab deployments, servers can also connect to the RemoteRF Glob
 
 A typical RemoteRF deployment consists of one server, multiple devices, many clients, and optionally one or more hosts.
 
-```text
-+-----------------------+                         +-------------------------+        USB        +------------------+
-|    Client Machines    |                         |     RemoteRF Server     | ----------------> |  Local Devices   |
-|  (remoterf CLI / SDK) | <--- Networked RPCs --> |  (serverrf on Linux)    |                   | (SDRs, Radars…)  |
-|   Local Python Code   |                         | Accounts · Reservations |                   +------------------+
-+-----------------------+                         | Safeguards · Lockouts   |
-                                                  +------------+------------+
-                                                               |
-                                                      LAN / Wi-Fi / VPN
-                                                               |
-                                                               v
-                                                  +-------------------------+        USB        +------------------+
-                                                  |      RemoteRF Host      | ----------------> |  Remote Devices  |
-                                                  | (hostrf, e.g. RPi SBC)  |                   | (Distributed RF) |
-                                                  +-------------------------+                   +------------------+
-```
-
 - **Device** — A RemoteRF device is an SDR, multi-modal peripheral, or virtually any instrument (or even software process) that can be controlled through Python.
 - **Server** (`remoterf-server` / `serverrf`) — The RemoteRF server is a Linux computer with one or more connected devices, typically deployed on a university campus or in a research lab. It manages accounts, reservations, user groups, and server-side RF lockouts, and executes device calls on behalf of clients.
 - **Client** (`remoterf`) — A RemoteRF client connects to the RemoteRF server and enables a user to remotely access the server's devices through Python via a network connection. User scripts run locally on the user's personal computer—only device interactions are routed to the server as RPCs—so clients require no vendor-specific hardware drivers, VMs, or SSH access.
