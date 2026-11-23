@@ -13,9 +13,10 @@ from remoterf_device_core.integrations.registry import Manifest
 
 
 class Processes:
-    def __init__(self, log=b"ALL RUs ready\n"):
+    def __init__(self, log=b"[PHY] Signaling main thread that RU 0 is ready, sl_ahead 6\n", err=b""):
         self.launches = []
         self.log = log
+        self.err = err
         self.alive = True
         self.stop_ok = True
         self.stop_calls = []
@@ -40,7 +41,7 @@ class Processes:
     def log_tail(self, process_id, stream):
         if process_id in self.jobs:
             return getattr(self.jobs[process_id], stream)
-        return self.log
+        return self.log if stream == "stdout" else self.err
 
     def stop(self, **kwargs):
         self.stop_calls.append(kwargs)
@@ -66,7 +67,7 @@ def operator_files(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("profile,configuration", [
-    ("receive", {}), ("gnb", {"frequency": 1}), ("gnb", []),
+    ("receive", {}), ("gnb", {"frequency": 1}), ("gnb", []), ("ue", {"band": 41}), ("ue", None),
 ])
 def test_validate_rejects_unsupported_inputs(tmp_path, profile, configuration):
     with pytest.raises(ValueError):
@@ -94,8 +95,8 @@ def test_start_launches_expected_process_and_becomes_ready(monkeypatch, tmp_path
     adapter.start("gnb", {})
 
     assert ctx.processes.launches == [
-        ([str(softmodem), "-O", str(conf), "--RUs.[0].sdr_addrs", "serial=ABC123"], {
-            "env": {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+        ([str(softmodem), "-O", str(conf), "--continuous-tx", "--RUs.[0].sdr_addrs", "serial=ABC123"], {
+            "env": {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "HOME": str(tmp_path),
                     "OAI_SHM_DIR": str(tmp_path / "shm"),
                     "OAI_PLUGIN_CTRL": str(tmp_path / "plugin_ctrl.json"),
                     "UHD_IMAGES_DIR": "/operator/uhd-images"},
@@ -103,7 +104,8 @@ def test_start_launches_expected_process_and_becomes_ready(monkeypatch, tmp_path
             "required_while_running": True,
         })
     ]
-    assert adapter.status() == {"ready": True}
+    assert adapter.status() == {"ready": True, "profile": "gnb"}
+    assert adapter.call("link_status", {}) == {"state": "running"}
     assert (tmp_path / "shm").is_dir()
 
 
@@ -250,3 +252,207 @@ def test_job_over_bounded_wait_fails(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="bounded wait"):
         oai.OAI(context(tmp_path, processes=processes, user_code=True)).call(
             "run_xapp", {"code": "pass", "duration_s": 1})
+
+
+def ue_files(monkeypatch, tmp_path, args="--band 41 -C 2593350000 -r 52"):
+    uesoftmodem = tmp_path / "nr-uesoftmodem"
+    conf = tmp_path / "ue.conf"
+    uesoftmodem.write_text("")
+    conf.write_text("")
+    monkeypatch.setenv("REMOTERF_OAI_UESOFTMODEM", str(uesoftmodem))
+    monkeypatch.setenv("REMOTERF_OAI_UE_CONF", str(conf))
+    if args is not None:
+        monkeypatch.setenv("REMOTERF_OAI_UE_ARGS", args)
+    return uesoftmodem, conf
+
+
+def test_validate_accepts_both_profiles(tmp_path):
+    adapter = oai.OAI(context(tmp_path))
+    assert adapter.validate("gnb", {}) == {} and adapter.validate("ue", {}) == {}
+
+
+def test_gnb_args_override_conf_per_serial_and_shlibpath(monkeypatch, tmp_path):
+    softmodem, _ = operator_files(monkeypatch, tmp_path)
+    siso = tmp_path / "gnb-siso.conf"
+    siso.write_text("")
+    monkeypatch.setenv("REMOTERF_OAI_GNB_CONF_ABC123", str(siso))
+    monkeypatch.setenv("REMOTERF_OAI_GNB_ARGS", "--continuous-tx --thread-pool '0,1'")
+    monkeypatch.setenv("REMOTERF_OAI_SHLIBPATH", str(tmp_path))
+    ctx = context(tmp_path)
+    oai.OAI(ctx).start("gnb", {})
+    assert ctx.processes.launches[0][0] == [
+        str(softmodem), "-O", str(siso), "--continuous-tx", "--thread-pool", "0,1",
+        "--loader.shlibpath", str(tmp_path), "--RUs.[0].sdr_addrs", "serial=ABC123"]
+
+
+def test_gnb_ready_marker_on_stderr(monkeypatch, tmp_path):
+    operator_files(monkeypatch, tmp_path)
+    processes = Processes(log=b"", err=b"TYPE <CTRL-C> TO TERMINATE\n")
+    adapter = oai.OAI(context(tmp_path, processes=processes))
+    adapter.start("gnb", {})
+    assert adapter.status()["ready"] is True
+
+
+def test_ue_requires_operator_args(monkeypatch, tmp_path):
+    ue_files(monkeypatch, tmp_path, args=None)
+    with pytest.raises(RuntimeError, match="REMOTERF_OAI_UE_ARGS"):
+        oai.OAI(context(tmp_path)).start("ue", {})
+
+
+def test_ue_start_waits_for_interface_ip(monkeypatch, tmp_path):
+    uesoftmodem, conf = ue_files(monkeypatch, tmp_path)
+    answers = iter([None, None, "10.0.0.2"])
+    seen = []
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: seen.append(name) or next(answers, "10.0.0.2"))
+    ctx = context(tmp_path, processes=Processes(log=b""))
+    adapter = oai.OAI(ctx)
+
+    adapter.start("ue", {})
+
+    argv, kwargs = ctx.processes.launches[0]
+    assert argv == [str(uesoftmodem), "-O", str(conf), "--band", "41", "-C", "2593350000",
+                    "-r", "52", "--usrp-args", "serial=ABC123"]
+    assert kwargs["required_while_running"] is True and kwargs["cwd"] == tmp_path
+    assert seen[:3] == ["oaitun_ue1"] * 3
+    assert adapter.status() == {"ready": True, "profile": "ue", "ip": "10.0.0.2"}
+    assert adapter.call("link_status", {}) == {"state": "ip_up", "ifname": "oaitun_ue1", "ip": "10.0.0.2"}
+
+
+def test_ue_conf_per_serial_and_custom_ifname(monkeypatch, tmp_path):
+    ue_files(monkeypatch, tmp_path)
+    own = tmp_path / "ue-own.conf"
+    own.write_text("")
+    monkeypatch.setenv("REMOTERF_OAI_UE_CONF_ABC123", str(own))
+    monkeypatch.setenv("REMOTERF_OAI_UE_IFNAME", "oaitun_ue7")
+    seen = []
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: seen.append(name) or "10.0.0.9")
+    ctx = context(tmp_path)
+    oai.OAI(ctx).start("ue", {})
+    assert ctx.processes.launches[0][0][2] == str(own) and seen == ["oaitun_ue7"]
+
+
+@pytest.mark.parametrize("name", ["bad name; rm", "..", ".", "-x", "a" * 16])
+def test_ue_rejects_bad_ifname(monkeypatch, tmp_path, name):
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setenv("REMOTERF_OAI_UE_IFNAME", name)
+    ctx = context(tmp_path)
+    with pytest.raises(RuntimeError, match="IFNAME"):
+        oai.OAI(ctx).start("ue", {})
+    assert not ctx.processes.launches
+
+
+def test_ue_exit_before_ip_fails(monkeypatch, tmp_path):
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: None)
+    processes = Processes(log=b"")
+    processes.alive = False
+    with pytest.raises(RuntimeError, match="ue process is no longer running"):
+        oai.OAI(context(tmp_path, processes=processes)).start("ue", {})
+
+
+def test_ue_link_status_syncing(monkeypatch, tmp_path):
+    ue_files(monkeypatch, tmp_path)
+    ips = iter(["10.0.0.2"])
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: next(ips, None))
+    adapter = oai.OAI(context(tmp_path))
+    adapter.start("ue", {})
+    assert adapter.call("link_status", {}) == {"state": "syncing", "ifname": "oaitun_ue1", "ip": None}
+
+
+def started_ue(monkeypatch, tmp_path, ip="10.0.0.2"):
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: ip)
+    ctx = context(tmp_path)
+    adapter = oai.OAI(ctx)
+    adapter.start("ue", {})
+    return ctx, adapter
+
+
+def test_ping_runs_bounded_job_and_budget(monkeypatch, tmp_path):
+    ctx, adapter = started_ue(monkeypatch, tmp_path)
+    monkeypatch.setenv("REMOTERF_OAI_DN_IP", "127.0.0.1")
+    ping = tmp_path / "ping-argv"
+    real_launch = ctx.processes.launch
+
+    def launch(argv, **kwargs):
+        # Record the real ping argv, then run a stand-in through the fake's subprocess.run.
+        if argv[0] == "/usr/bin/ping":
+            ping.write_text(json.dumps(argv))
+            argv = [sys.executable, "-c", "print('3 packets transmitted, 3 received')"]
+        return real_launch(argv, **kwargs)
+
+    ctx.processes.launch = launch
+    result = adapter.call("ping", {"count": 3})
+    # The ping deadline (-w) ends before the action wait (30 s default - MARGIN).
+    assert json.loads(ping.read_text()) == ["/usr/bin/ping", "-n", "-I", "oaitun_ue1", "-c", "3",
+                                            "-W", "2", "-w", "24", "127.0.0.1"]
+    assert result["ok"] is True and "3 received" in result["output"]
+    assert adapter.call("ping", {})["ok"] is True
+    assert adapter.call("ping", {})["ok"] is True
+    assert adapter.call("ping", {}) == {"ok": False, "error": "job_budget_exhausted"}
+
+
+@pytest.mark.parametrize("parameters", [{"count": 0}, {"count": 21}, {"count": True}, {"host": "x"}])
+def test_ping_validation(monkeypatch, tmp_path, parameters):
+    _, adapter = started_ue(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        adapter.call("ping", parameters)
+
+
+def test_ping_refused_for_gnb(monkeypatch, tmp_path):
+    operator_files(monkeypatch, tmp_path)
+    adapter = oai.OAI(context(tmp_path))
+    adapter.start("gnb", {})
+    assert adapter.call("ping", {}) == {"ok": False, "error": "ue_profile_required"}
+    assert adapter.status()["ready"] is True
+
+
+def test_invalid_dn_ip(monkeypatch, tmp_path):
+    monkeypatch.setenv("REMOTERF_OAI_DN_IP", "not-an-ip")
+    with pytest.raises(RuntimeError, match="DN_IP"):
+        oai._dn_ip()
+
+
+def test_ue_stop_waits_for_interface_removal(monkeypatch, tmp_path):
+    _, adapter = started_ue(monkeypatch, tmp_path)
+    gone = iter([True, True, False])
+    monkeypatch.setattr(oai, "interface_exists", lambda name: next(gone))
+    adapter.stop()
+    adapter.stop()
+    assert adapter.status() == {"ready": False, "stopped": True}
+
+
+def test_ue_stop_raises_when_interface_persists(monkeypatch, tmp_path):
+    _, adapter = started_ue(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "UE_IFACE_GONE_S", 0.2)
+    monkeypatch.setattr(oai, "interface_exists", lambda name: True)
+    with pytest.raises(RuntimeError, match="UE interface still present"):
+        adapter.stop()
+
+
+def test_code_actions_respect_job_budget(tmp_path):
+    adapter = oai.OAI(context(tmp_path, user_code=True))
+    adapter._jobs = oai.MAX_JOBS
+    assert adapter.call("run_xapp", {"code": "pass", "duration_s": 1}) == {
+        "ok": False, "error": "job_budget_exhausted"}
+    assert adapter.call("load_l1_plugin", {"stage": "pre_fft", "c_code": "int x;"}) == {
+        "ok": False, "error": "job_budget_exhausted"}
+
+
+def test_bundled_manifest_declares_both_profiles():
+    manifest = json.loads(Path(oai.__file__).with_name("integration.json").read_text())
+    assert manifest["profiles"] == ["gnb", "ue"]
+    assert {"health", "link_status", "ping"} <= set(manifest["actions"])
+
+
+def test_ue_refuses_interface_owned_by_another_ue(monkeypatch, tmp_path):
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "interface_exists", lambda name: True)
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: "10.0.0.2")
+    ctx = context(tmp_path)
+    adapter = oai.OAI(ctx)
+    with pytest.raises(RuntimeError, match="already in use"):
+        adapter.start("ue", {})
+    assert not ctx.processes.launches
+    adapter.stop()  # nothing launched, so no wait on the other UE's interface
+    assert adapter.status() == {"ready": False, "stopped": True}
