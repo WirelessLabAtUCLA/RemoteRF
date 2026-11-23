@@ -16,8 +16,8 @@ not deployment approval or hardware qualification.
 The current activation scope is one serial-addressed, lab-local plain `usrp`.
 Host-attached integrations return `unsupported_host`; Phaser and ambiguous or
 composite selectors cannot activate applications. Their existing native routes
-remain supported. Host integration execution is deferred. The bundled OAI gNB
-scaffold and opt-in user code (below) are for internal testing only.
+remain supported. Host integration execution is deferred. The bundled OAI gNB/UE
+adapter and opt-in user code (below) are for internal testing only.
 
 ## Public API on the existing USRP root
 
@@ -90,8 +90,8 @@ and returned as a NumPy array; `{"name", "format": "bytes"|"pcap"|"json"}` as by
 or parsed JSON (returned directly when it is the only key, otherwise in place).
 Failures raise `IntegrationError` with `.code`. Request keys are generated once
 and reused when an RPC is retried. `OaiGnb(radio)` (`start_cell`/`stop_cell`) and
-`OaiUe(radio)` (`attach`/`detach`) use `org.remoterf.oai`; the server scaffold
-currently declares only the `gnb` profile.
+`OaiUe(radio)` (`attach`/`detach`) use `org.remoterf.oai` (profiles `gnb` and
+`ue`); pass `timeout_s` when the attach can exceed the 120 s default.
 
 Start and action retries with identical inputs attach to their recorded outcome;
 changed inputs under the same key fail with `request_conflict`. Operations are
@@ -209,14 +209,28 @@ package is installed or enabled automatically by the runtime.
 
 ## OAI scaffold and user code
 
-`remoteRF_server.adapters.oai` (`org.remoterf.oai`, profile `gnb`) launches the
-operator's `REMOTERF_OAI_SOFTMODEM` with `REMOTERF_OAI_GNB_CONF`; it
-**transmits**. The softmodem environment adds `OAI_SHM_DIR=<work_dir>/shm` and
+`remoteRF_server.adapters.oai` (`org.remoterf.oai`, profiles `gnb` and `ue`);
+both **transmit**. Configuration must be `{}`: band, frequency and gains live
+only in operator files and environment, read from the server process:
+
+| Profile | Binary | Conf (a `_<SERIAL>` variant overrides per radio) | Arguments |
+|---|---|---|---|
+| `gnb` | `REMOTERF_OAI_SOFTMODEM` | `REMOTERF_OAI_GNB_CONF` | `REMOTERF_OAI_GNB_ARGS` (default `--continuous-tx`), then `--RUs.[0].sdr_addrs serial=<radio>` |
+| `ue` | `REMOTERF_OAI_UESOFTMODEM` | `REMOTERF_OAI_UE_CONF` | `REMOTERF_OAI_UE_ARGS` (required), then `--usrp-args serial=<radio>` |
+
+`REMOTERF_OAI_SHLIBPATH` adds `--loader.shlibpath`. A `gnb` start is ready when
+OAI logs `Signaling main thread that RU` (or the `TYPE <CTRL-C>` banner); a
+`ue` start returns only once `REMOTERF_OAI_UE_IFNAME` (default `oaitun_ue1`)
+has an IPv4 address, and is refused if that interface already exists. Set
+`start_timeout_s` and the client's `timeout_s` above the attach time. The
+softmodem environment adds `OAI_SHM_DIR=<work_dir>/shm` and
 `OAI_PLUGIN_CTRL=<work_dir>/plugin_ctrl.json`. Actions:
 
 | Action | Parameters | Result |
 |---|---|---|
-| `health` | none | Cached readiness. |
+| `health` | none | Readiness, profile and (UE) interface address. |
+| `link_status` | none | `gnb`: `{"state": "running"}`; `ue`: `{"state": "ip_up"\|"syncing", "ifname", "ip"}`. |
+| `ping` | optional `count` (1–20) | UE only (a gNB gets `ok: false`): pings `REMOTERF_OAI_DN_IP` (default `192.168.70.135`) over the UE interface as a supervised job, bounded by `action_timeout_s`. |
 | `load_l1_plugin` | `stage`, `c_code` | Compiles with `REMOTERF_OAI_CC` (default `/usr/bin/gcc`) `-O3 -shared -fPIC` as a supervised job; returns `ok`, `returncode` and the last 8 KiB of output. On success writes the control file. |
 | `unload_l1_plugin` | none | Writes the unload control record. |
 | `run_xapp` | `code`, `duration_s` (1–600) | Runs the code with the server's `python -I`, env `OAI_SHM_DIR` and `XAPP_OUTPUT=<work_dir>/artifacts/xapp-<n>.json`; SIGALRM ends it at `duration_s`. Returns `returncode`, output and `{"artifact": {"name", "format": "json"}}` when the file exists. |
@@ -226,7 +240,8 @@ any failed action, a refusal or a job past its wait fails the operation and its
 cgroup cleanup stops the cell. Readiness, compile and stop waits end 5 s before
 the configured `start_timeout_s`, `action_timeout_s` and `stop_timeout_s`; keep
 `duration_s` below `action_timeout_s`. Each
-process scope retains at most 4 launches, so one cell allows 3 compile/xApp jobs.
+process scope retains at most 4 launches, so one operation allows 3 ping, compile
+or xApp jobs; past that they return `{"ok": false, "error": "job_budget_exhausted"}`.
 
 **Control-file protocol (what a patched OAI must read).** `OAI_PLUGIN_CTRL` is
 replaced atomically (`os.replace`) on every change. `{"seq": n, "stage": s,
