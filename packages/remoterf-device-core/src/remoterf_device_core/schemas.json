@@ -73,8 +73,8 @@
  },
  {
   "device_type": "wifi",
-  "driver_version": "0.1.0",
-  "v1": "sha256:64e8e3ddbdb214abbade83769a87dd9a3ec730d6d924e339388dcc245cff5d09",
+  "driver_version": "0.1.1",
+  "v1": "sha256:d314479deac6725cf755eccb97bda4603c287780c38efeab22b1879b0e0bd504",
   "v2": null
  }
 ]
