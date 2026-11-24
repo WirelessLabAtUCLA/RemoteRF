@@ -1,6 +1,6 @@
 # Copyright (C) 2026 RemoteRF
 #
-# RemoteRF Device Schema for USB GPS Receivers (u-blox 7 / VFAN UG-353 / NMEA-0183).
+# RemoteRF Device Schema for USB GPS Receivers (any NMEA-0183 serial receiver; auto-detects u-blox).
 # Generated for RemoteRF custom device architecture.
 #
 # Server schema file: place or symlink into ~/.config/remoterf/drivers/
@@ -25,19 +25,14 @@ def find_gps_port() -> Optional[str]:
     """Auto-detect the GPS receiver serial port on the host system."""
     ports = list(serial.tools.list_ports.comports())
 
-    # 1. Match known u-blox 7 / VFAN UG-353 hardware IDs and descriptions
+    # Any u-blox (1546:*), or a port that names itself a GPS. No guessing among
+    # other serial ports: they are radars, mmWave boards and the like, and opening
+    # one resets its baud under its own driver. A GPS behind a generic USB-serial
+    # chip (PL2303, CP210x, CH340) needs `port:` in devices.yml.
     for p in ports:
-        desc = (p.description or "").lower()
-        hwid = (p.hwid or "").lower()
-        if "1546:01a7" in hwid or "u-blox" in desc or "gps" in desc or "gnss" in desc:
+        text = " ".join(filter(None, (p.description, p.manufacturer, p.product))).lower()
+        if p.vid == 0x1546 or any(k in text for k in ("u-blox", "gps", "gnss")):
             return p.device
-
-    # 2. Fallback to /dev/ttyACM* or /dev/ttyUSB* (skipping SDRs like Pluto)
-    for p in ports:
-        if "ttyACM" in p.device or "ttyUSB" in p.device:
-            desc = (p.description or "").lower()
-            if "sdr" not in desc and "adalm" not in desc:
-                return p.device
 
     return None
 
@@ -47,7 +42,15 @@ class GpsDevice:
     Hardware interface for USB GPS receivers.
     Spawns a background thread to continuously drain and parse NMEA sentences,
     preventing serial buffer stale-data lag.
+
+    An unplugged receiver is reopened on the same port path every
+    RECONNECT_INTERVAL seconds; until a new fix arrives the last position is
+    kept, marked stale. Use a /dev/serial/by-id/... port in devices.yml so a
+    replug that renumbers ttyACMn still finds it.
     """
+
+    RECONNECT_INTERVAL = 1.0
+    MAX_WAIT_FOR_FIX = 120.0
 
     def __init__(self, port: Optional[str] = None, baud: int = 9600, timeout: float = 1.0):
         resolved_port = port or find_gps_port()
@@ -64,6 +67,8 @@ class GpsDevice:
         self._running = True
 
         # State storage
+        self.connected: bool = True
+        self.stale: bool = False
         self.latitude: Optional[float] = None
         self.longitude: Optional[float] = None
         self.altitude: Optional[float] = None
@@ -84,11 +89,6 @@ class GpsDevice:
         # Start background polling thread
         self._thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._thread.start()
-
-    @property
-    def connected(self) -> bool:
-        """True if the serial connection to the GPS receiver is open and active."""
-        return bool(self._running and self._ser is not None and getattr(self._ser, "is_open", False))
 
     def _reader_loop(self):
         """Continuously reads NMEA sentences from serial buffer."""
@@ -137,6 +137,7 @@ class GpsDevice:
                             if msg.datestamp:
                                 self.datestamp = str(msg.datestamp)
                             self.last_update_ts = time.time()
+                            self.stale = False
                         else:
                             self.has_fix = False
 
@@ -163,6 +164,7 @@ class GpsDevice:
                             if msg.timestamp:
                                 self.timestamp = str(msg.timestamp)
                             self.last_update_ts = time.time()
+                            self.stale = False
 
                     # GLL - Geographic Position
                     elif isinstance(msg, pynmea2.types.talker.GLL):
@@ -173,6 +175,7 @@ class GpsDevice:
                             if msg.timestamp:
                                 self.timestamp = str(msg.timestamp)
                             self.last_update_ts = time.time()
+                            self.stale = False
 
                     # GSA - Dilution of Precision (PDOP, HDOP, VDOP)
                     elif isinstance(msg, pynmea2.types.talker.GSA):
@@ -206,10 +209,37 @@ class GpsDevice:
                             except (ValueError, TypeError):
                                 pass
 
-            except serial.SerialException:
-                time.sleep(0.5)
+            except (serial.SerialException, OSError):
+                self._reconnect()
             except Exception:
                 time.sleep(0.1)
+        try:
+            self._ser.close()
+        except Exception:
+            pass
+
+    def _reconnect(self):
+        """Close the vanished port, then reopen the same path until it is back."""
+        with self._lock:
+            self.connected = False
+            self.has_fix = False
+            self.stale = True
+        try:
+            self._ser.close()
+        except Exception:
+            pass
+        while self._running:
+            time.sleep(self.RECONNECT_INTERVAL)
+            if not self._running:
+                return
+            try:
+                self._ser = serial.Serial(self.port, self.baud, timeout=self.timeout)
+            except (serial.SerialException, OSError):
+                continue
+            logger.info("GPS receiver back on %s", self.port)
+            with self._lock:
+                self.connected = True
+            return
 
     def get_lat_long(self) -> Optional[Tuple[float, float]]:
         """Return (latitude, longitude) tuple or None if no valid fix."""
@@ -236,6 +266,8 @@ class GpsDevice:
                 "vdop": self.vdop,
                 "datetime_utc": dt_str,
                 "last_update_ts": self.last_update_ts,
+                "connected": self.connected,
+                "stale": self.stale,
             }
 
     def get_satellites_in_view(self) -> List[Dict[str, Any]]:
@@ -244,7 +276,8 @@ class GpsDevice:
             return [dict(v) for _, v in sorted(self._satellites_in_view.items())]
 
     def wait_for_fix(self, timeout: float = 30.0) -> bool:
-        """Block until receiver acquires satellite fix, or timeout expires."""
+        """Block until receiver acquires satellite fix, or timeout (capped at MAX_WAIT_FOR_FIX s) expires."""
+        timeout = min(max(float(timeout), 0.0), self.MAX_WAIT_FOR_FIX)
         start = time.time()
         while time.time() - start < timeout:
             with self._lock:
@@ -255,6 +288,8 @@ class GpsDevice:
 
     def read_raw(self, count: int = 5) -> List[str]:
         """Return the most recent raw NMEA sentences."""
+        if count <= 0:
+            return []
         with self._lock:
             return list(self._raw_lines[-count:])
 
@@ -273,6 +308,8 @@ class GpsDevice:
             self.vdop = None
             self.timestamp = None
             self.datestamp = None
+            self.last_update_ts = 0.0
+            self.stale = False
             self._satellites_in_view.clear()
             self._raw_lines.clear()
 
@@ -314,7 +351,7 @@ class GpsSchema(DeviceSchema):
 
     device_type = "gps"
     client_class = "GpsModule"
-    driver_version = "0.1.0"
+    driver_version = "0.2.0"
 
     @staticmethod
     def make_device(**kwargs) -> Optional[GpsDevice]:
@@ -366,7 +403,7 @@ class GpsSchema(DeviceSchema):
 
     @idl_expose(kind="get", doc="True if the serial stream to the GPS receiver is open and active.")
     def get_connected(self) -> bool:
-        return self.device.connected
+        return self.device.get_position()["connected"]
 
     @idl_expose(kind="get", doc="Serial port connected to the GPS receiver.")
     def get_port(self) -> str:
@@ -405,7 +442,7 @@ class GpsSchema(DeviceSchema):
 
     @idl_expose(kind="call", doc="Block until satellite fix is achieved or timeout expires.")
     def call_wait_for_fix(self, timeout: float = 30.0) -> bool:
-        """Wait for receiver to achieve 2D/3D lock."""
+        """Wait for receiver to achieve 2D/3D lock. Runs under the device lock, so GpsDevice caps it."""
         return self.device.wait_for_fix(timeout=float(timeout))
 
     @idl_expose(kind="call", doc="Read last N raw NMEA sentences from receiver buffer.")
@@ -418,3 +455,9 @@ class GpsSchema(DeviceSchema):
         """Clears cached coordinates and fix state."""
         self.device.reset()
         return True
+
+    def reset_for_next_holder(self):
+        """Called by the server (not exposed) when a reservation ends: drop the
+        last holder's cached fix, DOP, satellites and NMEA lines. The serial reader keeps running."""
+        if self.device is not None:
+            self.device.reset()

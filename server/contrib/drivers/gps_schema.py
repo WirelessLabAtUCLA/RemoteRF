@@ -50,6 +50,7 @@ class GpsDevice:
     """
 
     RECONNECT_INTERVAL = 1.0
+    MAX_WAIT_FOR_FIX = 120.0
 
     def __init__(self, port: Optional[str] = None, baud: int = 9600, timeout: float = 1.0):
         resolved_port = port or find_gps_port()
@@ -76,9 +77,13 @@ class GpsDevice:
         self.speed_kmh: float = 0.0
         self.fix_quality: int = 0
         self.has_fix: bool = False
+        self.hdop: Optional[float] = None
+        self.pdop: Optional[float] = None
+        self.vdop: Optional[float] = None
         self.timestamp: Optional[str] = None
         self.datestamp: Optional[str] = None
         self.last_update_ts: float = 0.0
+        self._satellites_in_view: Dict[int, Dict[str, Any]] = {}
         self._raw_lines: List[str] = []
 
         # Start background polling thread
@@ -172,6 +177,38 @@ class GpsDevice:
                             self.last_update_ts = time.time()
                             self.stale = False
 
+                    # GSA - Dilution of Precision (PDOP, HDOP, VDOP)
+                    elif isinstance(msg, pynmea2.types.talker.GSA):
+                        for attr in ("pdop", "hdop", "vdop"):
+                            val = getattr(msg, attr, None)
+                            if val:
+                                try:
+                                    setattr(self, attr, float(val))
+                                except (ValueError, TypeError):
+                                    pass
+
+                    # GSV - Satellites in View (PRN, Elevation, Azimuth, SNR/C_N0)
+                    elif isinstance(msg, pynmea2.types.talker.GSV):
+                        if getattr(msg, "msg_num", None) == "1":
+                            self._satellites_in_view.clear()
+                        for idx in range(1, 5):
+                            prn_raw = getattr(msg, f"sv_prn_num_{idx}", None)
+                            if not prn_raw:
+                                continue
+                            try:
+                                prn = int(prn_raw)
+                                elev = getattr(msg, f"elevation_deg_{idx}", None)
+                                azim = getattr(msg, f"azimuth_{idx}", None)
+                                snr = getattr(msg, f"snr_{idx}", None)
+                                self._satellites_in_view[prn] = {
+                                    "prn": prn,
+                                    "elevation_deg": float(elev) if elev not in (None, "") else None,
+                                    "azimuth_deg": float(azim) if azim not in (None, "") else None,
+                                    "snr_db": float(snr) if snr not in (None, "") else None,
+                                }
+                            except (ValueError, TypeError):
+                                pass
+
             except (serial.SerialException, OSError):
                 self._reconnect()
             except Exception:
@@ -224,14 +261,23 @@ class GpsDevice:
                 "speed_kmh": round(self.speed_kmh, 2),
                 "fix_quality": self.fix_quality,
                 "has_fix": self.has_fix,
+                "hdop": self.hdop,
+                "pdop": self.pdop,
+                "vdop": self.vdop,
                 "datetime_utc": dt_str,
                 "last_update_ts": self.last_update_ts,
                 "connected": self.connected,
                 "stale": self.stale,
             }
 
+    def get_satellites_in_view(self) -> List[Dict[str, Any]]:
+        """Return parsed list of satellites in view with PRN, elevation, azimuth, and SNR (dB-Hz)."""
+        with self._lock:
+            return [dict(v) for _, v in sorted(self._satellites_in_view.items())]
+
     def wait_for_fix(self, timeout: float = 30.0) -> bool:
-        """Block until receiver acquires satellite fix, or timeout expires."""
+        """Block until receiver acquires satellite fix, or timeout (capped at MAX_WAIT_FOR_FIX s) expires."""
+        timeout = min(max(float(timeout), 0.0), self.MAX_WAIT_FOR_FIX)
         start = time.time()
         while time.time() - start < timeout:
             with self._lock:
@@ -242,6 +288,8 @@ class GpsDevice:
 
     def read_raw(self, count: int = 5) -> List[str]:
         """Return the most recent raw NMEA sentences."""
+        if count <= 0:
+            return []
         with self._lock:
             return list(self._raw_lines[-count:])
 
@@ -255,10 +303,14 @@ class GpsDevice:
             self.speed_kmh = 0.0
             self.has_fix = False
             self.fix_quality = 0
+            self.hdop = None
+            self.pdop = None
+            self.vdop = None
             self.timestamp = None
             self.datestamp = None
             self.last_update_ts = 0.0
             self.stale = False
+            self._satellites_in_view.clear()
             self._raw_lines.clear()
 
     def close(self):
@@ -299,7 +351,7 @@ class GpsSchema(DeviceSchema):
 
     device_type = "gps"
     client_class = "GpsModule"
-    driver_version = "0.1.3"
+    driver_version = "0.2.0"
 
     @staticmethod
     def make_device(**kwargs) -> Optional[GpsDevice]:
@@ -349,13 +401,25 @@ class GpsSchema(DeviceSchema):
     def get_utc_time(self) -> Optional[str]:
         return self.device.get_position()["datetime_utc"]
 
+    @idl_expose(kind="get", doc="True if the serial stream to the GPS receiver is open and active.")
+    def get_connected(self) -> bool:
+        return self.device.get_position()["connected"]
+
     @idl_expose(kind="get", doc="Serial port connected to the GPS receiver.")
     def get_port(self) -> str:
         return self.device.port
 
-    @idl_expose(kind="get", doc="True while the receiver is plugged in; False while it is being reopened.")
-    def get_connected(self) -> bool:
-        return self.device.get_position()["connected"]
+    @idl_expose(kind="get", doc="Horizontal Dilution of Precision (HDOP), or None if unavailable.")
+    def get_hdop(self) -> Optional[float]:
+        return self.device.get_position()["hdop"]
+
+    @idl_expose(kind="get", doc="Position (3D) Dilution of Precision (PDOP), or None if unavailable.")
+    def get_pdop(self) -> Optional[float]:
+        return self.device.get_position()["pdop"]
+
+    @idl_expose(kind="get", doc="Vertical Dilution of Precision (VDOP), or None if unavailable.")
+    def get_vdop(self) -> Optional[float]:
+        return self.device.get_position()["vdop"]
 
     # -----------------------------------------------------------------
     # Methods (Calls)
@@ -366,14 +430,19 @@ class GpsSchema(DeviceSchema):
         """Returns (latitude, longitude) as a tuple of floats."""
         return self.device.get_lat_long()
 
-    @idl_expose(kind="call", doc="Get full position dictionary (lat, lon, altitude, satellites, speed, fix status).")
+    @idl_expose(kind="call", doc="Get full position dictionary (lat, lon, altitude, satellites, speed, DOP, fix status).")
     def call_get_position(self) -> Dict[str, Any]:
         """Returns structured dictionary containing all GPS status and coordinate fields."""
         return self.device.get_position()
 
+    @idl_expose(kind="call", doc="Get parsed list of satellites in view with PRN, elevation, azimuth, and SNR (dB-Hz).")
+    def call_get_satellites_in_view(self) -> List[Dict[str, Any]]:
+        """Returns list of dicts for each visible satellite parsed from GSV sentences."""
+        return self.device.get_satellites_in_view()
+
     @idl_expose(kind="call", doc="Block until satellite fix is achieved or timeout expires.")
     def call_wait_for_fix(self, timeout: float = 30.0) -> bool:
-        """Wait for receiver to achieve 2D/3D lock."""
+        """Wait for receiver to achieve 2D/3D lock. Runs under the device lock, so GpsDevice caps it."""
         return self.device.wait_for_fix(timeout=float(timeout))
 
     @idl_expose(kind="call", doc="Read last N raw NMEA sentences from receiver buffer.")
@@ -389,6 +458,6 @@ class GpsSchema(DeviceSchema):
 
     def reset_for_next_holder(self):
         """Called by the server (not exposed) when a reservation ends: drop the
-        last holder's cached fix and NMEA lines. The serial reader keeps running."""
+        last holder's cached fix, DOP, satellites and NMEA lines. The serial reader keeps running."""
         if self.device is not None:
             self.device.reset()

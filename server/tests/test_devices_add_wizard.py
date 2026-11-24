@@ -195,9 +195,14 @@ class WizardTests(unittest.TestCase):
             self.assertLessEqual(set(init), CONTRIB_KEYS[dtype])
 
     def test_contrib_driver_not_installed_is_noted_but_written(self):
+        rc, out = self.wizard(["bluetooth", "", "bt-1", "", "", ""])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("bluetooth driver is not installed", out)
+
+    def test_gps_is_built_in_so_no_contrib_note(self):
         rc, out = self.wizard(["gps", "", "gps-1", "", "", ""])
         self.assertEqual(rc, 0, out)
-        self.assertIn("gps driver is not installed", out)
+        self.assertNotIn("driver is not installed", out)
 
     def test_type_menu_lists_every_type_with_a_description(self):
         rc, out = self.wizard(["c"])

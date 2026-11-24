@@ -19,8 +19,8 @@
  },
  {
   "device_type": "gps",
-  "driver_version": "0.1.0",
-  "v1": "sha256:62d475b8c087bd2af633e53f85f1c4da811f6a9b7822580536019c6495cc9515",
+  "driver_version": "0.2.0",
+  "v1": "sha256:5e791256a75a5fbfd395dea1f7708f93f0e044f1e112fa324cb9602d3f7efa96",
   "v2": null
  },
  {
