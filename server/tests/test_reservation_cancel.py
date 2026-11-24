@@ -144,3 +144,25 @@ def test_partner_lab_booking_and_oversized_id_are_refused(tmp_path, monkeypatch)
     assert rc == 2
     assert _rows(handler, "Reservations") == before
     released.assert_not_called()
+
+
+def test_federated_reservations_skip_ended_rows(tmp_path, monkeypatch):
+    from remoteRF_server.server import reservation
+
+    monkeypatch.setattr(reservation, "get_db_dir", lambda: tmp_path)
+    handler = reservation.ReservationHandler()
+    monkeypatch.setattr(handler, "_username_for_account_locked", lambda acc: "alice")
+    monkeypatch.setattr(handler, "_permitted_device_ids_locked", lambda username: None)
+    _insert_reservation(handler, ended=True, federated=True)
+    current = _insert_reservation(handler)
+    now = datetime.now()
+    with sqlite3.connect(handler.filepath) as conn:
+        future = conn.execute(
+            "INSERT INTO Reservations (username, device_id, start_time, end_time, salt, hash) "
+            "VALUES ('jdoe', 7, ?, ?, 'salt', 'hash')",
+            (now + timedelta(hours=2), now + timedelta(hours=3)),
+        ).lastrowid
+
+    entries = handler.federated_reservations(local_account_id=1)
+    assert [(e["reservation_id"], e["mine"]) for e in entries] == [(str(current), True), (str(future), False)]
+    assert len(_rows(handler, "Reservations")) == 3
