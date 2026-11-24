@@ -29,6 +29,18 @@ _MAX_COMPLEX64_SAMPLES = _MAX_REMOTE_PAYLOAD_BYTES // np.dtype(np.complex64).ite
 # closes the device but keeps its freed handle: read whole packets and slice.
 _USB_PACKET_BYTES = 512
 
+# Settings every reservation starts from (pyrtlsdr itself opens at 80 MHz).
+_DEFAULT_CENTER_FREQ_HZ = 915e6
+_DEFAULT_SAMPLE_RATE = 2.048e6
+_DEFAULT_GAIN = "auto"
+_DEFAULT_BANDWIDTH_HZ = 0
+_DEFAULT_FREQ_CORRECTION_PPM = 0
+_DEFAULT_BIAS_TEE = False
+_DEFAULT_DIRECT_SAMPLING = 0
+_DEFAULT_OFFSET_TUNING = False
+_DEFAULT_AGC_MODE = False
+_DEFAULT_DITHERING = True
+
 
 def _whole_packets(num_bytes: int) -> int:
     return -(-num_bytes // _USB_PACKET_BYTES) * _USB_PACKET_BYTES
@@ -86,6 +98,51 @@ class _RtlSdrAdapter:
             close()
 
 
+def _restore_defaults(adapter: _RtlSdrAdapter, *, dithering: bool = _DEFAULT_DITHERING):
+    """Apply the default settings, each on its own; return the first error."""
+    native = adapter.native
+    errors = []
+
+    def attempt(step):
+        try:
+            step()
+        except Exception as exc:
+            errors.append(exc)
+
+    # Bias tee first: it puts DC on the antenna port.
+    for name, value in (
+        ("bias_tee", _DEFAULT_BIAS_TEE),
+        ("direct_sampling", _DEFAULT_DIRECT_SAMPLING),
+        ("offset_tuning", _DEFAULT_OFFSET_TUNING),
+        ("agc_mode", _DEFAULT_AGC_MODE),
+        ("dithering", bool(dithering)),
+    ):
+        setter = getattr(native, f"set_{name}", None)
+        if callable(setter):
+            def step(setter=setter, name=name, value=value):
+                setter(value)
+                adapter.control_state[name] = value
+            attempt(step)
+
+    def freq_correction():
+        # librtlsdr rejects setting the ppm it already has.
+        if int(native.freq_correction) != _DEFAULT_FREQ_CORRECTION_PPM:
+            native.freq_correction = _DEFAULT_FREQ_CORRECTION_PPM
+
+    attempt(freq_correction)
+    for name, value in (
+        ("sample_rate", _DEFAULT_SAMPLE_RATE),
+        ("center_freq", _DEFAULT_CENTER_FREQ_HZ),
+        ("bandwidth", _DEFAULT_BANDWIDTH_HZ),
+        ("gain", _DEFAULT_GAIN),
+    ):
+        attempt(lambda name=name, value=value: setattr(native, name, value))
+    reset = getattr(native, "reset_buffer", None)
+    if callable(reset):
+        attempt(reset)
+    return errors[0] if errors else None
+
+
 def _connect_rtl_sdr(
     *,
     serial: str | None = None,
@@ -128,7 +185,7 @@ def _connect_rtl_sdr(
         open_kwargs["dithering_enabled"] = bool(dithering_enabled)
     native = RtlSdr(**open_kwargs)
     resolved_serial = serial or (usb_strings[2] if len(usb_strings) > 2 else "")
-    return _RtlSdrAdapter(
+    adapter = _RtlSdrAdapter(
         native,
         device_index=resolved_index,
         serial_number=resolved_serial,
@@ -141,6 +198,9 @@ def _connect_rtl_sdr(
             else None
         ),
     )
+    # Best effort: the first reservation after a start sees the same defaults.
+    _restore_defaults(adapter, dithering=dithering_enabled)
+    return adapter
 
 
 @idl_register("rtl_sdr")
@@ -154,6 +214,15 @@ class RtlSdrSchema(DeviceSchema):
     @staticmethod
     def make_device(**kwargs):
         return _connect_rtl_sdr(**kwargs)
+
+    def reset_for_next_holder(self):
+        """A reservation ended: restore the defaults (915 MHz, bias tee off)."""
+        native = getattr(self.device, "native", None)
+        if native is None or getattr(native, "device_opened", True) is False:
+            return
+        error = _restore_defaults(self.device)
+        if error is not None:
+            raise error
 
     @property
     def _native(self):
