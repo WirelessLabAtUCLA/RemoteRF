@@ -49,8 +49,8 @@
  },
  {
   "device_type": "ti_awr6843",
-  "driver_version": "0.1.0",
-  "v1": "sha256:a052b7e435ea138af9e8b2467a79fb0fcd47094b9cd01d8afe385a7c3b3db0e8",
+  "driver_version": "0.1.1",
+  "v1": "sha256:1a4b5f7cdb62fcbdf3aecd5a99c5c1f5f8744024104d380a0c69cccb2c5c4ab3",
   "v2": null
  },
  {

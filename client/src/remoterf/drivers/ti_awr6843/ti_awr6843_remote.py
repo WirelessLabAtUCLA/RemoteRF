@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: ti_awr6843  driver_version: 0.1.0  schema_hash: sha256:a052b7e435ea138af9e8b2467a79fb0fcd47094b9cd01d8afe385a7c3b3db0e8
+# device_type: ti_awr6843  driver_version: 0.1.1  schema_hash: sha256:1a4b5f7cdb62fcbdf3aecd5a99c5c1f5f8744024104d380a0c69cccb2c5c4ab3
 
 _PREFIX = "Ti_awr6843"
-_SCHEMA_HASH = "sha256:a052b7e435ea138af9e8b2467a79fb0fcd47094b9cd01d8afe385a7c3b3db0e8"
+_SCHEMA_HASH = "sha256:1a4b5f7cdb62fcbdf3aecd5a99c5c1f5f8744024104d380a0c69cccb2c5c4ab3"
 _CLIENT_MODULES = {'ti_mmwave': 'remoterf.drivers.support.ti_mmwave'}
 _CLIENT_OBJECTS = {}
 

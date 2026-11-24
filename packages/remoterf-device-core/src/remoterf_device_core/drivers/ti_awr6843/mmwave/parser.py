@@ -210,11 +210,10 @@ class TLVParser:
                     imag = raw_samples[0::2].astype(np.float32)
                     real = raw_samples[1::2].astype(np.float32)
                     c_data = real + 1j * imag
-                    # Reshape to (num_range_bins, 8 virtual azimuth antennas)
+                    # Reshape to (num_range_bins, 8 virtual azimuth antennas);
+                    # any other length is not a heatmap this decoder understands.
                     if len(c_data) % 8 == 0:
                         frame.azimuth_static_heatmap = c_data.reshape(-1, 8)
-                    else:
-                        frame.azimuth_static_heatmap = c_data
 
             offset = payload_end
 
