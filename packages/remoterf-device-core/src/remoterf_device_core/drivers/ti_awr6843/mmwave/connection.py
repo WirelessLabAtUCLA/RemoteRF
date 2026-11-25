@@ -82,8 +82,13 @@ class RadarConnection:
 
     def connect(self):
         """Opens serial connections to CLI and Data ports."""
+        if self.data_ser and self.data_ser.is_open:
+            self.data_ser.close()
+        if self.cli_ser and self.cli_ser.is_open:
+            self.cli_ser.close()
+
         # Open data port first with appropriate buffer settings
-        self.data_ser = serial.Serial(
+        data_ser = serial.Serial(
             self.data_port_name,
             self.data_baud,
             timeout=0.1,
@@ -91,20 +96,33 @@ class RadarConnection:
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
         )
-        self.data_ser.reset_input_buffer()
-        self.data_ser.reset_output_buffer()
+        try:
+            data_ser.reset_input_buffer()
+            data_ser.reset_output_buffer()
 
-        # Open CLI control port
-        self.cli_ser = serial.Serial(
-            self.cli_port_name,
-            self.cli_baud,
-            timeout=1.0,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-        )
-        self.cli_ser.reset_input_buffer()
-        self.cli_ser.reset_output_buffer()
+            # Open CLI control port
+            cli_ser = serial.Serial(
+                self.cli_port_name,
+                self.cli_baud,
+                timeout=1.0,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+            )
+            try:
+                cli_ser.reset_input_buffer()
+                cli_ser.reset_output_buffer()
+            except Exception:
+                cli_ser.close()
+                raise
+        except Exception:
+            data_ser.close()
+            self.data_ser = None
+            self.cli_ser = None
+            raise
+
+        self.data_ser = data_ser
+        self.cli_ser = cli_ser
 
     def check_connection(self, timeout: float = 0.5) -> bool:
         """Checks if the radar CLI port is awake and responding."""
@@ -189,11 +207,14 @@ class RadarConnection:
         verbose: bool = True,
         start: bool = True,
         command_timeout: float = 0.8,
+        total_timeout: Optional[float] = None,
     ) -> bool:
         """
         Sends configuration commands from a multiline string directly to the radar.
         With start=False, sensorStart lines are skipped so the radar stays stopped.
         """
+        deadline = None if total_timeout is None else time.time() + total_timeout
+
         # Check if CLI is awake
         if not self.check_connection():
             raise RuntimeError(
@@ -213,7 +234,17 @@ class RadarConnection:
             if not start and line.split()[0] == "sensorStart":
                 continue
 
-            resp = self.send_command(line, timeout=command_timeout)
+            line_timeout = command_timeout
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Applying radar configuration exceeded {total_timeout:g} s total timeout "
+                        f"before command: '{line}'."
+                    )
+                line_timeout = min(line_timeout, remaining)
+
+            resp = self.send_command(line, timeout=line_timeout)
             if not resp:
                 raise RuntimeError(
                     f"Radar timed out without acknowledging command: '{line}'.\n"
@@ -250,7 +281,13 @@ class RadarConnection:
     def close(self):
         """Stops the sensor and closes both serial ports."""
         self.stop_sensor()
-        if self.cli_ser and self.cli_ser.is_open:
-            self.cli_ser.close()
-        if self.data_ser and self.data_ser.is_open:
-            self.data_ser.close()
+        first_err = None
+        for ser in (self.cli_ser, self.data_ser):
+            if ser and ser.is_open:
+                try:
+                    ser.close()
+                except Exception as exc:
+                    if first_err is None:
+                        first_err = exc
+        if first_err is not None:
+            raise first_err

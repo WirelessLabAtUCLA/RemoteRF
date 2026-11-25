@@ -65,8 +65,8 @@ from remoterf_device_core.drivers.ti_awr6843.mmwave.config_builder import build_
 # configs/ ships inside this driver package (also when an override copy loads from the drivers dir).
 _PARENT_DIR = os.path.dirname(os.path.abspath(importlib.import_module("remoterf_device_core.drivers.ti_awr6843").__file__))
 
-# Bounds on what a client may ask for in one call.
-MAX_TIMEOUT_S = 30.0
+# Bounds on what a client may ask for in one call (under the 25 s Host tunnel timeout).
+MAX_TIMEOUT_S = 20.0
 MIN_ANGLE_BINS = 8
 MAX_ANGLE_BINS = 1024
 MAX_CONFIG_BYTES = 64 * 1024
@@ -79,6 +79,26 @@ def _check_timeout(value: float, name: str = "timeout") -> float:
     if not math.isfinite(val) or val <= 0 or val > MAX_TIMEOUT_S:
         raise ValueError(f"{name} must be greater than 0 and at most {MAX_TIMEOUT_S:g} s, got {value!r}")
     return val
+
+
+def _cli_ok(resp: str) -> bool:
+    """True when a CLI response acknowledged the command without an Error."""
+    return "Error" not in resp and ("Done" in resp or "mmwDemo:/>" in resp)
+
+
+def _config_starts_sensor(config_text: str, start: bool) -> bool:
+    """True when applying config_text with `start` sends sensorStart not followed by sensorStop."""
+    running = False
+    for raw_line in config_text.strip().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("%"):
+            continue
+        cmd = line.split()[0]
+        if cmd == "sensorStart" and start:
+            running = True
+        elif cmd == "sensorStop":
+            running = False
+    return running
 
 
 class TiMmWaveDevice:
@@ -140,6 +160,14 @@ class TiMmWaveDevice:
         self._ensure_connected()
         self.radar.clutter_removal = bool(value)
 
+    def _apply_setting(self, **kwargs) -> None:
+        """Validate a setting change, open serial ports if closed, upload, and clear _config_file."""
+        self.radar._validate_settings(**kwargs)
+        self._ensure_connected()
+        cfg = self.radar.reconfigure(**kwargs)
+        self._config_file = None
+        self._last_config_text = cfg
+
     @property
     def fps(self) -> float:
         """Target frame capture rate in Hz (FPS)."""
@@ -147,7 +175,7 @@ class TiMmWaveDevice:
 
     @fps.setter
     def fps(self, value: float) -> None:
-        self.radar.fps = float(value)
+        self._apply_setting(fps=float(value))
 
     @property
     def preset(self) -> str:
@@ -156,7 +184,7 @@ class TiMmWaveDevice:
 
     @preset.setter
     def preset(self, value: str) -> None:
-        self.radar.preset = str(value)
+        self._apply_setting(preset=str(value))
 
     @property
     def mode(self) -> str:
@@ -165,7 +193,7 @@ class TiMmWaveDevice:
 
     @mode.setter
     def mode(self, value: str) -> None:
-        self.radar.mode = str(value)
+        self._apply_setting(mode=str(value))
 
     @property
     def sensitivity(self) -> str:
@@ -174,7 +202,7 @@ class TiMmWaveDevice:
 
     @sensitivity.setter
     def sensitivity(self, value: str) -> None:
-        self.radar.sensitivity = str(value)
+        self._apply_setting(sensitivity=str(value))
 
     @property
     def min_range(self) -> float:
@@ -183,7 +211,7 @@ class TiMmWaveDevice:
 
     @min_range.setter
     def min_range(self, value: float) -> None:
-        self.radar.min_range = float(value)
+        self._apply_setting(min_range=float(value))
 
     @property
     def max_range(self) -> float:
@@ -192,7 +220,7 @@ class TiMmWaveDevice:
 
     @max_range.setter
     def max_range(self, value: float) -> None:
-        self.radar.max_range = float(value)
+        self._apply_setting(max_range=float(value))
 
     def get_device_info(self) -> Dict[str, Any]:
         """Returns static and runtime connection information."""
@@ -225,7 +253,12 @@ class TiMmWaveDevice:
 
     def _ensure_connected(self) -> None:
         """Opens the serial ports if they are not open (e.g. after close)."""
-        if not self.radar.connection.cli_ser or not self.radar.connection.cli_ser.is_open:
+        if (
+            not self.radar.connection.cli_ser
+            or not self.radar.connection.cli_ser.is_open
+            or not self.radar.connection.data_ser
+            or not self.radar.connection.data_ser.is_open
+        ):
             self.radar.connection.connect()
 
     def apply_config_text(
@@ -247,9 +280,13 @@ class TiMmWaveDevice:
 
         self._ensure_connected()
         self.radar.connection.send_config_text(
-            config_text, verbose=False, start=start, command_timeout=command_timeout,
+            config_text,
+            verbose=False,
+            start=start,
+            command_timeout=command_timeout,
+            total_timeout=MAX_TIMEOUT_S,
         )
-        self.radar._is_running = start
+        self.radar._is_running = _config_starts_sensor(config_text, start=start)
         self._config_file = config_file
         self._last_config_text = config_text
         return True
@@ -266,21 +303,9 @@ class TiMmWaveDevice:
 
         mode, clutter_removal and fps left as None keep the preset's own values.
         """
-        mode = None if mode is None else str(mode).lower()
-        if mode is not None and mode not in ("3d", "2d"):
-            raise ValueError("Mode must be '3d' or '2d'")
-        if fps is not None and not (math.isfinite(fps) and fps > 0):
-            raise ValueError(f"FPS must be positive, got {fps}")
-
-        settings = dict(self.radar._settings)
-        settings.update(preset_settings(preset) or preset_settings("default"))
-        settings["preset"] = preset
-        if mode is not None:
-            settings["mode"] = mode
-        if clutter_removal is not None:
-            settings["clutter_removal"] = bool(clutter_removal)
-        if fps is not None:
-            settings["fps"] = float(fps)
+        settings = self.radar._validate_settings(
+            preset=preset, mode=mode, clutter_removal=clutter_removal, fps=fps,
+        )
 
         previous = self.radar._settings
         self.radar._settings = settings
@@ -301,14 +326,35 @@ class TiMmWaveDevice:
 
         The serial ports stay open for the next caller.
         """
-        self.stop(timeout=timeout)
+        timeout = _check_timeout(timeout)
+        first_err: Optional[Exception] = None
+        try:
+            if not self.stop(timeout=timeout):
+                first_err = RuntimeError("Radar did not acknowledge sensorStop")
+        except Exception as exc:
+            first_err = exc
         if self._defaults is not None:
             settings, config_file, config_text = self._defaults
-            self.radar._settings = dict(settings)
-            if config_text:
-                self.apply_config_text(config_text, start=False, config_file=config_file)
-            self._config_file = config_file
-        self.flush_frames()
+            try:
+                if config_text:
+                    self.apply_config_text(
+                        config_text,
+                        start=False,
+                        command_timeout=timeout,
+                        config_file=config_file,
+                    )
+                self.radar._settings = dict(settings)
+                self._config_file = config_file
+            except Exception as exc:
+                if first_err is None:
+                    first_err = exc
+        try:
+            self.flush_frames()
+        except Exception as exc:
+            if first_err is None:
+                first_err = exc
+        if first_err is not None:
+            raise first_err
 
     def send_command(self, command: str, timeout: float = 2.0) -> str:
         """Sends a single CLI command to the radar CLI port and returns response."""
@@ -324,8 +370,10 @@ class TiMmWaveDevice:
         """Enables or disables static clutter removal filter at runtime."""
         val = 1 if enabled else 0
         resp = self.send_command(f"clutterRemoval -1 {val}")
-        self.radar._settings["clutter_removal"] = bool(enabled)
-        return "Done" in resp or "mmwDemo:/>" in resp
+        ok = _cli_ok(resp)
+        if ok:
+            self.radar._settings["clutter_removal"] = bool(enabled)
+        return ok
 
     def flush_frames(self) -> int:
         """Discards queued serial bytes and resets the internal parser buffer."""
@@ -488,21 +536,29 @@ class TiMmWaveDevice:
     def start(self, timeout: float = 5.0) -> bool:
         """Starts radar chirping via sensorStart."""
         resp = self.send_command("sensorStart", timeout=timeout)
-        self.radar._is_running = True
-        return "Done" in resp or "mmwDemo:/>" in resp
+        ok = _cli_ok(resp)
+        if ok:
+            self.radar._is_running = True
+        return ok
 
     def stop(self, timeout: float = 5.0) -> bool:
         """Stops radar chirping via sensorStop; the serial ports stay open."""
         resp = self.send_command("sensorStop", timeout=timeout)
-        self.radar._is_running = False
+        ok = _cli_ok(resp)
+        if ok:
+            self.radar._is_running = False
         self.radar.flush()
-        return "Done" in resp or "mmwDemo:/>" in resp
+        return ok
+
+    def close(self) -> None:
+        """Stops radar chirping and closes both serial ports."""
+        self.radar.stop()
 
     def _read_next_frame(self, timeout: float = 1.0) -> Optional[RadarFrame]:
         """Internal helper to read and track frame statistics."""
         timeout = _check_timeout(timeout)
-        start_t = time.time()
-        while time.time() - start_t < timeout:
+        deadline = time.time() + timeout
+        while True:
             chunk = self.radar.connection.read_data(max_bytes=4096)
             if chunk:
                 self._total_bytes_read += len(chunk)
@@ -521,7 +577,10 @@ class TiMmWaveDevice:
                     self._last_frame_time = now
 
                     return frame
-            time.sleep(0.005)
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.005, remaining))
 
         self._dropped_frames += 1
         return None
@@ -592,6 +651,7 @@ class TiMmWaveSchema(DeviceSchema):
             print("[ti_mmwave] Ensure the radar is connected over USB and CP2105 drivers are installed.")
             return None
 
+        device: Optional[TiMmWaveDevice] = None
         try:
             print(f"[ti_mmwave] Initializing TI mmWave radar (CLI: {cli_port}, Data: {data_port})...")
             device = TiMmWaveDevice(
@@ -622,6 +682,11 @@ class TiMmWaveSchema(DeviceSchema):
             return device
 
         except Exception as exc:
+            if device is not None:
+                try:
+                    device.close()
+                except Exception:
+                    pass
             print(f"[ti_mmwave] Failed to initialize radar device: {exc}")
             print("[ti_mmwave] Hint: In TI mmWave SDK 3.x, if the sensor was previously stopped,")
             print("[ti_mmwave] press the physical NRST/RESET switch (SW2) on the board or replug USB.")
