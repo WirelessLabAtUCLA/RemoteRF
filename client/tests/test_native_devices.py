@@ -62,3 +62,17 @@ def test_a_handle_in_brackets_stays_part_of_a_local_name():
     assert not client_app._PARTNER_LABEL.match(label)
     local = client_app._LOCAL_LABEL.match(label)
     assert (local["name"], local["state"]) == ("Pluto SDR [Pl)ut(o]", "online, reserved")
+
+
+def test_enroll_through_global_names_the_password_and_a_working_login_command():
+    fake = Mock(is_https_home=True, username="jdoe")
+    fake.backend.enroll.return_value = {"status": "enrolled", "lab": {"linked": True, "slug": "ucla"}}
+    asked, notes = [], []
+    with patch.object(client_app, "account", fake), patch.object(client_app, "home_name", "global"), \
+         patch.object(client_app, "_ask", side_effect=lambda text, **kw: asked.append(text) or "pw-123456"), \
+         patch.object(client_app, "_note", side_effect=lambda text, *a, **kw: notes.append(text)), \
+         patch.object(client_app, "_sync_labs"):
+        assert client_app.enroll("ucla/ABC123") is not False
+    assert "RemoteRF Global password" in asked[0] and " ucla " in asked[0] and ".global.remoterf.net" not in asked[0]
+    assert fake.backend.enroll.call_args.kwargs["password"] == "pw-123456"
+    assert any("remoterf --login ucla" in n for n in notes) and not any("-l jdoe@ucla" in n for n in notes)

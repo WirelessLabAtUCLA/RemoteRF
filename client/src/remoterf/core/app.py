@@ -1345,7 +1345,9 @@ def enroll(code=None):
     if account.is_https_home and host:
         # With the password, the lab also gets a login for this account (never
         # the password itself): usable on its LAN, and when Global is down.
-        typed_password = _ask(f'Password, to also log in at {host} directly (Enter to skip)', hidden=True)
+        lab_name = host.split('.', 1)[0]
+        typed_password = _ask(f'Your RemoteRF Global password, to also sign in at {lab_name} directly '
+                              '(on its LAN, or when Global is down; Enter to skip)', hidden=True)
         data = account.backend.enroll(code, password=typed_password or None)
     else:
         data = account.set_enroll()
@@ -1357,7 +1359,7 @@ def enroll(code=None):
         lab = data.get("lab") or {}
         if lab.get("linked"):
             _sync_labs()
-            _note(f"Lab login ready at {lab.get('slug')}: remoterf -l {account.username}@{lab.get('slug')} "
+            _note(f"Lab login ready at {lab.get('slug')}: remoterf --login {lab.get('slug')} "
                   "works on its LAN, even when RemoteRF Global is down.", Sty.GRAY)
     elif 'ace' in data.results or 'UE' in data.results:
         provenance = (
