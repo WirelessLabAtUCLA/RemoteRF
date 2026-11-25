@@ -226,6 +226,23 @@ def test_the_lab_decides_handle_or_token(monkeypatch, routes, capsys, reply, wir
         assert err == ""
 
 
+@pytest.mark.parametrize("reply, expected", [
+    ({"Token": "Nope", "why": "no device Nope here", "error": "unknown_handle"}, "No device Nope at ucla"),
+    ({"Token": "Nope", "why": "no device Nope here"}, "No device Nope at ucla"),
+    ({"Token": "Nope", "why": "more than one device matches Nope", "error": "ambiguous_handle"},
+     "More than one device matches Nope at ucla"),
+])
+def test_an_unknown_or_ambiguous_lab_handle_raises_clearly(monkeypatch, routes, capsys, reply, expected):
+    _login(monkeypatch)
+    monkeypatch.delenv("REMOTERF_AUTO_RESERVE")
+    monkeypatch.setattr(grpc_client, "_auto_reserve", _never)
+    routes.replies["ACC:device_token"] = reply
+    with pytest.raises(RuntimeError, match=f"^{expected}$"):
+        grpc_client.rpc_client(function_name=GET, args={"a": map_arg("Nope@ucla")})
+    assert [c for c in routes.calls if c[0] == GET] == []
+    assert capsys.readouterr().err == ""
+
+
 def test_an_active_handle_auto_reserves_and_retries_for_the_token(monkeypatch, routes, capsys):
     _login(monkeypatch)
     monkeypatch.delenv("REMOTERF_AUTO_RESERVE")
@@ -493,10 +510,21 @@ def test_a_global_user_handle_maps_to_the_listed_device(monkeypatch, routes):
     with pytest.raises(RuntimeError) as exc:
         grpc_client.device_route("PlutoB@ucla")
     assert str(exc.value) == _unreachable("ucla")
-    # No exact match: '-' as '_' and any case, while that names one handle.
+    # No exact match: '-' as '_' and any case, then separators dropped, while that names one handle.
     listing["devices"][1]["handle"] = "RTL-SDR_00"
+    for typed in ("rtl_sdr_00@ucla", "RTL SDR 00@ucla", "RTLSDR_00@ucla", "rtlsdr00@ucla"):
+        assert grpc_client.device_route(typed) == grpc_client.DeviceRoute(REF, "global")
+    listing["devices"].append({"deployment_id": DEST, "handle": "RTLSDR_00", "device_id": "x:3"})
+    grpc_client._routes.clear()
+    assert grpc_client.device_route("RTLSDR_00@ucla") == grpc_client.DeviceRoute("x:3", "global")
+    assert grpc_client.device_route("RTL-SDR_00@ucla") == grpc_client.DeviceRoute(REF, "global")
     assert grpc_client.device_route("rtl_sdr_00@ucla") == grpc_client.DeviceRoute(REF, "global")
+    assert grpc_client.device_route("rtlsdr-00@ucla") == grpc_client.DeviceRoute("x:3", "global")
+    with pytest.raises(RuntimeError):
+        grpc_client.device_route("rtlsdr00@ucla")
+    listing["devices"].pop()
     listing["devices"].append({"deployment_id": DEST, "handle": "RTL_SDR_00", "device_id": "x:2"})
+    grpc_client._routes.clear()
     assert grpc_client.device_route("RTL_SDR_00@ucla") == grpc_client.DeviceRoute("x:2", "global")
     with pytest.raises(RuntimeError):
         grpc_client.device_route("rtl-sdr-00@ucla")

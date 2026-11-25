@@ -36,7 +36,7 @@ from contextlib import contextmanager
 
 from remoterf_federation_core import is_device_handle
 
-from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, device_name_key, handle_fold
+from ..common.utils import validate_token, get_remoterf_root, get_drivers_dir, device_name_key, handle_fold, handle_compact
 from ..common.idl.schema import (OVERRIDE_PREFIX, get_driver_class, last_load_results, load_builtin_drivers,
                                  load_drivers, override_stale)
 from ..host import host_tunnel_server as hts
@@ -1384,19 +1384,74 @@ def _handle_owners() -> Dict[str, int]:
                 owners.setdefault(st.handle, int(gid))
     return owners
 
-def find_device_id_by_handle(handle: str) -> Optional[int]:
-    """The gid owning `handle` as typed (device_name_key), else the one device name
-    equal to it loosely (handle_fold: 'rtl_sdr_00' finds RTL-SDR_00), or None.
-    Names of devices away right now count too: a loose spelling never lands on
-    the neighbour of a device that is briefly unannounced."""
-    _sync_host_devices()
+def _match_handle(names: set[str], handle: str) -> Tuple[Optional[str], bool]:
+    """Match `handle` against addressable `names`: (matched_key, ambiguous).
+
+    Exact (device_name_key) first, then case and '-'/'_'/' ' folded (handle_fold),
+    then with separators dropped (handle_compact). If a loose tier matches more
+    than one name, refuse as ambiguous and do not guess."""
     key = device_name_key(str(handle))
+    if not is_device_handle(key):
+        return None, False
+    if key in names:
+        return key, False
+    for fold in (handle_fold, handle_compact):
+        folded = fold(key)
+        if not folded:
+            return None, False
+        near = {h for h in names if fold(h) == folded}
+        if len(near) == 1:
+            return near.pop(), False
+        if len(near) > 1:
+            return None, True
+    return None, False
+
+def resolve_device_handle(handle: str) -> Tuple[Optional[int], bool]:
+    """Resolve `handle` to ``(gid, ambiguous)``.
+
+    Exact (device_name_key), then loose (handle_fold), then separator-stripped
+    (handle_compact). Names of devices away right now count too: a loose spelling
+    never lands on the neighbour of a device that is briefly unannounced."""
+    _sync_host_devices()
     with _state_lock:
         names = {_name_handle(st.name) for st in _devices.values()} - {""}
-    if key not in names:
-        near = {h for h in names if handle_fold(h) == handle_fold(key)}
-        key = near.pop() if len(near) == 1 else ""
-    return _handle_owners().get(key) if key else None
+        matched, ambiguous = _match_handle(names, handle)
+        if not matched:
+            return None, ambiguous
+        return _handle_owners().get(matched), False
+
+def find_device_id_by_handle(handle: str) -> Optional[int]:
+    """The gid owning `handle` as typed (device_name_key), else the one device name
+    equal to it loosely (handle_fold, then handle_compact), or None.
+    Names of devices away right now count too: a loose spelling never lands on
+    the neighbour of a device that is briefly unannounced."""
+    return resolve_device_handle(handle)[0]
+
+def is_passthrough_token(api_token: str) -> bool:
+    """True when `api_token` is a bridge, super, or live device token that
+    ACC:device_token should return unchanged for the device plane to judge."""
+    if not isinstance(api_token, str) or not api_token:
+        return False
+    if api_token.startswith("bridge-"):
+        return True
+    _sync_host_devices()
+    configured_token = _get_master_token()
+    if configured_token and (
+        api_token == configured_token
+        or parse_mastertoken(api_token, configured_token=configured_token) is not None
+    ):
+        return True
+    with _state_lock:
+        if api_token in _bridge_tokens:
+            return True
+        snapshot = [(st.salt, st.hsh) for st in _devices.values() if st.salt and st.hsh]
+    for salt, hsh in snapshot:
+        try:
+            if validate_token(salt, hsh, api_token):
+                return True
+        except ValueError:
+            continue
+    return False
 
 def handle_report() -> Dict[int, str]:
     """gid -> its handle, or why it was ignored, for devices whose name is addressable."""

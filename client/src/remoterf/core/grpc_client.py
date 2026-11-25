@@ -484,6 +484,12 @@ def _lab(t, x, dep, connection):
     results = exchange()
     if "Token" not in results:
         return DeviceRoute(x, kind, connection)
+    error = unmap_arg(results["error"]) if "error" in results else None
+    why = unmap_arg(results["why"]) if "why" in results else None
+    if error == "unknown_handle" or (isinstance(why, str) and why.startswith("no device ")):
+        raise RuntimeError(f"No device {x} at {dep}")
+    if error == "ambiguous_handle" or (isinstance(why, str) and why.startswith("more than one device")):
+        raise RuntimeError(f"More than one device matches {x} at {dep}")
     # Only a handle's first lookup in a process books: a refresh when a reservation ends
     # (renewed_route) must not book the next slot, which the driver refuses anyway.
     first = t not in _auto_tried
@@ -524,17 +530,29 @@ def _fold(s):
     return _key(s.replace("-", "_")).casefold()
 
 
+def _compact(s):
+    return _fold(s).replace("_", "")
+
+
 def _same_handle(items, x, handle_of):
     """The items whose handle is `x` as typed (_key), else, when they all share
-    one handle, those equal to it with '-' as '_' and case ignored (_fold)."""
+    one handle, those equal to it with '-' as '_' and case ignored (_fold),
+    else with separators ('-', '_', whitespace) dropped (_compact)."""
     items = [i for i in items if handle_of(i)]
-    if not _fold(x):
+    key = _key(x)
+    if not key or key.startswith(("rfg_", "bridge-")):
         return []
-    exact = [i for i in items if _key(handle_of(i) or "") == _key(x)]
+    exact = [i for i in items if _key(handle_of(i) or "") == key]
     if exact:
         return exact
-    near = [i for i in items if _fold(handle_of(i) or "") == _fold(x)]
-    return near if len({_key(handle_of(i)) for i in near}) == 1 else []
+    for fold in (_fold, _compact):
+        target = fold(x)
+        if not target:
+            return []
+        near = [i for i in items if fold(handle_of(i) or "") == target]
+        if near:
+            return near if len({_key(handle_of(i)) for i in near}) == 1 else []
+    return []
 
 
 def _global_handle(x, dep):

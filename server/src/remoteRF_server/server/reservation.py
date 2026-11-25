@@ -38,9 +38,10 @@ from remoterf_federation_core import (
 from .device_manager import (
     device_inventory_snapshot,
     diag_blocks,
-    find_device_id_by_handle,
     get_all_devices,
+    is_passthrough_token,
     reservation_bridge_token,
+    resolve_device_handle,
     get_registered_devices,
     set_device,
     get_all_devices_str,
@@ -1598,15 +1599,53 @@ class ReservationHandler:
         ).fetchone()
         return row is not None
 
+    def _is_passthrough_token(self, handle: str) -> bool:
+        """True when `handle` is a known device-plane token (bridge, super,
+        reservation bearer, or partner HOME token) that should pass through
+        unchanged."""
+        if not isinstance(handle, str) or not handle:
+            return False
+        if is_passthrough_token(handle):
+            return True
+        if self.federation_devices is not None:
+            try:
+                if self.federation_devices.resolve_token(handle) is not None:
+                    return True
+            except Exception:
+                pass
+        rows = self.cursor.execute("SELECT salt, hash FROM Reservations").fetchall()
+        for salt, hsh in rows:
+            if not (salt and hsh):
+                continue
+            try:
+                if validate_token(salt, hsh, handle):
+                    return True
+            except ValueError:
+                continue
+        return False
+
     @db_connection
     def device_token(self, username, handle):
         """`handle` (which may be a raw token: never log it) as a token for the
         caller's own live reservation on that device: a bridge token bound to
-        it. Anything that is not a handle comes back unchanged, for the device
-        plane to judge. The refusal never says who holds the device."""
-        gid = find_device_id_by_handle(handle)
+        it. Known device-plane tokens come back unchanged, for the device plane
+        to judge; unknown or ambiguous handles report why. The refusal never
+        says who holds the device."""
+        gid, ambiguous = resolve_device_handle(handle)
         if gid is None:
-            return {"Token": map_arg(handle)}
+            if ambiguous:
+                return {
+                    "Token": map_arg(handle),
+                    "why": map_arg(f"more than one device matches {handle}"),
+                    "error": map_arg("ambiguous_handle"),
+                }
+            if self._is_passthrough_token(handle):
+                return {"Token": map_arg(handle)}
+            return {
+                "Token": map_arg(handle),
+                "why": map_arg(f"no device {handle} here"),
+                "error": map_arg("unknown_handle"),
+            }
         why = {"Token": map_arg(handle), "why": map_arg(f"no active reservation of yours on {handle} right now")}
         # update_devices() applied the federated/incoherent filters to the live
         # pair, but leaves an offline device's pair and expired rows alone:
