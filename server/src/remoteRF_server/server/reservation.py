@@ -1821,6 +1821,7 @@ class ReservationHandler:
             "SELECT res_id, username, device_id, start_time, end_time FROM Reservations "
             "ORDER BY device_id, start_time, res_id"
         ).fetchall()
+        now = int(time.time())
         entries = []
         for res_id, owner, device_id, start, end in rows:
             if allowed is not None and int(device_id) not in allowed:
@@ -1831,7 +1832,8 @@ class ReservationHandler:
                 end_ts = int(_parse_reservation_datetime(end).timestamp())
             except ValueError:
                 continue
-            if end_ts <= start_ts:
+            # Ended rows linger until someone books that device again.
+            if end_ts <= start_ts or end_ts <= now:
                 continue
             entries.append(
                 {

@@ -56,6 +56,28 @@ from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
 # -----------------------------------------------------------------------------
 from remoterf_device_core.drivers.krakensdr.kraken_device import KrakenSDR
 
+_MAX_REMOTE_PAYLOAD_BYTES = 4 * 1024 * 1024
+# librtlsdr's synchronous read fails on a partial USB packet, and pyrtlsdr then
+# closes the device but keeps its freed handle: read whole packets and slice.
+_USB_PACKET_SAMPLES = 512 // 2
+_NUM_CHANNELS = 5
+_MAX_SAMPLES_PER_CHANNEL = (
+    _MAX_REMOTE_PAYLOAD_BYTES // np.dtype(np.complex64).itemsize // _NUM_CHANNELS
+) // _USB_PACKET_SAMPLES * _USB_PACKET_SAMPLES
+
+
+def _bounded_count(value: Any, *, label: str, maximum: int = _MAX_SAMPLES_PER_CHANNEL) -> int:
+    count = int(value)
+    if count <= 0:
+        raise ValueError(f"{label} must be greater than zero")
+    if count > maximum:
+        raise ValueError(f"{label} exceeds the RemoteRF limit of {maximum}")
+    return count
+
+
+def _whole_packets(num_samples: int) -> int:
+    return -(-num_samples // _USB_PACKET_SAMPLES) * _USB_PACKET_SAMPLES
+
 
 class KrakenSDRDevice:
     """
@@ -76,6 +98,10 @@ class KrakenSDRDevice:
         self.sample_rate_init = sample_rate
         self.center_freq_init = center_freq
         self.gain_init = gain
+        # devices.yml values; every new holder starts from these.
+        self._default_center_freq = float(center_freq)
+        self._default_sample_rate = float(sample_rate)
+        self._default_gain = float(gain)
 
         self.sdr: Optional[KrakenSDR] = None
         self._is_running = False
@@ -176,6 +202,14 @@ class KrakenSDRDevice:
             return self.sdr.noise_source_active
         return False
 
+    def reset_for_next_holder(self) -> None:
+        """Noise source off and devices.yml RF settings back for the next holder."""
+        self.set_noise_source(False)
+        self.sample_rate = self._default_sample_rate
+        self.center_freq = self._default_center_freq
+        self.gain = self._default_gain
+        self._smoothed_psd = None
+
     def get_device_info(self) -> Dict[str, Any]:
         """Query connection identity and hardware properties."""
         return {
@@ -217,10 +251,16 @@ class KrakenSDRDevice:
         Capture simultaneous IQ samples across all 5 channels.
         Returns a 2D complex64 NumPy array of shape (5, num_samples).
         """
+        count = _bounded_count(num_samples, label="num_samples")
         if self.sdr is None:
             raise RuntimeError("KrakenSDR hardware is not connected.")
-        samples = self.sdr.read_samples(num_samples=num_samples, parallel=parallel)
-        self._update_stats(num_samples)
+        samples = self.sdr.read_samples(num_samples=_whole_packets(count), parallel=parallel)
+        samples = np.ascontiguousarray(samples[:, :count])
+        if samples.shape[1] != count:
+            raise RuntimeError(
+                f"short KrakenSDR read: requested {count}, received {samples.shape[1]}"
+            )
+        self._update_stats(count)
         return samples
 
     def capture_spectrum(
@@ -235,6 +275,7 @@ class KrakenSDRDevice:
             psd_dbfs: 2D float32 array of shape (5, fft_size)
             powers_dbfs: 1D float32 array of instantaneous channel RSSI in dBFS
         """
+        fft_size = _bounded_count(fft_size, label="fft_size")
         samples = self.capture_samples(num_samples=fft_size, parallel=True)
 
         window = np.hanning(fft_size)
@@ -277,9 +318,10 @@ class KrakenSDRDevice:
         Perform sample delay synchronization and phase calibration using the onboard noise source.
         Returns dictionary with integer sample delays, phase offsets in degrees, and correlation peaks.
         """
+        count = _bounded_count(num_samples, label="num_samples")
         if self.sdr is None:
             raise RuntimeError("KrakenSDR hardware is not connected.")
-        res = self.sdr.calibrate_delays_and_phases(num_samples=num_samples)
+        res = self.sdr.calibrate_delays_and_phases(num_samples=_whole_packets(count))
         return {
             "delays": res["delays"].astype(np.int32),
             "phase_offsets_deg": res["phase_offsets_deg"].astype(np.float32),
@@ -364,6 +406,11 @@ class KrakenSDRSchema(DeviceSchema):
     # -------------------------------------------------------------------------
     # Exposed Getters
     # -------------------------------------------------------------------------
+
+    def reset_for_next_holder(self) -> None:
+        """A reservation ended: noise source off, devices.yml RF settings restored."""
+        if self.device is not None:
+            self.device.reset_for_next_holder()
 
     @idl_expose(kind="get", doc="Whether the KrakenSDR is active and streaming.")
     def get_is_running(self) -> bool:
