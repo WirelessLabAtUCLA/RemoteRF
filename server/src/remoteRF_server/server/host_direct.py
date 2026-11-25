@@ -32,6 +32,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from remoterf_device_core.idl.tags import OLD_HOST_TAGS_ERROR
+from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
 from ..host import host_tunnel_server as hts
 from . import global_onboarding
 from .federation.identity import load_private_key, load_state, public_key_pem
@@ -212,6 +215,17 @@ def _start_refresher(
             logger.warning("host direct grant refresh unavailable for %s: no tunnel", host_id)
             schedule()
             return
+        if blocked_tags and not hts.host_supports_function_tags(host_id, registry=registry):
+            logger.warning("host direct grant refresh refused for %s: host lacks function_tags capability", host_id)
+            try:
+                registry.send_control(
+                    host_id, kind="revoke", device_id=str(gid),
+                    payload={"rid": str(rid), "at": time.time()},
+                )
+            except Exception as exc:
+                logger.warning("host direct revoke unavailable for %s: %s", host_id, exc)
+            stop()
+            return
         try:
             grant = (
                 issue_grant(host_id, gid, rid, reservation_end, tag, blocked_tags)
@@ -297,7 +311,14 @@ def offer(
     """Ask the owning Host to answer ICE, leaving callers to use lab fallback."""
     host_id = str(getattr(device, "host_id", "") or "")
     gid = int(getattr(device, "gid"))
+    clean_blocked = tuple(
+        item.strip()
+        for item in (blocked_tags or ())
+        if isinstance(item, str) and item.strip()
+    )
     registry = hts.get_tunnel_registry(create=False)
+    if clean_blocked and not hts.host_supports_function_tags(host_id, registry=registry):
+        raise RemoteRFPolicyError(OLD_HOST_TAGS_ERROR)
     if registry is None:
         return None
     session = registry.session_for_host(host_id)

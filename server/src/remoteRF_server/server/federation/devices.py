@@ -623,6 +623,8 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
                 expected_reservation=(live["salt"], live["hash"]),
             )
 
+        from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
         try:
             from .. import device_manager, direct_path
 
@@ -644,6 +646,8 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
                 f"federated/{claims['iss']}/{claims['sub']}/{reservation_id}",
                 live["username"], payload["ice"], bound={"run": run, "authorize": authorize},
             )
+        except RemoteRFPolicyError:
+            raise FederationBusinessError("host_too_old_for_restrictions") from None
         except Exception:
             raise FederationBusinessError("direct_path_unavailable") from None
         return {**result, "status": "ok", "error_code": None, "payload": {"ice": json.dumps(answer)}}

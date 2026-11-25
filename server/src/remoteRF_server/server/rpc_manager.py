@@ -72,6 +72,7 @@ import json
 import numpy as np
 
 from remoterf_device_core.idl.tags import (
+    OLD_HOST_TAGS_ERROR,
     blocked_tag_message,
     find_blocked_tag,
     v1_function_label,
@@ -89,7 +90,10 @@ from ..host import host_tunnel_server as hts
 # <Prefix>:batch:CALLN runs op0..op{n-1} in order under one io_lock hold.
 _BATCH_MAX_OPS = 64
 _BATCH_VERBS = {"GET", "SET", "CALL0", "CALL1", "CALLN"}
-_BATCH_ROUTING_KEYS = {"a", "g", "gid", "token", "device_id", "device_name", "__rrf_reservation_tag", "__rrf_blocked_tags"}
+_BATCH_ROUTING_KEYS = {
+    "a", "g", "gid", "token", "device_id", "device_name",
+    "__rrf_reservation_tag", "__rrf_blocked_tags", "__rrf_master_bypass",
+}
 # <Prefix>:rx_n:CALL1 returns up to arg1 rx() buffers stacked on a new axis.
 _RX_N_MAX_BUFFERS = 64
 _RX_N_MAX_SAMPLES = 1 << 20
@@ -259,6 +263,10 @@ class RpcManager:
     ) -> dict:
         self._validate_device_rpc_type(function_name=function_name, gid=gid, dev=dev)
 
+        if isinstance(dev, VirtualDevice) and getattr(dev, "blocked_tags", ()):
+            if not hts.host_supports_function_tags(dev.host_id):
+                raise RemoteRFPolicyError(OLD_HOST_TAGS_ERROR)
+
         # Both live in the RPC layer, not in schemas, so no schema hash moves.
         # An old server sends either to dispatch("call_batch"/"call_rx_n"),
         # which refuses before running anything: the client's probe is safe.
@@ -287,8 +295,11 @@ class RpcManager:
             fwd_args = dict(args)
             fwd_args.pop('a', None)
             fwd_args.pop('__rrf_blocked_tags', None)
+            fwd_args.pop('__rrf_master_bypass', None)
             fwd_args['g'] = map_arg(int(gid))
             fwd_args['__rrf_reservation_tag'] = map_arg(dev.reservation_tag)
+            if getattr(dev, "is_master", False):
+                fwd_args['__rrf_master_bypass'] = map_arg(True)
             results = hts.handle_host_device(
                 hts.get_tunnel_registry(create=False),
                 host_id=dev.host_id,
@@ -466,7 +477,10 @@ class RpcManager:
             return {prop: map_arg(result)} if result is not None else {prop: map_arg('None')}
 
         if verb == "CALLN":
-            reserved = {"a", "g", "token", "device_id", "device_name", "wire", "__rrf_reservation_tag", "__rrf_blocked_tags"}
+            reserved = {
+                "a", "g", "token", "device_id", "device_name", "wire",
+                "__rrf_reservation_tag", "__rrf_blocked_tags", "__rrf_master_bypass",
+            }
             call_args = {
                 str(key): unmap_arg(value)
                 for key, value in dict(args).items()

@@ -18,6 +18,13 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+BLOCK_ALL_TAG = "*"
+HOST_FUNCTION_TAGS_CAPABILITY = "function_tags"
+OLD_HOST_TAGS_ERROR = (
+    "this device's host is too old to enforce your group's restrictions; "
+    "ask an admin to update it"
+)
+
 
 def normalize_tags(tag: Any) -> tuple[str, ...]:
     """Normalize a single tag string or a tuple/list of tag strings.
@@ -63,11 +70,12 @@ def find_blocked_tag(
     }
     if not blocked:
         return None
+    block_all = BLOCK_ALL_TAG in blocked
     for item in method_tags:
         if not isinstance(item, str):
             continue
         cleaned = item.strip()
-        if cleaned and cleaned.casefold() in blocked:
+        if cleaned and (block_all or cleaned.casefold() in blocked):
             return cleaned
     return None
 

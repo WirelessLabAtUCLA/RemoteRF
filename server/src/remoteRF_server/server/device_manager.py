@@ -62,6 +62,7 @@ class VirtualDevice:
     kind: str = ""
     reservation_tag: str = ""
     blocked_tags: Tuple[str, ...] = ()
+    is_master: bool = False
 
     def __repr__(self) -> str:
         return f"<VirtualDevice gid={self.gid} host={self.host_id} device_id={self.device_id}>"
@@ -1010,15 +1011,18 @@ def _start_host_reservation(
 ) -> None:
     try:
         registry = hts.get_tunnel_registry(create=False)
+        clean_tags = _clean_blocked_tags(blocked_tags)
+        payload = {
+            "at": time.time(),
+            "lockout_bypass": bool(bypass),
+            "tag": tag,
+            "resync": resync,
+        }
+        if clean_tags:
+            payload["blocked_tags"] = list(clean_tags)
         if registry is None or not registry.send_control(
             device.host_id, kind="reservation_start", device_id=device.device_id,
-            payload={
-                "at": time.time(),
-                "lockout_bypass": bool(bypass),
-                "blocked_tags": list(_clean_blocked_tags(blocked_tags)),
-                "tag": tag,
-                "resync": resync,
-            }, drop_on_failure=True,
+            payload=payload, drop_on_failure=True,
         ):
             logger.warning("host reservation start unavailable for %s", device.host_id)
     except Exception as exc:
@@ -1588,7 +1592,12 @@ def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
             dev = st.dev
             effective_blocked = () if is_master else st.blocked_tags
             if isinstance(dev, VirtualDevice):
-                dev = replace(dev, reservation_tag=reservation_tag(*reservation), blocked_tags=effective_blocked)
+                dev = replace(
+                    dev,
+                    reservation_tag=reservation_tag(*reservation),
+                    blocked_tags=effective_blocked,
+                    is_master=is_master,
+                )
             if st.origin == "local" and hasattr(dev, "__dict__"):
                 dev.lockout_bypass = st.lockout_bypass
                 dev.blocked_tags = effective_blocked

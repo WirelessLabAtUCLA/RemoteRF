@@ -54,6 +54,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Iterable, List, Tuple, NoReturn
 
+from remoterf_device_core.idl.tags import HOST_FUNCTION_TAGS_CAPABILITY
+
 from ..common.utils import device_name_key, get_devices_config_path, get_host_config_dir
 from ..common.utils.host_logging import error, exception, info, status, warn
 from ..common.grpc import grpc_host_pb2 as host_pb2
@@ -655,6 +657,7 @@ class HostTunnelAgent:
 
         if hasattr(hello, "capabilities"):
             hello.capabilities.append("reservation_tag")
+            hello.capabilities.append(HOST_FUNCTION_TAGS_CAPABILITY)
 
         direct = getattr(self, "_direct_host", None)
         if direct is not None and hasattr(hello, "capabilities") and hasattr(hello, "tls_public_key"):
@@ -1177,7 +1180,7 @@ class HostTunnelAgent:
             self._consume_cancel(req_id)
 
     def _run_direct_call(self, gid: int, greq, expected_epoch=None) -> Dict[str, Any]:
-        excluded = {"a", "token", "device_name", "g", "gid", "device_id"}
+        excluded = {"a", "token", "device_name", "g", "gid", "device_id", "__rrf_master_bypass"}
         args_map = {
             str(key): value
             for key, value in greq.args.items()

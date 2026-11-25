@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
 import sqlite3
 from datetime import datetime
 import time
@@ -23,12 +24,13 @@ from pathlib import Path
 from functools import wraps
 from typing import Optional, Tuple, List
 
-from remoterf_device_core.idl.tags import normalize_tags
+from remoterf_device_core.idl.tags import BLOCK_ALL_TAG, normalize_tags
 
 from ..common.utils import *
 from .federation.migrations import ADMIN_GROUP, migrate_gate_f_usergroups_schema
 from .global_onboarding import RELAYED
 
+logger = logging.getLogger(__name__)
 DEFAULT_HORIZON_SEC = 7 * 86400  # how far ahead a reservation may start; 0 = no limit
 
 import os
@@ -53,16 +55,16 @@ def _parse_blacklisted_tags(raw) -> list[str]:
     elif isinstance(raw, (list, tuple)):
         parsed = list(raw)
     else:
-        return []
+        return [BLOCK_ALL_TAG]
     if not isinstance(parsed, list):
-        return []
+        return [BLOCK_ALL_TAG]
     cleaned = [str(item).strip() for item in parsed if item is not None and str(item).strip()]
     if not cleaned:
         return []
     try:
         return list(normalize_tags(cleaned))
     except (TypeError, ValueError):
-        return []
+        return [BLOCK_ALL_TAG]
 
 
 class UserGroupHandler:
@@ -1084,13 +1086,21 @@ class UserGroupHandler:
                 elif effective is None:
                     effective = {tag.casefold(): tag for tag in tags}
                 elif effective:
-                    current = {tag.casefold() for tag in tags}
-                    effective = {k: v for k, v in effective.items() if k in current}
+                    current = {tag.casefold(): tag for tag in tags}
+                    if BLOCK_ALL_TAG in effective:
+                        effective = current
+                    elif BLOCK_ALL_TAG not in current:
+                        effective = {k: v for k, v in effective.items() if k in current}
 
             if not allowed:
                 return (False, [])
             return (True, list(effective.values()) if effective else [])
         except Exception:
+            logger.exception(
+                "Failed querying blocked function tags for uid=%r device_id=%r",
+                uid,
+                device_id,
+            )
             return (False, [])
 
     @db_connection

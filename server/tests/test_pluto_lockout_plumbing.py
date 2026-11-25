@@ -220,7 +220,8 @@ def test_admin_membership_only_on_holder_change(monkeypatch, tmp_path, group, la
     try:
         res.ReservationHandler.update_devices.__wrapped__(handler)
         assert res.RELAYED.get() is False
-        set_device.assert_called_once_with("7", "s", "h", bypass=bypass)
+        expected_kwargs = {"bypass": bypass} if bypass else {"bypass": bypass, "blocked_tags": ("*",)}
+        set_device.assert_called_once_with("7", "s", "h", **expected_kwargs)
         inventory[7] = (inventory[7][0], "s", "h")
         res.ReservationHandler.update_devices.__wrapped__(handler)
         assert lookup.call_count == handler.get_uid.call_count == set_device.call_count == 1

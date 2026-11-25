@@ -173,13 +173,15 @@ def run_bridge(
     args: dict,
     gid: int,
     blocked_tags: tuple[str, ...] = (),
+    master_bypass: bool = False,
 ) -> dict:
     """Execute one serialized v2 protobuf request for a trusted server tunnel."""
-    from .dynamic_v2 import GRANT_BLOCKED_TAGS
+    from .dynamic_v2 import GRANT_BLOCKED_TAGS, GRANT_MASTER_BYPASS
 
     operation = str(operation or "")
     wire = _wire_arg(args)
     token = GRANT_BLOCKED_TAGS.set(tuple(blocked_tags or ()))
+    bypass_token = GRANT_MASTER_BYPASS.set(bool(master_bypass))
     try:
         try:
             response = _dispatch(operation, wire, gid)
@@ -193,6 +195,7 @@ def run_bridge(
             else:
                 raise
     finally:
+        GRANT_MASTER_BYPASS.reset(bypass_token)
         GRANT_BLOCKED_TAGS.reset(token)
     return {"wire": map_arg(response.SerializeToString())}
 

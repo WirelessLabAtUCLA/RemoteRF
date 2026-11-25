@@ -490,6 +490,7 @@ class DirectHost:
                         blocked_tags = claims.get("_blocked_tags", ()) if claims else ()
                     tagged.args.pop("__rrf_reservation_tag", None)
                     tagged.args.pop("__rrf_blocked_tags", None)
+                    tagged.args.pop("__rrf_master_bypass", None)
                     if tag is not None:
                         tagged.args["__rrf_reservation_tag"].CopyFrom(map_arg(tag))
                     if blocked_tags:

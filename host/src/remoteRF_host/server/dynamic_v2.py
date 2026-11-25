@@ -100,6 +100,10 @@ GRANT_BLOCKED_TAGS: contextvars.ContextVar[tuple[str, ...]] = contextvars.Contex
     "remoterf_host_grant_blocked_tags",
     default=(),
 )
+GRANT_MASTER_BYPASS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "remoterf_host_grant_master_bypass",
+    default=False,
+)
 
 
 def _opaque_id(prefix: str) -> str:
@@ -1242,6 +1246,8 @@ class SessionManager:
         owner: str,
         method_name: str,
     ) -> None:
+        if GRANT_MASTER_BYPASS.get():
+            return
         context = get_local_device_context(session.gid) or {}
         blocked_tags = tuple(context.get("blocked_tags", ()) or ()) + tuple(
             GRANT_BLOCKED_TAGS.get() or ()

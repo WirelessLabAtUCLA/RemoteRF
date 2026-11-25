@@ -143,6 +143,11 @@ TX_MULTIUSRP_METHODS = frozenset({
     "send_waveform",
 })
 
+TX_INTEGRATION_METHODS = frozenset({
+    "integration_start",
+    "integration_call",
+})
+
 OPTIONAL_METHODS = {
     "get_radio_control", "get_mb_controller", "get_rx_radio_channel",
     "get_tx_radio_channel", "set_rx_spp", "get_gpio_srcs", "get_gpio_src",
@@ -1621,6 +1626,7 @@ def build_usrp_schema_v2(driver_version: str = "0.0.9") -> dict:
             name, "uhd.usrp.MultiUSRP",
             [overload(INTEGRATION_OVERLOAD, [parameter("request", "dict")], returns="dict")],
             doc="Generic application integration control. Requires operator qualification and enablement; accepts bounded plain JSON.",
+            tag="TX" if name in TX_INTEGRATION_METHODS else None,
         ))
         coverage[f"uhd.usrp.MultiUSRP.{name}"] = "implemented_with_documented_remote_difference"
 

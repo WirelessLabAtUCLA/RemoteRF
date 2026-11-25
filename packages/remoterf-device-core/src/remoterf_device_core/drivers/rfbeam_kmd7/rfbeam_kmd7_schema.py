@@ -571,14 +571,14 @@ class RFBeamKMD7Schema(DeviceSchema):
     # Exposed Calls
     # -------------------------------------------------------------------------
 
-    @idl_expose(kind="call", doc="Capture structured 2D point cloud with positions, velocities, and power.")
+    @idl_expose(kind="call", doc="Capture structured 2D point cloud with positions, velocities, and power.", tag="TX")
     def call_capture_point_cloud(self, timeout: float = 1.0) -> Dict[str, Any]:
         """
         Captures one frame and returns detected points and tracked objects as structured NumPy arrays.
         """
         return self.device.capture_point_cloud(timeout=float(timeout))
 
-    @idl_expose(kind="call", doc="Capture points as an (N, 6) NumPy array [x, y, dist, speed, angle, mag].")
+    @idl_expose(kind="call", doc="Capture points as an (N, 6) NumPy array [x, y, dist, speed, angle, mag].", tag="TX")
     def call_capture_points(
         self,
         timeout: float = 1.0,
@@ -593,12 +593,12 @@ class RFBeamKMD7Schema(DeviceSchema):
             include_tracked=bool(include_tracked),
         )
 
-    @idl_expose(kind="call", doc="Capture active tracked targets as a list of structured dictionaries.")
+    @idl_expose(kind="call", doc="Capture active tracked targets as a list of structured dictionaries.", tag="TX")
     def call_capture_targets(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
         """Returns list of active tracked targets with ID, Cartesian pos, velocity, and power."""
         return self.device.capture_targets(timeout=float(timeout))
 
-    @idl_expose(kind="call", doc="Read one synchronized raw radar frame.")
+    @idl_expose(kind="call", doc="Read one synchronized raw radar frame.", tag="TX")
     def call_read_frame(self, timeout: float = 1.0) -> Dict[str, Any]:
         return self.device.read_frame_raw(timeout=float(timeout))
 
@@ -638,7 +638,7 @@ class RFBeamKMD7Schema(DeviceSchema):
         self.device.flush()
         return True
 
-    @idl_expose(kind="call", doc="Start radar streaming.")
+    @idl_expose(kind="call", doc="Start radar streaming.", tag="TX")
     def call_start(self) -> bool:
         return self.device.start()
 

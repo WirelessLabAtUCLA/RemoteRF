@@ -582,7 +582,7 @@ class PlutoSchema(DeviceSchema):
     def get_loopback(self):
         return self.device.loopback
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_loopback(self, value):
         self.device.loopback = value
 

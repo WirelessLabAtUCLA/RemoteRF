@@ -752,7 +752,7 @@ class TiMmWaveSchema(DeviceSchema):
             timeout=float(timeout),
         )
 
-    @idl_expose(kind="call", doc="Apply newline-delimited TI CLI configuration commands in order.")
+    @idl_expose(kind="call", doc="Apply newline-delimited TI CLI configuration commands in order.", tag="TX")
     def call_apply_config(
         self,
         config_text: str,
@@ -766,7 +766,7 @@ class TiMmWaveSchema(DeviceSchema):
             command_timeout=float(command_timeout),
         )
 
-    @idl_expose(kind="call", doc="Configure radar parameters via presets (indoor-people, gesture, fast-motion).")
+    @idl_expose(kind="call", doc="Configure radar parameters via presets (indoor-people, gesture, fast-motion).", tag="TX")
     def call_configure(
         self,
         preset: str = "default",
@@ -785,7 +785,7 @@ class TiMmWaveSchema(DeviceSchema):
             start=bool(start),
         )
 
-    @idl_expose(kind="call", doc="Send one runtime CLI command and return the textual response.")
+    @idl_expose(kind="call", doc="Send one runtime CLI command and return the textual response.", tag="TX")
     def call_send_command(self, command: str, timeout: float = 2.0) -> str:
         """Sends single CLI command string (e.g. 'version', 'sensorStop')."""
         return self.device.send_command(str(command), timeout=float(timeout))
@@ -800,7 +800,7 @@ class TiMmWaveSchema(DeviceSchema):
         """Flushes input buffers."""
         return self.device.flush_frames()
 
-    @idl_expose(kind="call", doc="Start radar RF transmission and data streaming.")
+    @idl_expose(kind="call", doc="Start radar RF transmission and data streaming.", tag="TX")
     def call_start(self, timeout: float = 5.0) -> bool:
         """Sends sensorStart."""
         return self.device.start(timeout=float(timeout))

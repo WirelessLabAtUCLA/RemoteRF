@@ -918,7 +918,7 @@ Drivers can annotate exposed RPCs with policy tags (`tag="TX"` or a tuple/list o
 * v1: `@idl_expose(kind="call", tag="TX")`
 * v2: `method("set_tx_freq", ..., tag="TX")`
 
-Tags are compared case-insensitively. Built-in SDR transmit entry points (ADALM-Pluto/MIMO, HackRF, USRP v1/v2, and USRP Phaser) are pre-tagged with `TX`.
+Tags are compared case-insensitively. Built-in RF transmit entry points (ADALM-Pluto/MIMO including RF loopback, HackRF, USRP v1/v2 including transmitting application-integration calls, USRP Phaser, TI mmWave / AWR6843, and RFbeam K-MD7) are pre-tagged with `TX`.
 
 Admins can blacklist tags per user group interactively (`groups create` / `groups edit`) or via flags:
 
@@ -928,7 +928,11 @@ serverrf groups edit rxonly --blacklist-tags TX,FOO --yes
 serverrf groups edit rxonly --clear-blacklist-tags --yes
 ```
 
-Multi-group rule: for a reservation holder on a device, a tag is blocked only if **every** user group granting that user access to the device blacklists it (non-blacklist wins). Admins, Power Users, and members of the built-in `admin` group are never blocked.
+Multi-group rule: for a reservation holder on a device, a tag is blocked only if **every** non-LAN-only user group granting that user access to the device blacklists it (non-blacklist wins, and LAN-only groups do not lift a blacklist). Admins, Power Users, members of the built-in `admin` group, and master-token calls are never blocked. If blocked-tag calculation fails or no group grants the device to a non-bypass holder, all tagged functions are blocked (fail closed).
+
+The effective blocked tag set is computed once per reservation (on holder change); editing a group's blacklisted tags takes effect from the next holder change or reservation.
+
+Host devices require a host that advertises the `function_tags` capability. If a holder has a non-empty blocked tag set for a device on an older host, the lab refuses device calls and direct-path grants for that device until the host is updated.
 
 ---
 

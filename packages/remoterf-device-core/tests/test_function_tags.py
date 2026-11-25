@@ -20,18 +20,38 @@ import types
 import unittest
 
 sys.modules.setdefault("adi", types.ModuleType("adi"))
+try:
+    import serial as _serial  # noqa: F401
+    import serial.tools.list_ports as _serial_list_ports  # noqa: F401
+except ImportError:
+    _serial_stub = types.ModuleType("serial")
+    _serial_stub.Serial = object
+    _serial_tools = types.ModuleType("serial.tools")
+    _serial_list_ports_stub = types.ModuleType("serial.tools.list_ports")
+    _serial_tools.list_ports = _serial_list_ports_stub
+    _serial_stub.tools = _serial_tools
+    sys.modules.setdefault("serial", _serial_stub)
+    sys.modules.setdefault("serial.tools", _serial_tools)
+    sys.modules.setdefault("serial.tools.list_ports", _serial_list_ports_stub)
 
 from remoterf_device_core import manifest
 from remoterf_device_core.drivers.adalm_pluto.pluto_mimo_schema import PlutoMIMOSchema
 from remoterf_device_core.drivers.adalm_pluto.pluto_schema import PlutoSchema
 from remoterf_device_core.drivers.hackrf.hackrf_schema import HackRFSchema
+from remoterf_device_core.drivers.rfbeam_kmd7.rfbeam_kmd7_schema import RFBeamKMD7Schema
+from remoterf_device_core.drivers.ti_awr6843.ti_awr6843_schema import (
+    TiMmWaveSchema as TiAwr6843Schema,
+)
+from remoterf_device_core.drivers.ti_mmwave.ti_mmwave_schema import TiMmWaveSchema
 from remoterf_device_core.drivers.usrp.uhd_manifest import (
+    TX_INTEGRATION_METHODS,
     TX_MULTIUSRP_METHODS,
     build_usrp_schema_v2,
 )
 from remoterf_device_core.drivers.usrp.usrp_schema import UsrpSchema
 from remoterf_device_core.drivers.usrp_phaser.usrp_phaser_schema import UsrpPhaserSchema
 from remoterf_device_core.idl import (
+    BLOCK_ALL_TAG,
     DeviceSchema,
     blocked_tag_message,
     find_blocked_tag,
@@ -69,6 +89,8 @@ class FunctionTagHelperTests(unittest.TestCase):
     def test_find_blocked_tag_case_insensitive_and_display_text(self):
         self.assertEqual(find_blocked_tag(("TX",), ["tx"]), "TX")
         self.assertEqual(find_blocked_tag(("Cal", "HighPower"), ["highpower"]), "HighPower")
+        self.assertEqual(find_blocked_tag(("Cal", "HighPower"), [BLOCK_ALL_TAG]), "Cal")
+        self.assertIsNone(find_blocked_tag((), [BLOCK_ALL_TAG]))
         self.assertIsNone(find_blocked_tag(("RX",), ["TX"]))
         self.assertIsNone(find_blocked_tag((), ["TX"]))
         self.assertIsNone(find_blocked_tag(("TX",), ()))
@@ -87,7 +109,7 @@ class FunctionTagHelperTests(unittest.TestCase):
 class V1DecoratorTagTests(unittest.TestCase):
     def test_v1_tags_on_get_set_call_keep_schema_hash_and_json_unchanged(self):
         class UntaggedRadio(DeviceSchema):
-            device_type = "tag_test_radio"
+            device_type = "demo_radio"
             driver_version = "0.1.0"
 
             @idl_expose(kind="get")
@@ -107,7 +129,7 @@ class V1DecoratorTagTests(unittest.TestCase):
                 return []
 
         class TaggedRadio(DeviceSchema):
-            device_type = "tag_test_radio"
+            device_type = "demo_radio"
             driver_version = "0.1.0"
 
             @idl_expose(kind="get", tag="DIAG")
@@ -231,6 +253,7 @@ class BuiltinDriverTagTests(unittest.TestCase):
     def test_pluto_and_mimo_tx_tags_and_rx_untagged(self):
         pluto = PlutoSchema()
         expected_pluto = {
+            "set_loopback",
             "set_tx_hardwaregain_chan0",
             "set_tx_rf_bandwidth",
             "set_tx_lo",
@@ -287,10 +310,16 @@ class BuiltinDriverTagTests(unittest.TestCase):
             self.assertEqual(usrp.get_method_tags(rx_method), (), rx_method)
 
         schema_v2 = build_usrp_schema_v2()
-        expected_v2 = {("uhd.usrp.MultiUSRP", name) for name in TX_MULTIUSRP_METHODS} | {
-            ("uhd.usrp.TXStreamer", "send")
-        }
+        expected_v2 = (
+            {("uhd.usrp.MultiUSRP", name) for name in TX_MULTIUSRP_METHODS}
+            | {("uhd.usrp.MultiUSRP", name) for name in TX_INTEGRATION_METHODS}
+            | {("uhd.usrp.TXStreamer", "send")}
+        )
         self.assertEqual(set(get_schema_tags(schema_v2)), expected_v2)
+        self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.MultiUSRP", "integration_start"), ("TX",))
+        self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.MultiUSRP", "integration_call"), ("TX",))
+        for safe_int in ("integration_list", "integration_describe", "integration_status", "integration_stop", "integration_fetch"):
+            self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.MultiUSRP", safe_int), (), safe_int)
         self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.MultiUSRP", "set_rx_freq"), ())
         self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.MultiUSRP", "get_rx_stream"), ())
         self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.RXStreamer", "recv"), ())
@@ -310,6 +339,34 @@ class BuiltinDriverTagTests(unittest.TestCase):
         self.assertEqual(set(get_schema_tags(phaser_v2)), expected_phaser_v2)
         self.assertEqual(get_method_tags(phaser_v2, "uhd.usrp.MultiUSRP", "phaser_configure_rx"), ())
         self.assertEqual(get_method_tags(phaser_v2, "uhd.usrp.MultiUSRP", "phaser_set_rx_beam_angle"), ())
+
+    def test_radar_emitters_tx_tags_and_safe_methods_untagged(self):
+        mmwave = TiMmWaveSchema()
+        expected_mmwave = {"call_send_command", "call_apply_config", "call_start"}
+        actual_mmwave = {name for name, entry in mmwave._exposed.items() if "TX" in entry.policy_tags}
+        self.assertEqual(actual_mmwave, expected_mmwave)
+        for safe in ("call_stop", "call_read_frame", "call_query_version", "call_flush_frames", "get_is_running"):
+            self.assertEqual(mmwave.get_method_tags(safe), (), safe)
+
+        awr = TiAwr6843Schema()
+        expected_awr = {"call_apply_config", "call_configure", "call_send_command", "call_start"}
+        actual_awr = {name for name, entry in awr._exposed.items() if "TX" in entry.policy_tags}
+        self.assertEqual(actual_awr, expected_awr)
+        for safe in ("call_stop", "call_reset", "call_read_frame", "call_capture_point_cloud", "call_query_version", "get_is_running"):
+            self.assertEqual(awr.get_method_tags(safe), (), safe)
+
+        kmd7 = RFBeamKMD7Schema()
+        expected_kmd7 = {
+            "call_start",
+            "call_read_frame",
+            "call_capture_point_cloud",
+            "call_capture_points",
+            "call_capture_targets",
+        }
+        actual_kmd7 = {name for name, entry in kmd7._exposed.items() if "TX" in entry.policy_tags}
+        self.assertEqual(actual_kmd7, expected_kmd7)
+        for safe in ("call_stop", "call_flush_frames", "call_configure", "call_restore_factory_settings", "get_is_running"):
+            self.assertEqual(kmd7.get_method_tags(safe), (), safe)
 
     def test_schemas_json_is_unchanged(self):
         built = subprocess.run(

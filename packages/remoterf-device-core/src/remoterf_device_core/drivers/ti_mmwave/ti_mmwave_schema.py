@@ -622,12 +622,12 @@ class TiMmWaveSchema(DeviceSchema):
     def get_is_running(self):
         return self.device.running
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_send_command(self, command, timeout=2.0):
         """Send one runtime CLI command and return the textual response."""
         return self.device.send_command(command, timeout=timeout)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_apply_config(self, config_text, start=False, command_timeout=2.0):
         """Apply newline-delimited TI CLI configuration commands in order."""
         return self.device.apply_config(
@@ -636,7 +636,7 @@ class TiMmWaveSchema(DeviceSchema):
             command_timeout=command_timeout,
         )
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_start(self, timeout=2.0):
         return self.device.start(timeout=timeout)
 

@@ -37,31 +37,31 @@ _SCHEMA_TAGS_BY_HASH: dict[str, dict[tuple[str, str], tuple[str, ...]]] = {}
 class _TaggedMethod(dict):
     """Method descriptor dict carrying server/host-only policy tags out-of-band."""
 
-    __slots__ = ("_tags",)
+    __slots__ = ("_policy_tags",)
 
-    def __init__(self, data: Mapping[str, Any], tags: tuple[str, ...]):
+    def __init__(self, data: Mapping[str, Any], policy_tags: tuple[str, ...]):
         super().__init__(data)
-        self._tags = tuple(tags)
+        self._policy_tags = tuple(policy_tags)
 
 
 class _TaggedSchema(dict):
     """Built v2 schema dict carrying server/host-only method tags out-of-band."""
 
-    __slots__ = ("_method_tags",)
+    __slots__ = ("_method_policy_tags",)
 
     def __init__(
         self,
         data: Mapping[str, Any],
-        method_tags: Mapping[tuple[str, str], tuple[str, ...]],
+        method_policy_tags: Mapping[tuple[str, str], tuple[str, ...]],
     ):
         super().__init__(data)
-        self._method_tags = dict(method_tags)
+        self._method_policy_tags = dict(method_policy_tags)
 
 
 def get_schema_tags(schema_or_hash: Any) -> dict[tuple[str, str], tuple[str, ...]]:
-    """Return server/host-only {(owner, name): tags} for a v2 schema."""
+    """Return server/host-only {(owner, name): policy_tags} for a v2 schema."""
     if isinstance(schema_or_hash, _TaggedSchema):
-        return dict(schema_or_hash._method_tags)
+        return dict(schema_or_hash._method_policy_tags)
     schema_hash = (
         str(schema_or_hash.get("schema_hash") or "")
         if isinstance(schema_or_hash, Mapping)
@@ -76,7 +76,7 @@ def get_schema_tags(schema_or_hash: Any) -> dict[tuple[str, str], tuple[str, ...
 def get_method_tags(schema_or_hash: Any, owner: str, name: str) -> tuple[str, ...]:
     """Return server/host-only policy tags for one v2 (owner, method_name)."""
     if isinstance(schema_or_hash, _TaggedSchema):
-        return schema_or_hash._method_tags.get((str(owner), str(name)), ())
+        return schema_or_hash._method_policy_tags.get((str(owner), str(name)), ())
     return get_schema_tags(schema_or_hash).get((str(owner), str(name)), ())
 
 SCHEMA_VERSION = "2.0"
@@ -274,7 +274,7 @@ def build_schema(
             if normalized:
                 tags_by_method[(str(key[0]), str(key[1]))] = normalized
     for item in method_list:
-        item_tags = getattr(item, "_tags", ())
+        item_tags = getattr(item, "_policy_tags", ())
         if item_tags:
             tags_by_method[(str(item["owner"]), str(item["name"]))] = tuple(item_tags)
     if tags_by_method:

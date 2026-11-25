@@ -436,17 +436,18 @@ def idl_expose(_fn=None, *, kind: str = "call", doc: str = "", client_return: An
         Optional server/host policy tag (string or tuple/list of strings).
         Never included in the wire schema or schema hash.
     """
+    if kind not in {"get", "set", "call"}:
+        raise ValueError(f"idl_expose kind must be 'get', 'set', or 'call': {kind!r}")
+    if kind == "set" and client_return is not None:
+        raise ValueError("idl_expose client_return is only supported for getters and calls")
+    policy_tags = normalize_tags(tag)
+
     def _apply(fn):
-        if kind not in {"get", "set", "call"}:
-            raise ValueError(f"idl_expose kind must be 'get', 'set', or 'call': {kind!r}")
-        if kind == "set" and client_return is not None:
-            raise ValueError("idl_expose client_return is only supported for getters and calls")
-        tags = normalize_tags(tag)
         meta = {
             "kind": kind,
             "doc": doc or (fn.__doc__ or "").strip(),
             "client_return": client_return,
-            "tags": tags,
+            "policy_tags": policy_tags,
         }
         setattr(fn, _EXPOSE_KEY, meta)
         return fn
@@ -730,13 +731,13 @@ class DeviceSchema:
                     kind=meta["kind"],
                     doc=meta["doc"],
                     client_return=meta.get("client_return"),
-                    tags=meta.get("tags", ()),
+                    policy_tags=meta.get("policy_tags", meta.get("tags", ())),
                 )
 
     def get_method_tags(self, method_name: str) -> tuple[str, ...]:
         """Return server/host-only policy tags attached to an exposed method."""
         ex = self._exposed.get(method_name)
-        return ex.tags if ex is not None else ()
+        return ex.policy_tags if ex is not None else ()
 
     # ── IDL generation ────────────────────────────────────────────
 
@@ -1319,11 +1320,15 @@ class DeviceSchema:
 # ───────────────────────────────────────────────────────────────────
 
 class _Exposed:
-    __slots__ = ("name", "fn", "kind", "doc", "client_return", "tags")
-    def __init__(self, *, name, fn, kind, doc, client_return, tags=()):
+    __slots__ = ("name", "fn", "kind", "doc", "client_return", "policy_tags")
+    def __init__(self, *, name, fn, kind, doc, client_return, policy_tags=()):
         self.name = name
         self.fn = fn
         self.kind = kind
         self.doc = doc
         self.client_return = client_return
-        self.tags = tuple(tags)
+        self.policy_tags = tuple(policy_tags)
+
+    @property
+    def tags(self) -> tuple[str, ...]:
+        return self.policy_tags
