@@ -73,6 +73,8 @@ files identical.
 ## Versions
 
 GPS `driver_version` 0.2.0 (the built-in driver's version too). Bluetooth
-`driver_version` 0.1.2. The Bluetooth driver wraps its lists of dicts (scan
-results) in `_JsonList` so that servers up to 1.3.0 send them as JSON; servers
+`driver_version` 0.1.4. remoterf-device-core ships the same driver
+built in (`remoterf_device_core.drivers.bluetooth`), so a server or host with
+remoterf-device-core 0.1.13 or newer does not need this copy. The Bluetooth
+driver wraps its lists of dicts (scan results) in `_JsonList` so that servers up to 1.3.0 send them as JSON; servers
 from 1.3.1 do that themselves, and the wrapper stays for the older ones.

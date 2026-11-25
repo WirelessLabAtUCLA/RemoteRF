@@ -13,8 +13,8 @@
  },
  {
   "device_type": "bluetooth",
-  "driver_version": "0.1.0",
-  "v1": "sha256:72644c2af2d5e202f76fd07b9a30554f4deca2fdceffddaa21e2c3eaca9056d9",
+  "driver_version": "0.1.4",
+  "v1": "sha256:5b391955d0e98c6cf6c36efcb672866dd9db5b887d40feeb615c4a0922cbe5f9",
   "v2": null
  },
  {

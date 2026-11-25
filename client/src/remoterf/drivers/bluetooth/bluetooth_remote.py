@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: bluetooth  driver_version: 0.1.0  schema_hash: sha256:72644c2af2d5e202f76fd07b9a30554f4deca2fdceffddaa21e2c3eaca9056d9
+# device_type: bluetooth  driver_version: 0.1.4  schema_hash: sha256:5b391955d0e98c6cf6c36efcb672866dd9db5b887d40feeb615c4a0922cbe5f9
 
 _PREFIX = "Bluetooth"
-_SCHEMA_HASH = "sha256:72644c2af2d5e202f76fd07b9a30554f4deca2fdceffddaa21e2c3eaca9056d9"
+_SCHEMA_HASH = "sha256:5b391955d0e98c6cf6c36efcb672866dd9db5b887d40feeb615c4a0922cbe5f9"
 _CLIENT_MODULES = {}
 _CLIENT_OBJECTS = {}
 
