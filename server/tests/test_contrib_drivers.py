@@ -229,7 +229,7 @@ def test_auto_detect_never_falls_back_to_another_adapter(bt, sysfs):
     plug("hci1", "0a12", "0001", "CSR8510 A10")
     dev = bt.BluetoothSchema.make_device()
     assert (dev.adapter_name, dev.is_zexmte, dev.bd_address) == ("hci1", True, "00:11:22:33:44:55")
-    assert bt.BluetoothSchema.driver_version == "0.1.3"
+    assert bt.BluetoothSchema.driver_version == "0.1.4"
 
 
 def test_auto_detect_takes_any_usb_dongle_but_no_built_in_adapter(bt, sysfs):
