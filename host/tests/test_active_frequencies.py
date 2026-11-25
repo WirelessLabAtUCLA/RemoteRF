@@ -157,3 +157,30 @@ class HostActiveFrequenciesTests(unittest.TestCase):
 
         self.assertIsNone(tuned.active_frequencies()["rx_hz"])
         self.assertFalse(tuned.active_frequencies()["tx_active"])
+
+    def test_prepare_reservation_clears_stale_frequencies_unless_resync(self):
+        tuned = PlutoSchema()
+        tuned.bind(_FakeRadio())
+        tuned.dispatch("set_rx_lo", {"value": 915_000_000})
+        tuned.dispatch("set_tx_lo", {"value": 2_450_000_000})
+        tuned.dispatch("call_tx", {"value": np.zeros(8, dtype=np.complex64)})
+        st = host_dm._DeviceState(schema=tuned, name="Pluto 7", ident="7", dtype="adalm_pluto", init={})
+
+        with mock.patch.dict(host_dm._devices, {7: st}, clear=True), \
+             mock.patch.object(host_dm, "_run_hook", return_value=None):
+            host_dm.prepare_reservation(7, resync=False)
+            self.assertIsNone(tuned.active_frequencies()["rx_hz"])
+            self.assertIsNone(tuned.active_frequencies()["tx_hz"])
+            self.assertFalse(tuned.active_frequencies()["tx_active"])
+            self.assertIsNone(tuned.active_frequencies()["updated_at"])
+
+            # Tunnel reconnect resync must preserve active frequencies for the ongoing reservation.
+            tuned.dispatch("set_rx_lo", {"value": 920_000_000})
+            tuned.dispatch("call_tx", {"value": np.zeros(8, dtype=np.complex64)})
+            host_dm.prepare_reservation(7, resync=True)
+            self.assertEqual(tuned.active_frequencies()["rx_hz"], 920_000_000)
+            self.assertTrue(tuned.active_frequencies()["tx_active"])
+
+    def test_hello_advertises_active_frequencies_capability(self):
+        hello = self._agent((7,))._hello_frame().hello
+        self.assertIn("active_frequencies", list(hello.capabilities))

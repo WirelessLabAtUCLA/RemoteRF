@@ -686,12 +686,19 @@ def reset_before_rpc(gid: int, epoch: int, schema: object, tag: str | None = Non
 
 def prepare_reservation(device_id: int | str, bypass: bool = False, tag: str = "", resync: bool = False) -> Optional[Future]:
     """The lab started a reservation on this device: ready it (a switched Pluto boots) for the holder."""
-    set_lockout_bypass(device_id, bypass, tag)
-    if resync:
-        return None
+    gid = int(device_id)
+    with _state_lock:
+        set_lockout_bypass(gid, bypass, tag)
+        if resync:
+            return None
+        st = _devices.get(gid)
+        if st is not None and st.schema is not None:
+            clear = getattr(type(st.schema), "clear_active_frequencies", None)
+            if callable(clear):
+                clear(st.schema)
     if bypass:
-        info(f"lockout bypass on: device {device_id} (gid {int(device_id)})", component="hostrf.device_manager")
-    return _run_hook(int(device_id), "prepare_for_holder", "preparing")
+        info(f"lockout bypass on: device {device_id} (gid {gid})", component="hostrf.device_manager")
+    return _run_hook(gid, "prepare_for_holder", "preparing")
 
 
 def end_reservation(device_id: int | str) -> Optional[Future]:

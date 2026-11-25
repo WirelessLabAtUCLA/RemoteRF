@@ -1014,6 +1014,11 @@ def active_frequencies_snapshot(reserved_ids, *, host_timeout: float = 2.0) -> L
         registry = _get_host_registry()
         if registry is not None:
             def _query_host(host_id: str, items: List[Tuple[int, str]]) -> Dict[int, Dict[str, Any]]:
+                session_for_host = getattr(registry, "session_for_host", None)
+                if callable(session_for_host):
+                    sess = session_for_host(host_id)
+                    if sess is None or not sess.alive or "active_frequencies" not in sess.capabilities:
+                        return {}
                 device_ids = [did for _, did in items]
                 reply = registry.request_control(
                     host_id,
@@ -1106,15 +1111,15 @@ def _set_device(device_id: int, salt: str, hash: str, bypass: bool):
         )
         if all(held) and previous != held and st.origin == "host" and isinstance(st.dev, VirtualDevice):
             host_start = st.dev
+        if previous != held and st.origin == "local" and st.dev is not None:
+            clear = getattr(type(st.dev), "clear_active_frequencies", None)
+            if callable(clear):
+                clear(st.dev)
         # The holder changed: the reservation ended, or a back-to-back one
         # replaced it without the device ever being free.
-        notify_end = any(previous) and previous != (st.salt, st.hsh)
+        notify_end = any(previous) and previous != held
         if notify_end:
             st.reset_pending = True
-            if st.origin == "local" and st.dev is not None:
-                clear = getattr(type(st.dev), "clear_active_frequencies", None)
-                if callable(clear):
-                    clear(st.dev)
             for token in [t for t, bound in _bridge_tokens.items() if bound[0] == int(device_id)]:
                 del _bridge_tokens[token]
 

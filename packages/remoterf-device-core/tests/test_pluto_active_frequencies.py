@@ -16,9 +16,15 @@ if _TESTS_DIR not in sys.path:
 from remoterf_device_core import manifest
 from remoterf_device_core.drivers.adalm_pluto.pluto_mimo_schema import PlutoMIMOSchema
 from remoterf_device_core.drivers.adalm_pluto.pluto_schema import PlutoSchema
+from remoterf_device_core.drivers.adalm_pluto.poe import PoePluto
 from remoterf_device_core.v2_errors import RemoteRFPolicyError
 
 from test_pluto_lockouts import BAND, CustomMIMO, FakePoe, FakeRadio, rpc, schema
+
+
+class _ForwardingPoe(FakePoe):
+    def __getattr__(self, name):
+        return PoePluto.__getattr__(self, name)
 
 
 class _FirFakeRadio(FakeRadio):
@@ -234,6 +240,145 @@ def test_reset_close_bind_and_poe_power_down_clear_state():
     rpc(usb_obj, "set_rx_lo", 915_000_000)
     rpc(usb_obj, "call_power_down")
     assert usb_obj.active_frequencies()["rx_hz"] == 915_000_000
+
+
+def test_poe_power_cycle_and_failed_power_calls_clear_state():
+    # Successful PoE power_cycle clears frequencies; non-PoE power_cycle keeps them.
+    poe = _ForwardingPoe(radio=FakeRadio())
+    poe_obj = _plain_schema(radio=poe)
+    rpc(poe_obj, "set_rx_lo", 915_000_000)
+    rpc(poe_obj, "set_tx_lo", 920_000_000)
+    rpc(poe_obj, "call_tx", np.zeros(16, dtype=np.complex64))
+    ups_before = poe.ups
+    rpc(poe_obj, "call_power_cycle")
+    assert poe.downs == 1 and poe.ups == ups_before + 1
+    assert poe_obj.active_frequencies()["rx_hz"] is None
+    assert poe_obj.active_frequencies()["tx_hz"] is None
+    assert poe_obj.active_frequencies()["tx_active"] is False
+    assert poe_obj.active_frequencies()["updated_at"] is None
+
+    usb_obj = _plain_schema()
+    rpc(usb_obj, "set_rx_lo", 915_000_000)
+    rpc(usb_obj, "call_power_cycle")
+    assert usb_obj.active_frequencies()["rx_hz"] == 915_000_000
+
+    # Failed reboot during power_cycle still clears state after power_down cuts power.
+    class _FailBootPoe(_ForwardingPoe):
+        def power_up(self):
+            vars(self)["ups"] += 1
+            if vars(self)["_pluto"] is None:
+                raise RuntimeError("boot timeout")
+
+    failing = _FailBootPoe(radio=FakeRadio())
+    fail_obj = _plain_schema(radio=failing)
+    rpc(fail_obj, "set_rx_lo", 915_000_000)
+    rpc(fail_obj, "set_tx_lo", 920_000_000)
+    rpc(fail_obj, "call_tx", np.zeros(16, dtype=np.complex64))
+    with pytest.raises(RuntimeError, match="boot timeout"):
+        rpc(fail_obj, "call_power_cycle")
+    assert vars(failing)["_pluto"] is None
+    assert fail_obj.active_frequencies()["rx_hz"] is None
+    assert fail_obj.active_frequencies()["tx_hz"] is None
+    assert fail_obj.active_frequencies()["tx_active"] is False
+    assert fail_obj.active_frequencies()["updated_at"] is None
+
+    # Failed power_down also clears state.
+    fail_down = _ForwardingPoe(radio=FakeRadio())
+    vars(fail_down)["fail_down"] = True
+    down_obj = _plain_schema(radio=fail_down)
+    rpc(down_obj, "set_rx_lo", 915_000_000)
+    rpc(down_obj, "call_tx", np.zeros(16, dtype=np.complex64))
+    with pytest.raises(RuntimeError, match="power-off failed"):
+        rpc(down_obj, "call_power_down")
+    assert down_obj.active_frequencies()["rx_hz"] is None
+    assert down_obj.active_frequencies()["tx_active"] is False
+    assert down_obj.active_frequencies()["updated_at"] is None
+
+
+def test_tx_active_tracks_rf_loopback():
+    obj = _plain_schema()
+
+    # Disabling or setting digital loopback before any activity leaves updated_at unset.
+    rpc(obj, "set_loopback", 0)
+    rpc(obj, "set_loopback", 1)
+    assert obj.active_frequencies()["tx_active"] is False
+    assert obj.active_frequencies()["updated_at"] is None
+
+    # RF loopback (mode 2) counts as active TX and survives tx_destroy_buffer().
+    rpc(obj, "set_tx_lo", 915_000_000)
+    rpc(obj, "set_loopback", 2)
+    assert obj.active_frequencies()["tx_active"] is True
+    rpc(obj, "call_tx", np.zeros(16, dtype=np.complex64))
+    rpc(obj, "call_tx_destroy_buffer")
+    assert obj.active_frequencies()["tx_active"] is True
+    rpc(obj, "set_loopback", 0)
+    assert obj.active_frequencies()["tx_active"] is False
+
+    # Refused RF loopback under lockouts must not mark tx_active.
+    refused_obj = schema(BAND)
+    with pytest.raises(RemoteRFPolicyError):
+        rpc(refused_obj, "set_loopback", 2)
+    assert refused_obj.active_frequencies()["tx_active"] is False
+    assert refused_obj.active_frequencies()["updated_at"] is None
+
+    # Allowed RF loopback under lockouts stays tx_active across stop methods until loopback is cleared.
+    allowed_obj = schema({**BAND, "allow_rf_loopback": True})
+    rpc(allowed_obj, "set_tx_lo", 915_000_000)
+    rpc(allowed_obj, "set_loopback", 2)
+    assert allowed_obj.active_frequencies()["tx_active"] is True
+    rpc(allowed_obj, "call_tx", np.zeros(16, dtype=np.complex64))
+    rpc(allowed_obj, "call_tx_destroy_buffer")
+    assert allowed_obj.active_frequencies()["tx_active"] is True
+    rpc(allowed_obj, "set_loopback", 1)
+    assert allowed_obj.active_frequencies()["tx_active"] is False
+
+
+def test_lockout_hygiene_and_after_hook_clear_tx_active_and_update_parked_tx_lo():
+    # Recovery from _broken via _lockout_hygiene clears tx_active (buffer + RF loopback).
+    locked = schema({**BAND, "allow_rf_loopback": True})
+    rpc(locked, "set_tx_lo", 915_000_000)
+    rpc(locked, "call_tx", np.zeros(16, dtype=np.complex64))
+    rpc(locked, "set_loopback", 2)
+    assert locked.active_frequencies()["tx_active"] is True
+    locked._broken = True
+    rpc(locked, "get_rx_lo")
+    assert locked._tx_flag is False
+    assert locked._rf_loopback is False
+    assert locked.active_frequencies()["tx_active"] is False
+
+    # Handle-change hygiene clears tx_active and updates parked tx_hz when tx_hz was previously set.
+    poe = _ForwardingPoe(radio=FakeRadio())
+    reconnecting = schema(
+        {**BAND, "lockout_allow_methods": ["call_reconnect"]},
+        cls=CustomMIMO,
+        radio=poe,
+    )
+    rpc(reconnecting, "set_tx_lo", 920_000_000)
+    rpc(reconnecting, "call_tx", np.zeros(16, dtype=np.complex64))
+    assert reconnecting.active_frequencies()["tx_hz"] == 920_000_000
+    assert reconnecting.active_frequencies()["tx_active"] is True
+    rpc(reconnecting, "call_reconnect")
+    assert reconnecting.active_frequencies()["tx_active"] is False
+    assert reconnecting.active_frequencies()["tx_hz"] == 915_000_000
+
+    # Parking during hygiene must not invent tx_hz when the holder never configured tx_lo.
+    rx_only_radio = FakeRadio()
+    rx_only = schema(BAND, radio=rx_only_radio)
+    assert rx_only.active_frequencies()["tx_hz"] is None
+    rpc(rx_only, "set_rx_lo", 915_000_000)
+    rx_only_radio.tx_lo = 2_450_000_000
+    rx_only._broken = True
+    rpc(rx_only, "get_rx_lo")
+    assert rx_only_radio.tx_lo == 915_000_000
+    assert rx_only.active_frequencies()["tx_hz"] is None
+
+    # lockout_after_hook on failed non-PoE reset clears tx_active flags.
+    hook_obj = schema({**BAND, "allow_rf_loopback": True})
+    rpc(hook_obj, "set_tx_lo", 915_000_000)
+    rpc(hook_obj, "set_loopback", 2)
+    assert hook_obj.active_frequencies()["tx_active"] is True
+    hook_obj.lockout_after_hook("reset", failed=True)
+    assert hook_obj.active_frequencies()["tx_active"] is False
 
 
 def test_mimo_and_custom_pluto_subclasses_inherit_recording():

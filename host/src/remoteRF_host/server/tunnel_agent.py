@@ -657,6 +657,7 @@ class HostTunnelAgent:
 
         if hasattr(hello, "capabilities"):
             hello.capabilities.append("reservation_tag")
+            hello.capabilities.append("active_frequencies")
 
         direct = getattr(self, "_direct_host", None)
         if direct is not None and hasattr(hello, "capabilities") and hasattr(hello, "tls_public_key"):

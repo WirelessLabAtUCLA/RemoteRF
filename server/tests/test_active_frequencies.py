@@ -335,6 +335,90 @@ class ActiveFrequenciesTests(_Devices):
         self.assertIsNone(s_local.active_frequencies()["rx_hz"])
         self.assertFalse(s_local.active_frequencies()["tx_active"])
 
+    def test_set_device_clears_local_frequencies_on_idle_to_reserved_transition(self):
+        s_local = PlutoSchema()
+        s_local.bind(_FakeRadio())
+        dm._devices[LOCAL_PLUTO] = _pluto_state(s_local, name="Pluto A")
+
+        # Idle-time tuning/TX (e.g. diag or master-token session) before any reservation.
+        s_local.dispatch("set_rx_lo", {"value": 915_000_000})
+        s_local.dispatch("set_tx_lo", {"value": 2_450_000_000})
+        s_local.dispatch("call_tx", {"value": np.zeros(8, dtype=np.complex64)})
+        self.assertEqual(s_local.active_frequencies()["tx_hz"], 2_450_000_000)
+        self.assertTrue(s_local.active_frequencies()["tx_active"])
+
+        # Idle -> reserved must clear stale frequencies from idle-time use.
+        dm.set_device(LOCAL_PLUTO, "salt1", "hash1")
+        self.assertIsNone(s_local.active_frequencies()["rx_hz"])
+        self.assertIsNone(s_local.active_frequencies()["tx_hz"])
+        self.assertFalse(s_local.active_frequencies()["tx_active"])
+        self.assertIsNone(s_local.active_frequencies()["updated_at"])
+
+        # Re-setting the same holder must preserve frequencies set during the reservation.
+        s_local.dispatch("set_rx_lo", {"value": 920_000_000})
+        dm.set_device(LOCAL_PLUTO, "salt1", "hash1")
+        self.assertEqual(s_local.active_frequencies()["rx_hz"], 920_000_000)
+
+    def test_older_host_without_active_frequencies_capability_returns_nulls_immediately(self):
+        from remoteRF_server.host import host_tunnel_server as hts
+
+        dm._devices[HOST_PLUTO_A] = _host_state(HOST_PLUTO_A, host_id="host-capable", name="Host Capable")
+        dm._devices[HOST_PLUTO_B] = _host_state(HOST_PLUTO_B, host_id="host-legacy", name="Host Legacy")
+
+        sessions = {
+            "host-capable": hts.HostSession("host-capable", capabilities={"reservation_tag", "active_frequencies"}),
+            "host-legacy": hts.HostSession("host-legacy", capabilities={"reservation_tag"}),
+        }
+        calls = []
+
+        class _CapRegistry:
+            def device_directory_cached(self, ttl_ms=0):
+                return {
+                    str(HOST_PLUTO_A): ("host-capable", SimpleNamespace(label="Host Capable", serial="A", kind="adalm_pluto"), True),
+                    str(HOST_PLUTO_B): ("host-legacy", SimpleNamespace(label="Host Legacy", serial="B", kind="adalm_pluto"), True),
+                }
+
+            def session_for_host(self, host_id):
+                return sessions.get(host_id)
+
+            def request_control(self, host_id, *, kind, device_id, payload, timeout):
+                calls.append((host_id, kind, device_id, payload))
+                if host_id == "host-legacy":
+                    raise AssertionError("must not query host lacking active_frequencies capability")
+                return {
+                    "devices": {
+                        str(HOST_PLUTO_A): {
+                            "rx_hz": 915_000_000,
+                            "tx_hz": None,
+                            "tx_active": False,
+                            "sample_rate": 2_000_000,
+                            "rx_rf_bandwidth": None,
+                            "tx_rf_bandwidth": None,
+                            "updated_at": 1700000001.0,
+                        }
+                    }
+                }
+
+        with mock.patch.object(dm, "_get_host_registry", return_value=_CapRegistry()), \
+             mock.patch.object(dm, "_host_sync_last_ms", 0):
+            rows = {r["device_id"]: r for r in dm.active_frequencies_snapshot({HOST_PLUTO_A, HOST_PLUTO_B}, host_timeout=2.0)}
+
+        self.assertEqual(calls, [("host-capable", "active_frequencies", "", {"device_ids": [str(HOST_PLUTO_A)]})])
+        self.assertEqual(rows[HOST_PLUTO_A]["rx_hz"], 915_000_000)
+        self.assertIsNone(rows[HOST_PLUTO_B]["rx_hz"])
+        self.assertIsNone(rows[HOST_PLUTO_B]["tx_hz"])
+        self.assertIsNone(rows[HOST_PLUTO_B]["tx_active"])
+        self.assertIsNone(rows[HOST_PLUTO_B]["updated_at"])
+
+        # Dead session with the capability must also skip request_control.
+        sessions["host-capable"].alive = False
+        calls.clear()
+        with mock.patch.object(dm, "_get_host_registry", return_value=_CapRegistry()), \
+             mock.patch.object(dm, "_host_sync_last_ms", 0):
+            rows = {r["device_id"]: r for r in dm.active_frequencies_snapshot({HOST_PLUTO_A}, host_timeout=2.0)}
+        self.assertEqual(calls, [])
+        self.assertIsNone(rows[HOST_PLUTO_A]["rx_hz"])
+
     def test_activity_log_redacts_password(self):
         entry = self.reservation._activity_log_entry(
             function_name="active_frequencies",

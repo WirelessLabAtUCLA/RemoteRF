@@ -296,6 +296,7 @@ class PlutoSchema(DeviceSchema):
                 "tx_rf_bandwidth": None,
                 "tx_buffer_active": False,
                 "dds_active": False,
+                "rf_loopback": False,
                 "updated_at": None,
             }
         return dict(state)
@@ -309,9 +310,9 @@ class PlutoSchema(DeviceSchema):
         state["updated_at"] = time.time()
         self._freq_state = state
 
-    def _record_tx(self, *, buffer=None, dds=None):
+    def _record_tx(self, *, buffer=None, dds=None, loopback=None):
         current = self._freq_state
-        if current is None and not buffer and not dds:
+        if current is None and not buffer and not dds and not loopback:
             return
         state = self._freq_snapshot()
         changed = False
@@ -324,6 +325,11 @@ class PlutoSchema(DeviceSchema):
             flag = bool(dds)
             if flag or state["dds_active"] != flag:
                 state["dds_active"] = flag
+                changed = True
+        if loopback is not None:
+            flag = bool(loopback)
+            if flag or state["rf_loopback"] != flag:
+                state["rf_loopback"] = flag
                 changed = True
         if changed:
             state["updated_at"] = time.time()
@@ -348,7 +354,7 @@ class PlutoSchema(DeviceSchema):
         return {
             "rx_hz": state["rx_hz"],
             "tx_hz": state["tx_hz"],
-            "tx_active": bool(state["tx_buffer_active"] or state["dds_active"]),
+            "tx_active": bool(state["tx_buffer_active"] or state["dds_active"] or state["rf_loopback"]),
             "sample_rate": state["sample_rate"],
             "rx_rf_bandwidth": state["rx_rf_bandwidth"],
             "tx_rf_bandwidth": state["tx_rf_bandwidth"],
@@ -427,10 +433,14 @@ class PlutoSchema(DeviceSchema):
                     finally:
                         radio.loopback = 0
             self._tx_flag = self._rf_loopback = False
+            self._record_tx(buffer=False, dds=False, loopback=False)
             lo = float(radio.tx_lo)
             if (park or not cfg["tx_enabled"] or ("tx_min_freq" in cfg
                     and not cfg["tx_min_freq"] <= lo <= cfg["tx_max_freq"])):
-                radio.tx_lo = int(round(cfg["park_tx_lo"]))
+                parked = int(round(cfg["park_tx_lo"]))
+                radio.tx_lo = parked
+                if self._freq_state is not None and self._freq_state["tx_hz"] is not None:
+                    self._record_freq("tx_hz", parked)
             cap = cfg.get("tx_max_gain_db", 0) if cfg["tx_enabled"] else -89.75
             for name in ("tx_hardwaregain_chan0", "tx_hardwaregain_chan1"):
                 if name == "tx_hardwaregain_chan1" and not hasattr(radio, name):
@@ -457,6 +467,7 @@ class PlutoSchema(DeviceSchema):
             return
         with self._lockout_lock():
             self._tx_flag = self._rf_loopback = False
+            self._record_tx(buffer=False, dds=False, loopback=False)
             if kind == "reset" and failed:
                 self._broken = not self._lockout_cut_power()
                 return
@@ -701,6 +712,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_loopback(self, value):
         self.device.loopback = value
+        self._record_tx(loopback=(value == 2))
 
     @idl_expose(kind="get")
     def get_gain_control_mode_chan0(self):
@@ -885,16 +897,20 @@ class PlutoSchema(DeviceSchema):
         """PoE Plutos: cut power; the next command powers it back up. No-op on other Plutos."""
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
-            self.device.power_down()
-            self.clear_active_frequencies()
+            try:
+                self.device.power_down()
+            finally:
+                self.clear_active_frequencies()
 
     @idl_expose(kind="call")
     def call_power_cycle(self):
         """PoE Plutos: power off, then on, and wait for boot. No-op on other Plutos."""
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
-            self.device.power_cycle()
-            self.clear_active_frequencies()
+            try:
+                self.device.power_cycle()
+            finally:
+                self.clear_active_frequencies()
 
     # endregion
 
