@@ -35,7 +35,7 @@ jobs:
           printf '%s\n' "$KNOWN" > ~/.ssh/rrf-dev-known-hosts
       - env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.event.repository.name }}
+          REPO: remoterf-core  # the dev gate files this repo's queue under its pre-rename name
         run: |
           gate() { ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/rrf-dev-queue -o UserKnownHostsFile=~/.ssh/rrf-dev-known-hosts root@dev.global.remoterf.net "$@"; }
           status=$(gate status) || { echo "::warning::dev unreachable"; exit 0; } # a failed scheduled run emails an admin
