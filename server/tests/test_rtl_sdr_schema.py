@@ -276,6 +276,136 @@ class RtlSdrSchemaTests(unittest.TestCase):
         unbound = RtlSdrSchema()
         unbound.reset_for_next_holder()
 
+    def test_r820t_offset_tuning_skipped_at_open_and_reset_and_closed_open_raises(self):
+        class R820TFake(PyRtlSdrLikeFake):
+            def __init__(self, **kwargs):
+                super().__init__()
+                self.offset_calls = []
+
+            def set_offset_tuning(self, enabled):
+                self.offset_calls.append(enabled)
+                self.close()
+                raise OSError("R820T does not support offset tuning")
+
+        with patch(
+            "remoteRF_server.drivers.rtl_sdr.rtl_sdr_schema._require_rtlsdr",
+            return_value=R820TFake,
+        ):
+            adapter = _connect_rtl_sdr(device_index=0)
+        schema = RtlSdrSchema()
+        schema.bind(adapter)
+        self.assertTrue(adapter.native.device_opened)
+        self.assertEqual(adapter.native.offset_calls, [])
+        self._assert_defaults(schema, adapter.native)
+
+        adapter.native.center_freq = 433_920_000.0
+        schema.reset_for_next_holder()
+        self.assertTrue(adapter.native.device_opened)
+        self.assertEqual(adapter.native.offset_calls, [])
+        self._assert_defaults(schema, adapter.native)
+
+        class NoGetterR820TFake(R820TFake):
+            get_offset_tuning = None
+            get_direct_sampling = None
+
+        with patch(
+            "remoteRF_server.drivers.rtl_sdr.rtl_sdr_schema._require_rtlsdr",
+            return_value=NoGetterR820TFake,
+        ):
+            no_getter_adapter = _connect_rtl_sdr(device_index=0)
+        no_getter_schema = RtlSdrSchema()
+        no_getter_schema.bind(no_getter_adapter)
+        self.assertTrue(no_getter_adapter.native.device_opened)
+        self.assertEqual(no_getter_adapter.native.offset_calls, [])
+        self.assertIs(no_getter_schema.get_offset_tuning(), False)
+        self.assertEqual(no_getter_schema.get_direct_sampling(), 0)
+
+        class ClosingAtOpenFake(PyRtlSdrLikeFake):
+            def __init__(self, **kwargs):
+                super().__init__()
+
+            def set_bias_tee(self, enabled):
+                self.close()
+                raise OSError("bias tee closed device")
+
+        with patch(
+            "remoteRF_server.drivers.rtl_sdr.rtl_sdr_schema._require_rtlsdr",
+            return_value=ClosingAtOpenFake,
+        ):
+            with self.assertRaisesRegex(OSError, "bias tee closed device"):
+                _connect_rtl_sdr(device_index=0)
+
+    def test_reset_mid_failure_device_opened_guard_and_freq_correction_zero_skip(self):
+        class CloseOnErrorFake(PyRtlSdrLikeFake):
+            def __init__(self):
+                self._guard = False
+                self._freq_correction = 0
+                self.freq_correction_writes = 0
+                super().__init__()
+                self._freq_correction = 0
+                self.freq_correction_writes = 0
+
+            @property
+            def freq_correction(self):
+                if self._guard:
+                    assert self.device_opened, "freq_correction read through freed handle"
+                return self._freq_correction
+
+            @freq_correction.setter
+            def freq_correction(self, value):
+                if not self._guard:
+                    self._freq_correction = int(value)
+                    return
+                assert self.device_opened, "freq_correction write through freed handle"
+                self.freq_correction_writes += 1
+                if int(value) == self._freq_correction:
+                    self.close()
+                    raise OSError("librtlsdr rejects unchanged freq_correction")
+                self._freq_correction = int(value)
+
+            def __setattr__(self, name, value):
+                if name in ("sample_rate", "center_freq", "bandwidth", "gain") and getattr(self, "_guard", False):
+                    assert self.device_opened, f"{name} write through freed handle"
+                super().__setattr__(name, value)
+
+            def set_agc_mode(self, enabled):
+                if self._guard:
+                    assert self.device_opened, "set_agc_mode through freed handle"
+                super().set_agc_mode(enabled)
+
+            def set_dithering(self, enabled):
+                if self._guard:
+                    assert self.device_opened, "set_dithering through freed handle"
+                super().set_dithering(enabled)
+
+            def reset_buffer(self):
+                if self._guard:
+                    assert self.device_opened, "reset_buffer through freed handle"
+                super().reset_buffer()
+
+        native = CloseOnErrorFake()
+        native._guard = True
+        schema, _adapter, _native = _bound_schema(native)
+        schema.reset_for_next_holder()
+        self.assertTrue(native.device_opened)
+        self.assertEqual(native.freq_correction_writes, 0)
+        self._assert_defaults(schema, native)
+
+        class CloseOnBiasTeeFake(CloseOnErrorFake):
+            def set_bias_tee(self, enabled):
+                self.close()
+                raise OSError("Could not set bias tee")
+
+        closing = CloseOnBiasTeeFake()
+        closing.center_freq = 433_920_000.0
+        closing._guard = True
+        closing_schema, _adapter2, _native2 = _bound_schema(closing)
+        with self.assertRaisesRegex(OSError, "bias tee"):
+            closing_schema.reset_for_next_holder()
+        self.assertFalse(closing.device_opened)
+        self.assertEqual(closing.center_freq, 433_920_000.0)
+        self.assertEqual(closing.reset_count, 0)
+
     def test_open_applies_the_same_defaults(self):
         class OpenFake(FakeRtlSdr):
             def __init__(self, **kwargs):

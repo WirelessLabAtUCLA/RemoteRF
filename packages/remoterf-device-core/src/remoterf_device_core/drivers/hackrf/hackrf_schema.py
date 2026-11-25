@@ -47,6 +47,15 @@ VALID_FILTER_BANDWIDTHS = (
     28_000_000,
 )
 
+# Settings every reservation starts from.
+_DEFAULT_TXVGA_GAIN = 0
+_DEFAULT_LNA_GAIN = 16
+_DEFAULT_VGA_GAIN = 16
+_DEFAULT_CENTER_FREQ_HZ = 100_000_000
+_DEFAULT_SAMPLE_RATE = 20_000_000
+_DEFAULT_FILTER_BANDWIDTH_HZ = 15_000_000
+_DEFAULT_SAMPLE_COUNT_LIMIT = 0
+
 
 def _require_hackrf():
     try:
@@ -412,10 +421,8 @@ class HackRFSchema(DeviceSchema):
         """Stop an active HackRF transmission."""
         if not getattr(self.device, "_remoterf_tx_active", False):
             return
-        try:
-            self.device.stop_tx()
-        finally:
-            self.device._remoterf_tx_active = False
+        self.device.stop_tx()
+        self.device._remoterf_tx_active = False
 
     @idl_expose(kind="call")
     def call_clear_buffer(self):
@@ -429,8 +436,14 @@ class HackRFSchema(DeviceSchema):
     @idl_expose(kind="call")
     def call_close(self):
         """Safely end this remote TX use without closing the server-owned radio."""
-        self.call_stop_tx()
-        self.call_clear_buffer()
+        # Empty the retained payload before stopping so _tx_callback immediately
+        # returns 1 even if stop_tx() fails.
+        self.device._remoterf_tx_payload = b""
+        try:
+            self.call_stop_tx()
+        finally:
+            self.device.buffer = bytearray()
+            self.device._remoterf_tx_payload = b""
         # Calling pyhackrf2.close() here can tear down the shared production
         # device and has been observed to crash its native libhackrf path.
         return None
@@ -440,15 +453,27 @@ class HackRFSchema(DeviceSchema):
         turn off the antenna bias tee and front-end amplifier."""
         if self.device is None:
             return
-        # Each step runs even if an earlier one fails: DC on the antenna port or
-        # a stray amp must not carry over to the next holder.
-        try:
-            self.call_close()
-        finally:
+        # Each step runs even if an earlier one fails: DC on the antenna port,
+        # a stray amp, or high TX gain must not carry over to the next holder.
+        errors = []
+        for step in (
+            self.call_close,
+            lambda: self.set_bias_tee_on(False),
+            lambda: self.set_amplifier_on(False),
+            lambda: self.set_txvga_gain(_DEFAULT_TXVGA_GAIN),
+            lambda: self.set_lna_gain(_DEFAULT_LNA_GAIN),
+            lambda: self.set_vga_gain(_DEFAULT_VGA_GAIN),
+            lambda: self.set_center_freq(_DEFAULT_CENTER_FREQ_HZ),
+            lambda: self.set_sample_rate(_DEFAULT_SAMPLE_RATE),
+            lambda: self.set_filter_bandwidth(_DEFAULT_FILTER_BANDWIDTH_HZ),
+            lambda: self.set_sample_count_limit(_DEFAULT_SAMPLE_COUNT_LIMIT),
+        ):
             try:
-                self.set_bias_tee_on(False)
-            finally:
-                self.set_amplifier_on(False)
+                step()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     @idl_expose(kind="call")
     def call_enumerate(self):

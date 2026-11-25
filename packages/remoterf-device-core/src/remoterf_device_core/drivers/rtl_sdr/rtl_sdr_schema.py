@@ -123,6 +123,13 @@ def _restore_defaults(adapter: _RtlSdrAdapter, *, dithering: bool = _DEFAULT_DIT
         setter = getattr(native, f"set_{name}", None)
         if callable(setter):
             def step(setter=setter, name=name, value=value):
+                if name in ("direct_sampling", "offset_tuning"):
+                    # R820T/R820T2/R828D reject set_offset_tuning(False) and close the device.
+                    getter = getattr(native, f"get_{name}", None)
+                    current = getter() if callable(getter) else adapter.control_state.get(name)
+                    if not current:
+                        adapter.control_state[name] = value
+                        return
                 setter(value)
                 adapter.control_state[name] = value
             attempt(step)
@@ -202,7 +209,9 @@ def _connect_rtl_sdr(
         ),
     )
     # Best effort: the first reservation after a start sees the same defaults.
-    _restore_defaults(adapter, dithering=dithering_enabled)
+    error = _restore_defaults(adapter, dithering=dithering_enabled)
+    if error is not None and getattr(native, "device_opened", True) is False:
+        raise error
     return adapter
 
 

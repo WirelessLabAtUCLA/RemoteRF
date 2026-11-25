@@ -288,6 +288,84 @@ class HackRFSchemaTests(unittest.TestCase):
 
         self.assertFalse(native._amplifier_on)
 
+    def test_stop_tx_failure_empties_payload_keeps_tx_active_and_runs_remaining_reset(self):
+        schema, native = _bound_schema()
+        schema.dispatch("set_bias_tee_on", {"value": True})
+        schema.dispatch("set_amplifier_on", {"value": True})
+        schema.dispatch("set_txvga_gain", {"value": 47})
+        schema.dispatch("set_sample_count_limit", {"value": 65_536})
+        schema.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema.dispatch("call_start_tx", {})
+
+        with patch.object(native, "stop_tx", side_effect=OSError("usb stop_tx failed")):
+            with self.assertRaisesRegex(OSError, "usb stop_tx failed"):
+                schema.reset_for_next_holder()
+
+        self.assertEqual(native._remoterf_tx_payload, b"")
+        self.assertEqual(native.buffer, bytearray())
+        transfer_buffer = (ctypes.c_byte * 8)()
+        transfer = _FakeTransfer(
+            ctypes.cast(transfer_buffer, ctypes.POINTER(ctypes.c_byte)),
+            8,
+            0,
+        )
+        self.assertEqual(native._cfunc_tx_callback(ctypes.byref(transfer)), 1)
+        self.assertEqual(transfer.valid_length, 0)
+
+        self.assertTrue(native._remoterf_tx_active)
+        self.assertFalse(native.bias_tee_on)
+        self.assertFalse(native._amplifier_on)
+        self.assertEqual(native.txvga_gain, 0)
+        self.assertEqual(native.sample_count_limit, 0)
+        with self.assertRaisesRegex(RuntimeError, "stop HackRF TX before reading"):
+            schema.dispatch("call_read_samples", {"num_samples": 16})
+
+        schema.dispatch("call_stop_tx", {})
+        self.assertFalse(native._remoterf_tx_active)
+        self.assertEqual(native.tx_stop_count, 1)
+
+    def test_reset_for_next_holder_restores_gains_tuning_filter_and_sample_limit_with_tx_gain_first(self):
+        schema, _native = _bound_schema()
+        schema.dispatch("set_txvga_gain", {"value": 47})
+        schema.dispatch("set_lna_gain", {"value": 40})
+        schema.dispatch("set_vga_gain", {"value": 62})
+        schema.dispatch("set_center_freq", {"value": 2_450_000_000})
+        schema.dispatch("set_sample_rate", {"value": 2_000_000})
+        schema.dispatch("set_filter_bandwidth", {"value": 1_750_000})
+        schema.dispatch("set_sample_count_limit", {"value": 65_536})
+
+        order = []
+        orig_txvga = schema.set_txvga_gain
+        orig_lna = schema.set_lna_gain
+        orig_freq = schema.set_center_freq
+        orig_rate = schema.set_sample_rate
+        orig_bw = schema.set_filter_bandwidth
+
+        def record(name, fn):
+            def wrapped(value):
+                order.append(name)
+                return fn(value)
+            return wrapped
+
+        with (
+            patch.object(schema, "set_txvga_gain", side_effect=record("txvga", orig_txvga)),
+            patch.object(schema, "set_lna_gain", side_effect=record("lna", orig_lna)),
+            patch.object(schema, "set_center_freq", side_effect=record("freq", orig_freq)),
+            patch.object(schema, "set_sample_rate", side_effect=record("rate", orig_rate)),
+            patch.object(schema, "set_filter_bandwidth", side_effect=record("bw", orig_bw)),
+        ):
+            schema.reset_for_next_holder()
+
+        self.assertEqual(order[0], "txvga")
+        self.assertLess(order.index("rate"), order.index("bw"))
+        self.assertEqual(schema.dispatch("get_txvga_gain", {}), 0)
+        self.assertEqual(schema.dispatch("get_lna_gain", {}), 16)
+        self.assertEqual(schema.dispatch("get_vga_gain", {}), 16)
+        self.assertEqual(schema.dispatch("get_center_freq", {}), 100_000_000)
+        self.assertEqual(schema.dispatch("get_sample_rate", {}), 20_000_000)
+        self.assertEqual(schema.dispatch("get_filter_bandwidth", {}), 15_000_000)
+        self.assertEqual(schema.dispatch("get_sample_count_limit", {}), 0)
+
     def test_read_samples_refused_while_tx_active(self):
         schema, native = _bound_schema()
         native._remoterf_tx_active = True
