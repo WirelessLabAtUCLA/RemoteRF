@@ -1231,10 +1231,11 @@ def test_throughput_test_tcp_and_udp_parsing_with_fake_job_runner(monkeypatch, t
     real_launch = ctx.processes.launch
 
     def fake_launch(argv, **kwargs):
-        if argv[0] == str(fake_iperf):
-            recorded_argvs.append(argv)
+        if str(fake_iperf) in argv:
+            idx = argv.index(str(fake_iperf))
+            recorded_argvs.append(argv[idx:])
             rc, body = next(responses)
-            argv = [sys.executable, "-c", f"import sys; sys.stdout.write({body!r}); sys.exit({rc})"]
+            argv = [*argv[:idx], sys.executable, "-c", f"import sys; sys.stdout.write({body!r}); sys.exit({rc})"]
         return real_launch(argv, **kwargs)
 
     ctx.processes.launch = fake_launch
@@ -1933,3 +1934,448 @@ def test_csi_burst_stops_when_the_ring_shrinks(tmp_path):
     finally:
         timer.join()
     assert result["ok"] is False
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_file(path, timeout_s=5.0):
+    deadline = time.monotonic() + timeout_s
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return path.exists()
+
+
+@pytest.mark.parametrize("trigger", ["timeout", "cancelled"])
+def test_capture_air_pcap_stops_process_before_unlinking_tmp_pcap(monkeypatch, tmp_path, trigger):
+    pid_file = tmp_path / "tcpdump.pid"
+    race_file = tmp_path / "unlinked_while_alive"
+    fake_tcpdump = _write_python_wrapper_script(
+        tmp_path,
+        "fake-tcpdump-slow",
+        f"""
+import os, signal, sys, time
+from pathlib import Path
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+args = sys.argv[1:]
+out = Path(args[args.index("-w") + 1])
+out.write_bytes(b"pcap-header")
+Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding="utf-8")
+deadline = time.monotonic() + 10.0
+while time.monotonic() < deadline:
+    if not out.exists():
+        Path({str(race_file)!r}).write_text("unlinked", encoding="utf-8")
+        break
+    time.sleep(0.02)
+""",
+    )
+    monkeypatch.setenv("REMOTERF_OAI_ALLOW_PCAP", "1")
+    monkeypatch.setenv("REMOTERF_OAI_TCPDUMP", str(fake_tcpdump))
+    monkeypatch.setattr(oai, "has_cap_net_raw", lambda executable=None: True)
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: "10.0.0.2")
+    procs = AsyncProcesses()
+    ctx = context(tmp_path, processes=procs)
+    adapter = oai.OAI(ctx)
+    adapter.start("ue", {})
+
+    cancel_thread = None
+    if trigger == "timeout":
+        monkeypatch.setattr(oai, "PCAP_GRACE_S", 0.0)
+        duration_s = 1
+    else:
+        duration_s = 5
+
+        def trigger_cancel():
+            if _wait_for_file(pid_file):
+                ctx.cancelled.set()
+
+        cancel_thread = threading.Thread(target=trigger_cancel, daemon=True)
+        cancel_thread.start()
+
+    try:
+        res = adapter.call("capture_air_pcap", {"duration_s": duration_s, "max_bytes": 4096})
+        if cancel_thread is not None:
+            cancel_thread.join(timeout=5.0)
+        assert res == {"ok": False, "error": trigger}
+        assert _wait_for_file(pid_file, timeout_s=1.0)
+        tcpdump_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        assert procs._procs["job-0"].poll() is not None
+        assert not _pid_alive(tcpdump_pid)
+        assert not race_file.exists()
+        assert not (tmp_path / ".capture-1.pcap.tmp").exists()
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text(encoding="utf-8").strip()), 9)
+            except OSError:
+                pass
+        adapter.stop()
+
+
+def test_capture_air_pcap_keeps_tmp_pcap_if_process_does_not_exit(monkeypatch, tmp_path):
+    fake_tcpdump = tmp_path / "tcpdump"
+    fake_tcpdump.write_text("", encoding="utf-8")
+    monkeypatch.setenv("REMOTERF_OAI_ALLOW_PCAP", "1")
+    monkeypatch.setenv("REMOTERF_OAI_TCPDUMP", str(fake_tcpdump))
+    monkeypatch.setattr(oai, "has_cap_net_raw", lambda executable=None: True)
+    monkeypatch.setattr(oai, "FINITE_JOB_STOP_WAIT_S", 0.05, raising=False)
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: "10.0.0.2")
+    procs = Processes()
+    ctx = context(tmp_path, processes=procs)
+    tmp_pcap = tmp_path / ".capture-1.pcap.tmp"
+
+    def stuck_launch(argv, **kwargs):
+        procs.launches.append((argv, kwargs))
+        if kwargs.get("required_while_running"):
+            return "owned-process"
+        tmp_pcap.write_bytes(b"live-capture")
+        ctx.cancelled.set()
+        return "stuck-job"
+
+    procs.launch = stuck_launch
+    procs.snapshot = lambda: {
+        "processes": [
+            {"id": "owned-process", "returncode": None, "logs_drained": False},
+            {"id": "stuck-job", "returncode": None, "logs_drained": False},
+        ]
+    }
+    adapter = oai.OAI(ctx)
+    adapter.start("ue", {})
+
+    res = adapter.call("capture_air_pcap", {"duration_s": 2, "max_bytes": 4096})
+    assert res == {"ok": False, "error": "cancelled"}
+    assert tmp_pcap.exists()
+
+
+def test_capture_air_pcap_rejects_duration_exceeding_action_timeout_bound(monkeypatch, tmp_path):
+    fake_tcpdump = tmp_path / "tcpdump"
+    fake_tcpdump.write_text("", encoding="utf-8")
+    monkeypatch.setenv("REMOTERF_OAI_ALLOW_PCAP", "1")
+    monkeypatch.setenv("REMOTERF_OAI_TCPDUMP", str(fake_tcpdump))
+    monkeypatch.setattr(oai, "has_cap_net_raw", lambda executable=None: True)
+    ctx, adapter = started_ue(monkeypatch, tmp_path)
+    # Default action_timeout_s=30 -> bound=25.0, PCAP_GRACE_S=5.0 -> max duration_s=20.
+    for duration_s in (21, 60):
+        res = adapter.call("capture_air_pcap", {"duration_s": duration_s})
+        assert res["ok"] is False and res["error"] == "invalid_parameters"
+    assert len(ctx.processes.launches) == 1
+
+
+@pytest.mark.parametrize("trigger", ["timeout", "cancelled"])
+def test_throughput_test_stops_process_on_timeout_and_cancel(monkeypatch, tmp_path, trigger):
+    pid_file = tmp_path / "iperf3.pid"
+    ignore_sigterm = "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if trigger == "timeout" else ""
+    fake_iperf = _write_python_wrapper_script(
+        tmp_path,
+        "fake-iperf3-slow",
+        f"""
+import os, signal, time
+from pathlib import Path
+{ignore_sigterm}Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding="utf-8")
+time.sleep(10.0)
+""",
+    )
+    monkeypatch.setenv("REMOTERF_OAI_DN_IP", "192.168.70.135")
+    monkeypatch.setenv("REMOTERF_OAI_IPERF3", str(fake_iperf))
+    ue_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(oai, "interface_ipv4", lambda name: "10.0.0.2")
+    procs = AsyncProcesses()
+    ctx = context(tmp_path, processes=procs)
+    adapter = oai.OAI(ctx)
+    adapter.start("ue", {})
+
+    cancel_thread = None
+    if trigger == "timeout":
+        monkeypatch.setattr(oai, "TRAFFIC_GRACE_S", -0.5)
+        duration_s = 1
+    else:
+        duration_s = 5
+
+        def trigger_cancel():
+            if _wait_for_file(pid_file):
+                ctx.cancelled.set()
+
+        cancel_thread = threading.Thread(target=trigger_cancel, daemon=True)
+        cancel_thread.start()
+
+    try:
+        res = adapter.call("throughput_test", {"duration_s": duration_s})
+        if cancel_thread is not None:
+            cancel_thread.join(timeout=5.0)
+        assert res == {"ok": False, "error": trigger}
+        assert _wait_for_file(pid_file, timeout_s=1.0)
+        iperf_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        assert procs._procs["job-0"].poll() is not None
+        assert not _pid_alive(iperf_pid)
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text(encoding="utf-8").strip()), 9)
+            except OSError:
+                pass
+        adapter.stop()
+
+
+def test_throughput_test_rejects_duration_exceeding_action_timeout_bound(monkeypatch, tmp_path):
+    fake_iperf = tmp_path / "iperf3"
+    fake_iperf.write_text("", encoding="utf-8")
+    monkeypatch.setenv("REMOTERF_OAI_DN_IP", "192.168.70.135")
+    monkeypatch.setenv("REMOTERF_OAI_IPERF3", str(fake_iperf))
+    ctx, adapter = started_ue(monkeypatch, tmp_path)
+    # Default action_timeout_s=30 -> bound=25.0, TRAFFIC_GRACE_S=10.0 -> max duration_s=15.
+    for duration_s in (16, 60):
+        res = adapter.call("throughput_test", {"duration_s": duration_s})
+        assert res["ok"] is False and res["error"] == "invalid_parameters"
+    assert len(ctx.processes.launches) == 1
+
+
+def test_iperf_rejects_student_port_and_uses_operator_env_port(monkeypatch, tmp_path):
+    argv_file = tmp_path / "iperf_argv.json"
+    fake_iperf = _write_python_wrapper_script(
+        tmp_path,
+        "fake-iperf3-port",
+        f"""
+import json, sys
+from pathlib import Path
+Path({str(argv_file)!r}).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+print(json.dumps({{"end": {{"sum_received": {{"bytes": 1000, "bits_per_second": 8000000.0, "seconds": 1.0}}}}}}))
+""",
+    )
+    monkeypatch.setenv("REMOTERF_OAI_DN_IP", "192.168.70.135")
+    monkeypatch.setenv("REMOTERF_OAI_IPERF3", str(fake_iperf))
+    monkeypatch.setenv("REMOTERF_OAI_IPERF3_PORT", "6201")
+    ctx, adapter = started_ue(monkeypatch, tmp_path)
+
+    for action in ("throughput_test", "start_traffic"):
+        res = adapter.call(action, {"duration_s": 1, "port": 22})
+        assert res["ok"] is False and res["error"] == "invalid_parameters"
+    assert len(ctx.processes.launches) == 1
+
+    ok_res = adapter.call("throughput_test", {"duration_s": 1})
+    assert ok_res["ok"] is True
+    seen = json.loads(argv_file.read_text(encoding="utf-8"))
+    assert seen[seen.index("-p") + 1] == "6201"
+
+    monkeypatch.setenv("REMOTERF_OAI_IPERF3_PORT", "70000")
+    bad_cfg = adapter.call("throughput_test", {"duration_s": 1})
+    assert bad_cfg["ok"] is False and bad_cfg["error"] == "invalid_configuration"
+
+
+@pytest.mark.parametrize("action,params", [
+    ("throughput_test", {"direction": []}),
+    ("throughput_test", {"protocol": {}}),
+    ("start_traffic", {"direction": {}}),
+    ("start_traffic", {"protocol": []}),
+])
+def test_iperf_rejects_unhashable_direction_and_protocol_as_invalid_parameters(
+    monkeypatch, tmp_path, action, params
+):
+    ctx, adapter = started_ue(monkeypatch, tmp_path)
+    res = adapter.call(action, params)
+    assert res["ok"] is False and res["error"] == "invalid_parameters"
+    assert len(ctx.processes.launches) == 1
+
+
+def test_set_live_control_detects_usage_rejection(monkeypatch, tmp_path):
+    with FakeTelnetServer(monkeypatch, reply_fn=lambda cmd: "Usage: mac ri <val>") as srv:
+        args = f"--continuous-tx --telnetsrv --telnetsrv.listenport {srv.port}"
+        _, adapter = started_gnb(monkeypatch, tmp_path, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+        res = adapter.call("set_live_control", {"ri": 1})
+        assert res["ok"] is False and res["error"] == "telnet_command_rejected"
+        adapter.stop()
+
+
+def test_set_live_control_eof_after_echo_returns_telnet_disconnected(monkeypatch, tmp_path):
+    server_socks = []
+    threads = []
+
+    def fake_connect(address, timeout=None, *args, **kwargs):
+        client_sock, server_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        if timeout is not None:
+            client_sock.settimeout(timeout)
+        server_socks.append(server_sock)
+
+        def handle():
+            try:
+                server_sock.settimeout(2.0)
+                server_sock.sendall(b"softmodem_gnb> ")
+                data = server_sock.recv(4096)
+                if data:
+                    cmd = data.decode("utf-8", errors="replace").strip()
+                    # Echo command and close without sending a prompt.
+                    server_sock.sendall((cmd + "\r\n").encode("utf-8"))
+            except OSError:
+                pass
+            finally:
+                server_sock.close()
+
+        t = threading.Thread(target=handle, daemon=True)
+        threads.append(t)
+        t.start()
+        return client_sock
+
+    monkeypatch.setattr(oai.telnet.socket, "create_connection", fake_connect)
+    args = "--continuous-tx --telnetsrv --telnetsrv.listenport 19091"
+    _, adapter = started_gnb(monkeypatch, tmp_path, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+    try:
+        res = adapter.call("set_live_control", {"max_ldpc_iterations": 8})
+        assert res["ok"] is False and res["error"] == "telnet_disconnected"
+    finally:
+        for sock in server_socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        for t in threads:
+            t.join(timeout=2.0)
+        adapter.stop()
+
+
+def test_set_live_control_rank_uses_min_of_ru_and_pdsch_ports(monkeypatch, tmp_path):
+    with FakeTelnetServer(monkeypatch) as srv:
+        args = (
+            f"--continuous-tx --telnetsrv --telnetsrv.listenport {srv.port} "
+            "--gNBs.[0].pdsch_AntennaPorts_XP 1 --RUs.[0].nb_tx 2 --RUs.[0].nb_rx 2"
+        )
+        _, adapter = started_gnb(monkeypatch, tmp_path, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+        rejected = adapter.call("set_live_control", {"ri": 2})
+        assert rejected["ok"] is False and rejected["error"] == "invalid_parameters"
+        assert srv.commands == []
+        allowed = adapter.call("set_live_control", {"ri": 1})
+        assert allowed["ok"] is True
+        adapter.stop()
+
+
+def test_set_live_control_tracks_ri_and_enforces_tpmi_across_calls(monkeypatch, tmp_path):
+    with FakeTelnetServer(monkeypatch) as srv:
+        args = (
+            f"--continuous-tx --telnetsrv --telnetsrv.listenport {srv.port} "
+            "--gNBs.[0].pdsch_AntennaPorts_XP 2 --gNBs.[0].pusch_AntennaPorts 2 "
+            "--RUs.[0].nb_tx 2 --RUs.[0].nb_rx 2"
+        )
+        _, adapter = started_gnb(monkeypatch, tmp_path, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+        # Before ri is set (rank unknown), permissive 2-port max (5) applies to tpmi.
+        assert adapter.call("set_live_control", {"tpmi": 5})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 6})["error"] == "invalid_parameters"
+
+        # Setting ri=2 then tpmi=5 in a separate call must enforce rank-2 max tpmi=2.
+        assert adapter.call("set_live_control", {"ri": 2})["ok"] is True
+        sent_before = len(srv.commands)
+        assert adapter.call("set_live_control", {"tpmi": 5})["error"] == "invalid_parameters"
+        assert len(srv.commands) == sent_before
+        assert adapter.call("set_live_control", {"tpmi": 2})["ok"] is True
+
+        # Setting ri=1 allows rank-1 tpmi=5 on a subsequent call; switching back to ri=2 tightens again.
+        assert adapter.call("set_live_control", {"ri": 1})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 5})["ok"] is True
+        assert adapter.call("set_live_control", {"ri": 2})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 3})["error"] == "invalid_parameters"
+        adapter.stop()
+        assert adapter._live_ri is None
+
+
+def test_set_live_control_4port_unknown_ri_uses_permissive_tpmi_bound(monkeypatch, tmp_path):
+    with FakeTelnetServer(monkeypatch) as srv:
+        args = (
+            f"--continuous-tx --telnetsrv --telnetsrv.listenport {srv.port} "
+            "--gNBs.[0].pdsch_AntennaPorts_XP 2 --gNBs.[0].pdsch_AntennaPorts_N1 2 "
+            "--gNBs.[0].pusch_AntennaPorts 4 --RUs.[0].nb_tx 4 --RUs.[0].nb_rx 4"
+        )
+        _, adapter = started_gnb(monkeypatch, tmp_path, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+        # With ri unknown on a 4-port cell, tpmi alone is accepted up to the old maximum (27).
+        assert adapter.call("set_live_control", {"tpmi": 10})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 27})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 28})["error"] == "invalid_parameters"
+        assert "mac tpmi 28" not in srv.commands
+
+        # Once ri is confirmed, the tight per-rank bound applies across calls.
+        assert adapter.call("set_live_control", {"ri": 4})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 5})["error"] == "invalid_parameters"
+        assert adapter.call("set_live_control", {"tpmi": 4})["ok"] is True
+        assert adapter.call("set_live_control", {"ri": 2})["ok"] is True
+        assert adapter.call("set_live_control", {"tpmi": 22})["error"] == "invalid_parameters"
+        assert adapter.call("set_live_control", {"tpmi": 21})["ok"] is True
+        adapter.stop()
+        assert adapter._live_ri is None
+
+
+def test_set_live_control_partial_failure_after_ri_clears_tracker(monkeypatch, tmp_path):
+    fail_tpmi = {"active": False}
+
+    def reply_fn(cmd):
+        if fail_tpmi["active"] and cmd.startswith("mac tpmi "):
+            return "ERROR: failed to apply tpmi"
+        return "OK"
+
+    with FakeTelnetServer(monkeypatch, reply_fn=reply_fn) as srv:
+        args = (
+            f"--continuous-tx --telnetsrv --telnetsrv.listenport {srv.port} "
+            "--gNBs.[0].pdsch_AntennaPorts_XP 2 --gNBs.[0].pusch_AntennaPorts 2 "
+            "--RUs.[0].nb_tx 2 --RUs.[0].nb_rx 2"
+        )
+        _, adapter = started_gnb(monkeypatch, tmp_path, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+
+        # Confirm ri=2 so tight rank-2 bound (2) is active.
+        assert adapter.call("set_live_control", {"ri": 2})["ok"] is True
+        assert adapter._live_ri == 2
+        assert adapter.call("set_live_control", {"tpmi": 5})["error"] == "invalid_parameters"
+
+        # Validation error before telnet execution keeps the tracked ri intact.
+        assert adapter.call("set_live_control", {"ri": 2, "tpmi": 3})["error"] == "invalid_parameters"
+        assert adapter._live_ri == 2
+
+        # A partial failure after "mac ri" clears the tracker to None instead of guessing.
+        fail_tpmi["active"] = True
+        partial = adapter.call("set_live_control", {"ri": 1, "tpmi": 5})
+        assert partial["ok"] is False and partial["error"] == "telnet_command_rejected"
+        assert "mac ri 1" in srv.commands
+        assert adapter._live_ri is None
+
+        # With tracker cleared (rank unknown), permissive 2-port max (5) applies again.
+        fail_tpmi["active"] = False
+        assert adapter.call("set_live_control", {"tpmi": 5})["ok"] is True
+        assert adapter._live_ri is None
+
+        # Same when moving ri=1 -> ri=2 and "mac tpmi" fails after "mac ri 2": tracker clears to None.
+        assert adapter.call("set_live_control", {"ri": 1})["ok"] is True
+        assert adapter._live_ri == 1
+        fail_tpmi["active"] = True
+        partial2 = adapter.call("set_live_control", {"ri": 2, "tpmi": 2})
+        assert partial2["ok"] is False and partial2["error"] == "telnet_command_rejected"
+        assert "mac ri 2" in srv.commands
+        assert adapter._live_ri is None
+
+        # A subsequent confirmed ri restores tight tracking.
+        fail_tpmi["active"] = False
+        assert adapter.call("set_live_control", {"ri": 2})["ok"] is True
+        assert adapter._live_ri == 2
+        assert adapter.call("set_live_control", {"tpmi": 3})["error"] == "invalid_parameters"
+        adapter.stop()
+
+    # Partial disconnect after "mac ri" also clears the tracked ri.
+    with FakeTelnetServer(monkeypatch, close_after=2) as srv:
+        disc_dir = tmp_path / "disc"
+        disc_dir.mkdir()
+        args = (
+            f"--continuous-tx --telnetsrv --telnetsrv.listenport {srv.port} "
+            "--gNBs.[0].pdsch_AntennaPorts_XP 2 --gNBs.[0].pusch_AntennaPorts 2 "
+            "--RUs.[0].nb_tx 2 --RUs.[0].nb_rx 2"
+        )
+        _, adapter = started_gnb(monkeypatch, disc_dir, conf_path=SAMPLES / "gnb-band41-1x1.conf", args=args)
+        assert adapter.call("set_live_control", {"ri": 1})["ok"] is True
+        assert adapter._live_ri == 1
+        partial = adapter.call("set_live_control", {"ri": 2, "tpmi": 2})
+        assert partial["ok"] is False and partial["error"] == "telnet_disconnected"
+        assert "mac ri 2" in srv.commands
+        assert adapter._live_ri is None
+        adapter.stop()

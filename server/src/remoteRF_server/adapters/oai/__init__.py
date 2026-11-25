@@ -144,10 +144,46 @@ DEFAULT_PCAP_SECONDS = 10
 MAX_PCAP_BYTES = 64 * 1024 * 1024
 DEFAULT_PCAP_BYTES = 16 * 1024 * 1024
 PCAP_GRACE_S = 5.0
+FINITE_JOB_STOP_WAIT_S = 3.5
 CAP_NET_RAW_BIT = 13
 # SIGALRM ends the xApp at duration_s; the bounded wait is the fallback.
 XAPP_BOOTSTRAP = ("import runpy,signal,sys;signal.alarm(int(sys.argv[2]));"
                   "sys.argv=sys.argv[1:2];runpy.run_path(sys.argv[0],run_name='__main__')")
+# Supervised finite job wrapper: watches stop_file, kills child process group on timeout/cancel.
+FINITE_JOB_BOOTSTRAP = (
+    "import os,signal,subprocess,sys,time\n"
+    "sf=sys.argv[1]\n"
+    "if os.path.exists(sf): sys.exit(143)\n"
+    "try:\n"
+    " p=subprocess.Popen(sys.argv[2:],start_new_session=True)\n"
+    "except OSError as exc:\n"
+    " sys.stderr.write(str(exc)+'\\n');sys.exit(127)\n"
+    "stopped=False;dl=0.0\n"
+    "while p.poll() is None:\n"
+    " if not stopped and os.path.exists(sf):\n"
+    "  try: os.killpg(p.pid,signal.SIGTERM)\n"
+    "  except (ProcessLookupError,PermissionError): pass\n"
+    "  stopped=True;dl=time.monotonic()+1.0\n"
+    " elif stopped and time.monotonic()>=dl:\n"
+    "  try: os.killpg(p.pid,signal.SIGKILL)\n"
+    "  except (ProcessLookupError,PermissionError): pass\n"
+    "  break\n"
+    " time.sleep(0.02)\n"
+    "try: p.wait(timeout=1.0)\n"
+    "except subprocess.TimeoutExpired:\n"
+    " try: os.killpg(p.pid,signal.SIGKILL)\n"
+    " except (ProcessLookupError,PermissionError): pass\n"
+    " p.wait()\n"
+    "if stopped:\n"
+    " gdl=time.monotonic()+1.0\n"
+    " while time.monotonic()<gdl:\n"
+    "  try: os.killpg(p.pid,0)\n"
+    "  except (ProcessLookupError,PermissionError): break\n"
+    "  try: os.killpg(p.pid,signal.SIGKILL)\n"
+    "  except (ProcessLookupError,PermissionError): break\n"
+    "  time.sleep(0.02)\n"
+    "sys.exit(p.returncode if p.returncode is not None else 1)\n"
+)
 # Supervised background iperf3 wrapper: watches stop_file, sends SIGINT for clean JSON flush.
 TRAFFIC_BOOTSTRAP = (
     "import os,signal,subprocess,sys,time\n"
@@ -184,34 +220,44 @@ TRAFFIC_BOOTSTRAP = (
 PCAP_BOOTSTRAP = (
     "import os,signal,subprocess,sys,time\n"
     "out,dur,maxb=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])\n"
+    "aborted=False\n"
+    "def _on_term(_s,_f):\n"
+    " global aborted\n"
+    " aborted=True\n"
+    "signal.signal(signal.SIGTERM,_on_term)\n"
+    "if aborted: sys.exit(143)\n"
     "try:\n"
     " p=subprocess.Popen(sys.argv[4:],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)\n"
     "except OSError as exc:\n"
     " sys.stderr.write(str(exc)+'\\n');sys.exit(127)\n"
     "dl=time.monotonic()+dur\n"
     "stopped=False\n"
+    "abort_dl=False\n"
     "while p.poll() is None:\n"
     " try: sz=os.path.getsize(out)\n"
     " except OSError: sz=0\n"
-    " if time.monotonic()>=dl or sz>=maxb:\n"
+    " if aborted or time.monotonic()>=dl or sz>=maxb:\n"
     "  if not stopped:\n"
     "   try: p.send_signal(signal.SIGINT)\n"
     "   except ProcessLookupError: pass\n"
-    "   stopped=True;dl=time.monotonic()+3\n"
+    "   stopped=True;dl=time.monotonic()+(0.5 if aborted else 3)\n"
+    "   abort_dl=aborted\n"
+    "  elif aborted and not abort_dl:\n"
+    "   dl=min(dl,time.monotonic()+0.5);abort_dl=True\n"
     "  elif time.monotonic()>=dl:\n"
     "   try: p.kill()\n"
     "   except ProcessLookupError: pass\n"
     "   break\n"
     " time.sleep(0.05)\n"
     "try:\n"
-    " _,err=p.communicate(timeout=5)\n"
+    " _,err=p.communicate(timeout=2 if aborted else 5)\n"
     "except subprocess.TimeoutExpired:\n"
     " try: p.kill()\n"
     " except ProcessLookupError: pass\n"
     " _,err=p.communicate()\n"
     "sys.stderr.buffer.write(err)\n"
     "rc=p.returncode if p.returncode is not None else 1\n"
-    "sys.exit(0 if stopped and rc in (0,-2,130) else rc)\n"
+    "sys.exit((rc or 1) if aborted else (0 if stopped and rc in (0,-2,130) else rc))\n"
 )
 
 _SAFE_ACTIONS = frozenset({
@@ -463,10 +509,13 @@ class OAI:
         self._csi_count = 0
         self._ring_counts = {"ofdm_grid": 0, "constellation": 0}
         self._pcap_count = 0
+        self._finite_job_seq = 0
+        self._last_job_exited = True
         self._traffic = None
         self._traffic_used = False
         self._telnet = None
         self._telnet_endpoint = None
+        self._live_ri = None
 
     def validate(self, profile, configuration):
         if profile not in PROFILES or type(configuration) is not dict or configuration:
@@ -782,7 +831,7 @@ class OAI:
                 "metadata": metadata, "dropped": 0}
 
     def _validate_iperf_params(self, parameters, *, max_duration, default_duration):
-        allowed = {"duration_s", "direction", "protocol", "bitrate_mbps", "parallel", "port"}
+        allowed = {"duration_s", "direction", "protocol", "bitrate_mbps", "parallel"}
         unknown = sorted(set(parameters) - allowed)
         if unknown:
             return None, {"ok": False, "error": "invalid_parameters",
@@ -792,11 +841,11 @@ class OAI:
             return None, {"ok": False, "error": "invalid_parameters",
                           "detail": f"duration_s must be an integer in 1..{max_duration}"}
         direction = parameters.get("direction", "ul")
-        if direction not in {"ul", "dl"}:
+        if type(direction) is not str or direction not in ("ul", "dl"):
             return None, {"ok": False, "error": "invalid_parameters",
                           "detail": "direction must be 'ul' or 'dl'"}
         protocol = parameters.get("protocol", "tcp")
-        if protocol not in {"tcp", "udp"}:
+        if type(protocol) is not str or protocol not in ("tcp", "udp"):
             return None, {"ok": False, "error": "invalid_parameters",
                           "detail": "protocol must be 'tcp' or 'udp'"}
         bitrate = parameters.get("bitrate_mbps")
@@ -808,18 +857,17 @@ class OAI:
         if type(parallel) is not int or not 1 <= parallel <= 8:
             return None, {"ok": False, "error": "invalid_parameters",
                           "detail": "parallel must be an integer in 1..8"}
-        default_port = DEFAULT_IPERF3_PORT
+        port = DEFAULT_IPERF3_PORT
         env_port = os.environ.get("REMOTERF_OAI_IPERF3_PORT")
         if env_port is not None and env_port.strip():
             try:
-                default_port = int(env_port.strip(), 10)
+                port = int(env_port.strip(), 10)
             except ValueError:
                 return None, {"ok": False, "error": "invalid_configuration",
                               "detail": "REMOTERF_OAI_IPERF3_PORT must be an integer"}
-        port = parameters.get("port", default_port)
-        if type(port) is not int or not 1 <= port <= 65535:
-            return None, {"ok": False, "error": "invalid_parameters",
-                          "detail": "port must be an integer in 1..65535"}
+            if not 1 <= port <= 65535:
+                return None, {"ok": False, "error": "invalid_configuration",
+                              "detail": "REMOTERF_OAI_IPERF3_PORT must be an integer in 1..65535"}
         return {
             "duration_s": duration_s,
             "direction": direction,
@@ -859,27 +907,63 @@ class OAI:
             argv.extend(["-b", f"{spec['bitrate_mbps']}M"])
         return argv, dn_ip, None
 
+    def _stop_finite_job(self, processes, process_id, stop_file, timeout=None):
+        """Signal a finite-job wrapper to terminate its process group and wait for exit."""
+        stop_wait = FINITE_JOB_STOP_WAIT_S if timeout is None else timeout
+        try:
+            stop_file.write_text("stop", encoding="utf-8")
+        except OSError:
+            pass
+        stop_deadline = time.monotonic() + stop_wait
+        while True:
+            rows = processes.snapshot()["processes"]
+            row = next((r for r in rows if r["id"] == process_id), None)
+            if row is None or row["returncode"] is not None:
+                self._last_job_exited = True
+                stop_file.unlink(missing_ok=True)
+                return True
+            if time.monotonic() >= stop_deadline:
+                return False
+            time.sleep(0.05)
+
     def _run_finite_job(self, argv, env, wait):
         """Run one finite supervised job and return a plain dict without raising."""
+        self._last_job_exited = True
         processes = self._context.processes
-        if processes is None or not Path(self._context.work_dir).is_absolute():
+        work_dir = Path(self._context.work_dir)
+        if processes is None or not work_dir.is_absolute():
             return {"ok": False, "error": "supervision_unavailable"}
+        if self._context.cancelled.is_set():
+            return {"ok": False, "error": "cancelled"}
+        self._finite_job_seq += 1
+        stop_file = work_dir / f".finite-job-{self._finite_job_seq}.stop"
+        stop_file.unlink(missing_ok=True)
+        wrapped_argv = [
+            sys.executable, "-I", "-c", FINITE_JOB_BOOTSTRAP, str(stop_file), *argv,
+        ]
         try:
-            process_id = processes.launch(argv, env=env, cwd=Path(self._context.work_dir))
+            process_id = processes.launch(wrapped_argv, env=env, cwd=work_dir)
         except Exception:
             return {"ok": False, "error": "job_launch_failed"}
+        self._last_job_exited = False
         deadline = time.monotonic() + wait
         while True:
             if self._context.cancelled.is_set():
+                self._stop_finite_job(processes, process_id, stop_file)
                 return {"ok": False, "error": "cancelled"}
             rows = processes.snapshot()["processes"]
             row = next((r for r in rows if r["id"] == process_id), None)
             if row is None:
+                self._last_job_exited = True
+                stop_file.unlink(missing_ok=True)
                 return {"ok": False, "error": "job_missing"}
             done = time.monotonic() >= deadline
             if row["returncode"] is not None and (row["logs_drained"] or done):
+                self._last_job_exited = True
+                stop_file.unlink(missing_ok=True)
                 break
             if done:
+                self._stop_finite_job(processes, process_id, stop_file)
                 return {"ok": False, "error": "timeout"}
             time.sleep(0.05)
         return {
@@ -897,13 +981,20 @@ class OAI:
         )
         if err is not None:
             return err
+        action_bound = self._bound("action_timeout_s")
+        if spec["duration_s"] + TRAFFIC_GRACE_S > action_bound:
+            return {
+                "ok": False,
+                "error": "invalid_parameters",
+                "detail": f"duration_s + {TRAFFIC_GRACE_S:g}s grace exceeds action_timeout_s bound ({action_bound:g}s)",
+            }
         argv, dn_ip, err = self._prepare_iperf_argv(spec)
         if err is not None:
             return err
         if self._jobs >= MAX_JOBS:
             return {"ok": False, "error": "job_budget_exhausted"}
         self._jobs += 1
-        wait = min(spec["duration_s"] + TRAFFIC_GRACE_S, self._bound("action_timeout_s"))
+        wait = min(spec["duration_s"] + TRAFFIC_GRACE_S, action_bound)
         run = self._run_finite_job(argv, {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}, wait)
         if not run["ok"]:
             return run
@@ -1060,6 +1151,13 @@ class OAI:
         if type(duration_s) is not int or not 1 <= duration_s <= MAX_PCAP_SECONDS:
             return {"ok": False, "error": "invalid_parameters",
                     "detail": f"duration_s must be an integer in 1..{MAX_PCAP_SECONDS}"}
+        action_bound = self._bound("action_timeout_s")
+        if duration_s + PCAP_GRACE_S > action_bound:
+            return {
+                "ok": False,
+                "error": "invalid_parameters",
+                "detail": f"duration_s + {PCAP_GRACE_S:g}s grace exceeds action_timeout_s bound ({action_bound:g}s)",
+            }
         max_bytes = parameters.get("max_bytes", DEFAULT_PCAP_BYTES)
         if type(max_bytes) is not int or not 1024 <= max_bytes <= MAX_PCAP_BYTES:
             return {"ok": False, "error": "invalid_parameters",
@@ -1108,9 +1206,11 @@ class OAI:
             str(tmp_pcap), str(duration_s), str(max_bytes),
             tcpdump, "-i", ifname, "-U", "-n", "-s", str(snaplen), "-w", str(tmp_pcap),
         ]
-        wait = min(duration_s + PCAP_GRACE_S, self._bound("action_timeout_s"))
+        wait = min(duration_s + PCAP_GRACE_S, action_bound)
+        exited = True
         try:
             run = self._run_finite_job(argv, {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}, wait)
+            exited = self._last_job_exited
             if not run["ok"]:
                 return run
             stderr_text = run["stderr"][-OUTPUT_BYTES:].decode("utf-8", errors="replace")
@@ -1137,8 +1237,12 @@ class OAI:
                 "duration_s": duration_s,
                 "capped": size >= max_bytes,
             }
+        except BaseException:
+            exited = self._last_job_exited
+            raise
         finally:
-            tmp_pcap.unlink(missing_ok=True)
+            if exited:
+                tmp_pcap.unlink(missing_ok=True)
 
     def _set_live_control(self, parameters):
         if self._profile != "gnb":
@@ -1149,7 +1253,7 @@ class OAI:
             return {"ok": False, "error": "cell_config_unavailable",
                     "detail": cell_config.get("detail") or cell_config.get("error", "config unavailable")}
         try:
-            normalized, commands = validate_live_control(parameters, cell_config)
+            normalized, commands = validate_live_control(parameters, cell_config, current_ri=self._live_ri)
         except ControlError as exc:
             return {"ok": False, "error": exc.code, "detail": exc.detail, **exc.extra}
 
@@ -1172,10 +1276,14 @@ class OAI:
             self._telnet = TelnetClient(endpoint["host"], endpoint["port"], timeout_s=TELNET_TIMEOUT_S)
             self._telnet_endpoint = target
 
+        if "ri" in normalized:
+            self._live_ri = None
         try:
             executed = self._telnet.execute(commands, cancelled=self._context.cancelled)
         except ControlError as exc:
             return {"ok": False, "error": exc.code, "detail": exc.detail, **exc.extra}
+        if "ri" in normalized:
+            self._live_ri = normalized["ri"]
         return {"ok": True, "applied": normalized, "commands": executed}
 
     def _source(self, folder, name, text, suffix):
@@ -1403,6 +1511,7 @@ class OAI:
             self._telnet.close()
             self._telnet = None
             self._telnet_endpoint = None
+        self._live_ri = None
         self._traffic = None
         if self._context.processes is None:
             self._stopped = True

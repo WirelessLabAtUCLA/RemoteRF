@@ -25,7 +25,10 @@ LIVE_CONTROL_KEYS = frozenset({
 
 _IAC_RE = re.compile(rb"\xff(?:[\xfb-\xfe].|[\xf0-\xfa])")
 _PROMPT_LINE_RE = re.compile(r"^[A-Za-z0-9_.:/-]*>\s*$")
-_ERROR_RE = re.compile(r"\b(?:error|unknown\s+command|invalid|failed|not\s+found|usage:)\b", re.IGNORECASE)
+_ERROR_RE = re.compile(
+    r"\b(?:error|unknown\s+command|invalid|failed|not\s+found)\b|\busage:",
+    re.IGNORECASE,
+)
 
 
 class ControlError(Exception):
@@ -128,13 +131,13 @@ def _validate_prb_list(name: str, value, prb_count: int | None) -> list[int]:
 
 def _max_rank_from_config(cell_config: dict) -> int:
     mimo = cell_config.get("mimo_mode") or {}
-    nb_tx = mimo.get("nb_tx")
-    nb_rx = mimo.get("nb_rx")
-    pdsch = mimo.get("pdsch_antenna_ports")
-    if type(nb_tx) is int and nb_tx >= 1 and type(nb_rx) is int and nb_rx >= 1:
-        return max(1, min(nb_tx, nb_rx, 8))
-    if type(pdsch) is int and pdsch >= 1:
-        return max(1, min(pdsch, 8))
+    limits = [
+        val
+        for val in (mimo.get("nb_tx"), mimo.get("nb_rx"), mimo.get("pdsch_antenna_ports"))
+        if type(val) is int and val >= 1
+    ]
+    if limits:
+        return max(1, min(*limits, 8))
     return 4
 
 
@@ -146,17 +149,22 @@ def _max_tpmi_from_config(cell_config: dict, ri: int | None) -> int:
         nb_rx = mimo.get("nb_rx")
         if type(nb_tx) is int and nb_tx >= 1 and type(nb_rx) is int and nb_rx >= 1:
             ports = min(nb_tx, nb_rx)
-    # 3GPP TS 38.211 Table 6.3.1.5-1..7 codebook bounds.
+    # 3GPP TS 38.211 Table 6.3.1.5-1..7 codebook bounds; unknown ri uses permissive max.
     if ports == 1:
         return 0
     if ports == 2:
-        return 2 if ri == 2 else 5
+        return 5 if ri in (None, 1) else 2
     if ports == 4:
-        return {2: 21, 3: 6, 4: 4}.get(ri, 27)
+        return 27 if ri is None else {1: 27, 2: 21, 3: 6, 4: 4}.get(ri, 4)
     return 27
 
 
-def validate_live_control(parameters: dict, cell_config: dict) -> tuple[dict, list[str]]:
+def validate_live_control(
+    parameters: dict,
+    cell_config: dict,
+    *,
+    current_ri: int | None = None,
+) -> tuple[dict, list[str]]:
     """Validate bounded MAC/PHY controls strictly against cell config and 3GPP limits."""
     if type(parameters) is not dict or not parameters:
         raise ControlError("invalid_parameters", "at least one live control parameter is required")
@@ -216,7 +224,7 @@ def validate_live_control(parameters: dict, cell_config: dict) -> tuple[dict, li
         normalized["max_ldpc_iterations"] = val
         commands.append(f"phy max_ldpc_iterations {val}")
 
-    ri_val: int | None = None
+    ri_val: int | None = current_ri
     if "ri" in parameters:
         val = parameters["ri"]
         max_ri = _max_rank_from_config(cell_config)
@@ -298,8 +306,6 @@ class TelnetClient:
                 raise ControlError("telnet_disconnected", "OAI telnet connection failed") from None
             if not chunk:
                 self.close()
-                if buf:
-                    break
                 raise ControlError("telnet_disconnected", "OAI telnet server closed connection")
             buf.extend(chunk)
             if len(buf) > MAX_TELNET_REPLY:
@@ -309,7 +315,6 @@ class TelnetClient:
             last_line = cleaned.rsplit("\n", 1)[-1]
             if _PROMPT_LINE_RE.fullmatch(last_line):
                 return cleaned
-        return _IAC_RE.sub(b"", bytes(buf)).decode("utf-8", errors="replace").replace("\r\n", "\n")
 
     def _send_once(self, command: str, *, cancelled=None) -> str:
         if "\r" in command or "\n" in command:
