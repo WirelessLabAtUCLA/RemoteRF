@@ -63,11 +63,18 @@ generic USB-serial chip such as PL2303, CP210x or CH340 needs `port`), `baud`
 path** every second, so prefer a `/dev/serial/by-id/...` path: `ttyACMn` can
 change on a replug. Until a new fix arrives the last position is kept and
 reported with `stale: true` (`connected` says whether the receiver is there).
+`wait_for_fix` waits at most 120 s (it holds the device meanwhile).
+
+`gps_schema.py` is the server's built-in GPS driver
+(`remoterf_device_core.drivers.gps.gps_schema`) with only the `idl` import
+changed, so a server that ships the driver does not need this copy; keep the two
+files identical.
 
 ## Versions
 
-Bluetooth `driver_version` 0.1.4. remoterf-device-core ships the same driver
+GPS `driver_version` 0.2.0 (the built-in driver's version too). Bluetooth
+`driver_version` 0.1.4. remoterf-device-core ships the same driver
 built in (`remoterf_device_core.drivers.bluetooth`), so a server or host with
-remoterf-device-core 0.1.10 or newer does not need this copy. The Bluetooth
+remoterf-device-core 0.1.13 or newer does not need this copy. The Bluetooth
 driver wraps its lists of dicts (scan results) in `_JsonList` so that servers up to 1.3.0 send them as JSON; servers
 from 1.3.1 do that themselves, and the wrapper stays for the older ones.
