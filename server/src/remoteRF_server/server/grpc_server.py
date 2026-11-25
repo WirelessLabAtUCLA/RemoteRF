@@ -1588,9 +1588,18 @@ def cmd_diag(argv):
 
 
 def cmd_reload_devices(argv):
-    from . import device_manager
+    from . import device_manager, safe_restart
 
+    rc = safe_restart.gate_command(
+        argv,
+        action="reload devices",
+        db_path=reservation_handler.filepath,
+        device_names=lambda: safe_restart.live_device_names(db_path=reservation_handler.filepath),
+    )
+    if rc is not None:
+        return rc
     device_manager.reload_devices()
+    return 0
 
 
 def cmd_stop(argv):
@@ -1600,8 +1609,17 @@ def cmd_stop(argv):
 
 
 def cmd_restart(argv):
+    from . import safe_restart
     from .commands import RestartRequested
 
+    rc = safe_restart.gate_command(
+        argv,
+        action="restart",
+        db_path=reservation_handler.filepath,
+        device_names=lambda: safe_restart.live_device_names(db_path=reservation_handler.filepath),
+    )
+    if rc is not None:
+        return rc
     raise RestartRequested()
 
 

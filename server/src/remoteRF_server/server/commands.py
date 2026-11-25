@@ -106,11 +106,11 @@ def _table() -> list[Command]:
         # ---- server ----
         Command(("help", "h", "?"), "This list", _lazy(".commands", "cmd_help"), "Server"),
         Command(("status",), "What the server is doing", _daemon("cmd_status"), "Server", where=D),
-        Command(("restart",), "Restart the server", _daemon("cmd_restart"), "Server", where=D),
+        Command(("restart",), "Restart the server: restart [--safe [--within M] [--max-wait M] | --check [--within M]]", _daemon("cmd_restart"), "Server", where=D),
         Command(("stop", "quit", "exit", "q", "kill"), "Stop the server", _daemon("cmd_stop"), "Server", where=D),
         Command(("detach",), "Leave the console; the server keeps running", _daemon("cmd_detach"), "Server", where=D, console_only=True),
         Command(("clear", "cls"), "Clear the screen", _daemon("cmd_clear"), "Server", where=D, console_only=True),
-        Command(("reload devices",), "", _daemon("cmd_reload_devices"), "Server", where=D, hidden=True),
+        Command(("reload devices",), "Reload local devices: reload devices [--safe [--within M] [--max-wait M] | --check [--within M]]", _daemon("cmd_reload_devices"), "Server", where=D, hidden=True),
         # ---- devices ----
         Command(("devices list",), "Devices, with the host each is on", _shell("cmd_devices_list"), "Devices"),
         Command(("devices add",), "Add a device: guided (any type; Pluto USB/IP/PoE), or devices add <type> <name> --serial S [-y]; -h for all forms", _shell("cmd_devices_add"), "Devices", after="reload_devices"),
@@ -245,6 +245,15 @@ _SECTION_BLURB = {
     "Remote admin": "admins who reach this console from anywhere",
 }
 
+_SECTION_NOTES = {
+    "Server": (
+        "For upgrades or maintenance, use `restart --safe` (or `reload devices --safe`) "
+        "to wait until no reservation is live or starting soon. A plain `restart` disrupts "
+        "users mid-session (in-flight calls, Dynamic v2 sessions, and direct paths drop, "
+        "and local devices reopen or power-cycle), while reservations survive in the database."
+    ),
+}
+
 
 def _visible(in_daemon: bool) -> list[Command]:
     return [c for c in commands() if not c.hidden and (in_daemon or not c.console_only)]
@@ -300,6 +309,12 @@ def cmd_help(argv: list[str]) -> int:
             return 2
         rows = [c for c in _visible(_IN_DAEMON) if c.section == section]
         lines = [_SECTION_BLURB.get(section, ""), ""] + _columns([(prefix + c.names[0], c.help) for c in rows])
+        note = _SECTION_NOTES.get(section)
+        if note:
+            from ..common.utils.panel import MAX_CONTENT_WIDTH, MIN_CONTENT_WIDTH, _terminal_columns
+
+            width = max(MIN_CONTENT_WIDTH, min(MAX_CONTENT_WIDTH, _terminal_columns() - 4))
+            lines += ["", *textwrap.wrap(note, width)]
         print_panel(section, lines, literal=True)
         return 0
     lines: list[str] = []
@@ -340,6 +355,19 @@ def dispatch(argv: list[str], *, in_daemon: bool) -> int:
 def _run_in_daemon(command: Command, rest: list[str]) -> int:
     from . import console
 
+    if command.names[0] in ("restart", "reload devices") and rest:
+        from . import safe_restart
+
+        def _require_running() -> Optional[int]:
+            if command.names[0] == "reload devices" and not control.running():
+                print("The server is not running. Start it with: serverrf -s", file=sys.stderr)
+                return 1
+            return None
+
+        rc = safe_restart.gate_command(rest, action=command.names[0], before_wait=_require_running)
+        if rc is not None:
+            return rc
+        rest = []
     if not control.running():
         if command.names[0] == "restart":
             from .global_onboarding import cfg_dir
