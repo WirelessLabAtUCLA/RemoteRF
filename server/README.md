@@ -537,6 +537,23 @@ serverrf -d --edit-name 0 "New Name"
 
 Note that all device and server config parameters need a 'restart' to take affect (ctrl + c -> serverrf -s).
 
+### Frequency Range Limits (Allow / Deny Lists)
+
+`adalm_pluto` (and MIMO variants), `hackrf`, and `usrp` (`v1`/`v2`) devices on both server and host accept per-device frequency allow and deny lists in `init` inside `devices.yml`. Each range is an inclusive `[low, high]` pair in Hz (`low <= high`):
+
+```yaml
+init:
+  tx_allow: [[902e6, 928e6], [2.40e9, 2.48e9]]
+  tx_deny:  [[2.45e9, 2.46e9]]
+  rx_allow: [[70e6, 6e9]]
+  rx_deny:  []
+```
+
+- Overlapping and touching ranges are merged; deny ranges always override allow ranges.
+- Omitting `tx_allow` or `rx_allow` allows everything outside the corresponding deny list.
+- `tx_min_freq`/`tx_max_freq` and `rx_min_freq`/`rx_max_freq` still work as a one-range allow list, but mixing them with `tx_allow`/`rx_allow` for the same direction is a config error; invalid config fails closed at startup.
+- TX tuning and start require the entire occupied band `[lo - rate/2, lo + rate/2]` to lie within one merged allow range and touch no deny range; RX checks the center frequency. `admin_group_override: true` preserves admin-group bypass.
+
 ### RTL-SDR
 
 RTL-SDR is a packaged receive-only schema driver. Its Python wrapper and

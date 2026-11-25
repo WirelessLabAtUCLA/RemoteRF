@@ -59,6 +59,7 @@ from .device_manager import (
 from .v2_errors import (
     RemoteRFNativeUHDError,
     RemoteRFOverloadError,
+    RemoteRFPolicyError,
     RemoteRFProtocolError,
     RemoteRFReservationError,
     RemoteRFServerOverloadedError,
@@ -717,6 +718,8 @@ class SessionManager:
                 except Exception:
                     pass
             live_schema = create()
+            if hasattr(live_schema, "lockout_bypass") and "lockout_bypass" in context:
+                live_schema.lockout_bypass = bool(context["lockout_bypass"])
             capabilities = live_schema.build_session_metadata_v2()
             capabilities["remote_resource_limits"] = {
                 "maximum_sessions": _MAX_SESSIONS,
@@ -1290,12 +1293,37 @@ class SessionManager:
             ]
             with session.control_lock:
                 try:
+                    if hasattr(session.schema, "lockout_bypass"):
+                        ctx = get_local_device_context(session.gid) or {}
+                        if "lockout_bypass" in ctx:
+                            session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
+                    if method_name == "set_tx_rate":
+                        check_rate = getattr(session.schema, "check_tx_rate_change", None)
+                        if callable(check_rate):
+                            active_tx_channels = sorted(
+                                {
+                                    ch
+                                    for h in session.handles.values()
+                                    if h.type_id.endswith("TXStreamer")
+                                    for ch in (h.stream_channels or [0])
+                                }
+                            )
+                            if active_tx_channels:
+                                rate_val = native_args.get(
+                                    "rate",
+                                    native_positional[0] if native_positional else None,
+                                )
+                                chan_val = native_args.get(
+                                    "chan",
+                                    native_positional[1] if len(native_positional) > 1 else None,
+                                )
+                                check_rate(rate_val, chan_val, active_tx_channels)
                     result = session.schema.invoke_native(
                         method_name,
                         native_args,
                         positional_args=native_positional,
                     )
-                except RemoteRFProtocolError:
+                except (RemoteRFProtocolError, RemoteRFPolicyError):
                     raise
                 except Exception as exc:
                     raise RemoteRFNativeUHDError(
@@ -1824,6 +1852,13 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                     ):
                         if not entry.type_id.endswith("RXStreamer"):
                             raise RemoteRFStaleHandleError("RX request used a non-RX handle")
+                        if hasattr(session.schema, "lockout_bypass"):
+                            ctx = get_local_device_context(session.gid) or {}
+                            if "lockout_bypass" in ctx:
+                                session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
+                        check_rx = getattr(session.schema, "check_rx_channels", None)
+                        if callable(check_rx):
+                            check_rx(entry.stream_channels or list(request.channels) or [0])
                         buffer = np.empty(shape, dtype=dtype)
                         metadata = self._metadata_object(
                             session.schema, "RXMetadata", request.metadata_json
@@ -1940,6 +1975,13 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                         )
                         timeout = _sample_timeout(request.timeout_sec)
                         with entry.lock, session_manager.admitted(session, entry):
+                            if hasattr(session.schema, "lockout_bypass"):
+                                ctx = get_local_device_context(session.gid) or {}
+                                if "lockout_bypass" in ctx:
+                                    session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
+                            check_tx = getattr(session.schema, "check_tx_channels", None)
+                            if callable(check_tx):
+                                check_tx(entry.stream_channels or list(request.channels) or [0])
                             count = int(
                                 entry.value.send(
                                     _native_uhd_buffer(samples),

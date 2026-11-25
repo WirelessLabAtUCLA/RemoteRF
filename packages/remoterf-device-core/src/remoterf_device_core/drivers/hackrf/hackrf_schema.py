@@ -18,12 +18,19 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
+import math
 from importlib.metadata import PackageNotFoundError, version
+from numbers import Real
 from typing import Any
 
 import numpy as np
 
+from remoterf_device_core.freq_ranges import FreqLimits, format_mhz
 from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
+from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
+_log = logging.getLogger(__name__)
 
 _MAX_REMOTE_PAYLOAD_BYTES = 4 * 1024 * 1024
 _MAX_COMPLEX64_SAMPLES = _MAX_REMOTE_PAYLOAD_BYTES // np.dtype(np.complex64).itemsize
@@ -250,6 +257,18 @@ def _tracked_property(device, public_name: str, private_name: str):
     return getattr(device, public_name)
 
 
+def _finite_hz(value: Any, label: str) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (Real, str)):
+        raise RemoteRFPolicyError(f"{label} must be a finite number.")
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        raise RemoteRFPolicyError(f"{label} must be a finite number.") from None
+    if not math.isfinite(number):
+        raise RemoteRFPolicyError(f"{label} must be a finite number.")
+    return number
+
+
 @idl_register("hackrf")
 class HackRFSchema(DeviceSchema):
     """PyHackRF2-compatible tuning, gain, power, and bounded IQ controls."""
@@ -257,6 +276,59 @@ class HackRFSchema(DeviceSchema):
     device_type = "hackrf"
     client_class = "HackRF"
     driver_version = "0.1.2"
+    lockout_bypass: bool = False
+    _freq_limits: FreqLimits | None = None
+
+    def configure_lockouts(self, cfg: FreqLimits | None) -> None:
+        self._freq_limits = cfg
+
+    def _freq_refuse(self, message: str) -> None:
+        if (
+            self._freq_limits is not None
+            and self._freq_limits.admin_group_override
+            and self.lockout_bypass
+        ):
+            _log.warning("frequency limit bypassed on hackrf: %s", message)
+            return
+        raise RemoteRFPolicyError(message)
+
+    def _device_float(self, attr: str) -> float:
+        raw = getattr(self.device, attr, None)
+        if isinstance(raw, (bool, np.bool_)):
+            return float("nan")
+        try:
+            return float(raw)
+        except (TypeError, ValueError, OverflowError):
+            return float("nan")
+
+    def _check_tx_band(self, center_freq: float, sample_rate: float) -> None:
+        limits = self._freq_limits
+        if limits is None or not limits.tx.is_active:
+            return
+        if not (math.isfinite(center_freq) and math.isfinite(sample_rate) and sample_rate > 0):
+            self._freq_refuse(
+                "TX refused: center frequency and sample rate must be finite positive numbers."
+            )
+            return
+        low, high = center_freq - sample_rate / 2.0, center_freq + sample_rate / 2.0
+        if not limits.tx.allows_band(low, high):
+            self._freq_refuse(
+                limits.tx.format_band_error(
+                    "tx", low, high, detail="center_freq ± sample_rate/2"
+                )
+            )
+
+    def _check_rx_freq(self, center_freq: float) -> None:
+        limits = self._freq_limits
+        if limits is None or not limits.rx.is_active:
+            return
+        if not math.isfinite(center_freq):
+            self._freq_refuse("RX refused: center frequency must be a finite number.")
+            return
+        if not limits.rx.allows_freq(center_freq):
+            self._freq_refuse(
+                limits.rx.format_freq_error("rx", center_freq, label="RX center frequency")
+            )
 
     @staticmethod
     def make_device(**kwargs):
@@ -272,6 +344,27 @@ class HackRFSchema(DeviceSchema):
 
     @idl_expose(kind="set")
     def set_center_freq(self, value):
+        if self._freq_limits is not None and self._freq_limits.is_active:
+            target = int(_finite_hz(value, "Center frequency"))
+            if getattr(self.device, "_remoterf_tx_active", False):
+                self._check_tx_band(float(target), self._device_float("sample_rate"))
+            else:
+                tx_ok = (
+                    not self._freq_limits.tx.is_active
+                    or self._freq_limits.tx.allows_freq(float(target))
+                )
+                rx_ok = (
+                    not self._freq_limits.rx.is_active
+                    or self._freq_limits.rx.allows_freq(float(target))
+                )
+                if not tx_ok and not rx_ok:
+                    self._freq_refuse(
+                        f"Center frequency {format_mhz(target)} MHz is outside "
+                        f"{self._freq_limits.tx.describe_limits('tx')} and "
+                        f"{self._freq_limits.rx.describe_limits('rx')}."
+                    )
+            self.device.center_freq = target
+            return
         self.device.center_freq = int(float(value))
 
     @idl_expose(kind="get")
@@ -281,6 +374,15 @@ class HackRFSchema(DeviceSchema):
 
     @idl_expose(kind="set")
     def set_sample_rate(self, value):
+        if (
+            self._freq_limits is not None
+            and self._freq_limits.tx.is_active
+            and getattr(self.device, "_remoterf_tx_active", False)
+        ):
+            rate = int(_finite_hz(value, "Sample rate"))
+            self._check_tx_band(self._device_float("center_freq"), float(rate))
+            self.device.sample_rate = rate
+            return
         self.device.sample_rate = int(float(value))
 
     @idl_expose(kind="get")
@@ -359,6 +461,7 @@ class HackRFSchema(DeviceSchema):
         # The HackRF is half-duplex; reading would fail or disrupt the TX stream.
         if getattr(self.device, "_remoterf_tx_active", False):
             raise RuntimeError("stop HackRF TX before reading samples")
+        self._check_rx_freq(self._device_float("center_freq"))
         count = _bounded_sample_count(num_samples)
         samples = _correct_pyhackrf2_iq(self.device.read_samples(count))
         if samples.size != count:
@@ -400,6 +503,10 @@ class HackRFSchema(DeviceSchema):
         """Start transmitting the IQ bytes previously loaded with load_tx_iq()."""
         if getattr(self.device, "_remoterf_tx_active", False):
             raise RuntimeError("HackRF TX is already active; stop it before starting again")
+        self._check_tx_band(
+            self._device_float("center_freq"),
+            self._device_float("sample_rate"),
+        )
         payload_bytes = len(self.device.buffer)
         if payload_bytes <= 0:
             raise RuntimeError("load TX IQ samples before starting transmission")

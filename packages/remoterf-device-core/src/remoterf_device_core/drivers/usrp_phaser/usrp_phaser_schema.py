@@ -240,6 +240,8 @@ class UsrpPhaserSchema(UsrpSchema):
         inventory["phaser_uri"] = self._phaser_uri
 
         clone.bind_inventory(inventory)
+        clone.configure_lockouts(self._freq_limits)
+        clone.lockout_bypass = bool(self.lockout_bypass)
         clone.bind(clone.open_native_device())
         return clone
 

@@ -31,10 +31,12 @@ from numbers import Real, Integral
 import adi
 import numpy as np
 
+from remoterf_device_core.freq_ranges import FREQ_RANGE_KEYS, parse_freq_limits
 from remoterf_device_core.v2_errors import RemoteRFPolicyError
 
 
 from remoterf_device_core.drivers.adalm_pluto.lockout_keys import LOCKOUT_KEYS
+_ALL_LOCKOUT_KEYS = LOCKOUT_KEYS | FREQ_RANGE_KEYS
 _BOOL_KEYS = {"admin_group_override", "tx_enabled", "allow_rf_loopback", "allow_dds", "allow_cyclic_tx"}
 _FREQ_KEYS = {"tx_min_freq", "tx_max_freq", "rx_min_freq", "rx_max_freq", "park_tx_lo"}
 _STOP_METHODS = {"call_tx_destroy_buffer", "call_disable_dds"}
@@ -87,23 +89,26 @@ def parse_lockouts(init) -> dict | None:
         if not isinstance(key, str):
             raise ValueError("init keys must be strings")
         lower = key.lower()
-        if lower in LOCKOUT_KEYS and key != lower:
+        if lower in _ALL_LOCKOUT_KEYS and key != lower:
             raise ValueError(f"lockout key {key!r} must be lowercase ({lower})")
-        if (key not in LOCKOUT_KEYS and key not in known
+        if (key not in _ALL_LOCKOUT_KEYS and key not in known
                 and (lower.startswith(("tx_", "rx_")) or any(word in lower for word in (
-                    "freq", "gain", "lockout", "admin", "allow", "override", "enable", "disable",
+                    "freq", "gain", "lockout", "admin", "allow", "deny", "override", "enable", "disable",
                     "only", "rate", "sample", "max", "min", "nabled", "scale", "dds", "cyclic",
                     "buffer", "park", "tx_lo", "loopback", "channel")))):
             raise ValueError(f"unknown lockout-like init key: {key!r}")
-    cfg = {key: init[key] for key in LOCKOUT_KEYS if key in init}
+    cfg = {key: init[key] for key in _ALL_LOCKOUT_KEYS if key in init}
     if not cfg:
         return None
+    limits = parse_freq_limits(init, min_hz=70e6, max_hz=6e9, strict_min_max=True)
     for key, value in list(cfg.items()):
         if key in _BOOL_KEYS:
             if type(value) is not bool:
                 raise ValueError(f"{key} must be a bool")
-        elif key in _FREQ_KEYS:
+        elif key == "park_tx_lo":
             cfg[key] = _config_number(key, value, 70e6, 6e9)
+        elif key in _FREQ_KEYS or key in FREQ_RANGE_KEYS:
+            continue
         elif key == "max_sample_rate":
             cfg[key] = _config_number(key, value, 521e3, 61.44e6)
         elif key == "tx_max_gain_db":
@@ -125,27 +130,46 @@ def parse_lockouts(init) -> dict | None:
                     for name in value)):
                 raise ValueError(f"{key} must be a list of set_ or call_ method names")
             cfg[key] = list(value)
-    for side in ("tx", "rx"):
-        lo, hi = f"{side}_min_freq", f"{side}_max_freq"
-        if (lo in cfg) != (hi in cfg):
-            raise ValueError(f"{lo} and {hi} must be provided together")
-        if lo in cfg:
-            if cfg[lo] >= cfg[hi]:
-                raise ValueError(f"{lo} must be less than {hi}")
-            initial = f"{side}_lo"
-            if initial in init:
-                value = _config_number(initial, init[initial], 70e6, 6e9)
-                if not cfg[lo] <= value <= cfg[hi]:
-                    raise ValueError(f"init {initial} is outside the configured {side.upper()} range")
-    tx_keys = LOCKOUT_KEYS - {"rx_min_freq", "rx_max_freq", "admin_group_override", "lockout_allow_methods"}
+    if limits is not None:
+        for side in ("tx", "rx"):
+            side_limits = getattr(limits, side)
+            lo, hi = f"{side}_min_freq", f"{side}_max_freq"
+            allow_key, deny_key = f"{side}_allow", f"{side}_deny"
+            if lo in cfg and side_limits.allow is not None:
+                cfg[lo], cfg[hi] = side_limits.allow[0]
+            if allow_key in cfg:
+                cfg[allow_key] = side_limits.allow
+            if deny_key in cfg:
+                cfg[deny_key] = side_limits.deny
+            if side_limits.is_active:
+                initial = f"{side}_lo"
+                if initial in init:
+                    value = _config_number(initial, init[initial], 70e6, 6e9)
+                    if not side_limits.allows_freq(value):
+                        raise ValueError(f"init {initial} is outside the configured {side.upper()} range")
+        cfg["_freq_limits"] = limits
+    tx_keys = _ALL_LOCKOUT_KEYS - {
+        "rx_min_freq", "rx_max_freq", "rx_allow", "rx_deny",
+        "admin_group_override", "lockout_allow_methods",
+    }
     cfg.setdefault("allow_rf_loopback", not bool(tx_keys.intersection(init)))
     cfg.setdefault("admin_group_override", False)
     cfg.setdefault("tx_enabled", True)
     cfg.setdefault("allow_dds", True)
     cfg.setdefault("allow_cyclic_tx", True)
     cfg.setdefault("lockout_allow_methods", [])
-    cfg.setdefault("park_tx_lo", (cfg["tx_min_freq"] + cfg["tx_max_freq"]) / 2 if "tx_min_freq" in cfg else 915e6)
-    if "tx_min_freq" in cfg and not cfg["tx_min_freq"] <= cfg["park_tx_lo"] <= cfg["tx_max_freq"]:
+    tx_limits = limits.tx if limits is not None else None
+    if "park_tx_lo" not in cfg:
+        if tx_limits is not None and tx_limits.is_active:
+            park = tx_limits.default_park_freq(fallback=915e6, bounds=(70e6, 6e9))
+            if park is None:
+                if cfg["tx_enabled"]:
+                    raise ValueError("no allowed TX range remains outside tx_deny for park_tx_lo")
+                park = 915e6
+            cfg["park_tx_lo"] = park
+        else:
+            cfg["park_tx_lo"] = 915e6
+    elif tx_limits is not None and tx_limits.is_active and not tx_limits.allows_freq(cfg["park_tx_lo"]):
         raise ValueError("park_tx_lo is outside the configured TX range")
     return cfg
 
@@ -291,6 +315,13 @@ class PlutoSchema(DeviceSchema):
         self._broken = False
         self.lockout_settle()
 
+    def _freq_limits_for(self, side: str):
+        limits = self._lockouts.get("_freq_limits") if self._lockouts else None
+        if limits is None:
+            return None
+        side_limits = getattr(limits, side)
+        return side_limits if side_limits.is_active else None
+
     def _lockout_hygiene(self, park=False):
         if self._lockouts is None or not self._lockout_on():
             return
@@ -313,9 +344,10 @@ class PlutoSchema(DeviceSchema):
                     finally:
                         radio.loopback = 0
             self._tx_flag = self._rf_loopback = False
+            tx_limits = self._freq_limits_for("tx")
             lo = float(radio.tx_lo)
-            if (park or not cfg["tx_enabled"] or ("tx_min_freq" in cfg
-                    and not cfg["tx_min_freq"] <= lo <= cfg["tx_max_freq"])):
+            if (park or not cfg["tx_enabled"]
+                    or (tx_limits is not None and not tx_limits.allows_freq(lo))):
                 radio.tx_lo = int(round(cfg["park_tx_lo"]))
             cap = cfg.get("tx_max_gain_db", 0) if cfg["tx_enabled"] else -89.75
             for name in ("tx_hardwaregain_chan0", "tx_hardwaregain_chan1"):
@@ -403,7 +435,8 @@ class PlutoSchema(DeviceSchema):
 
     def _lockout_band(self, bypass, lo=None):
         cfg = self._lockouts
-        if "tx_min_freq" not in cfg and "max_sample_rate" not in cfg:
+        tx_limits = self._freq_limits_for("tx")
+        if tx_limits is None and "max_sample_rate" not in cfg:
             return
         radio = self._lockout_handle()
         lo = float(radio.tx_lo) if lo is None else lo
@@ -416,16 +449,15 @@ class PlutoSchema(DeviceSchema):
         if "max_sample_rate" in cfg and rate > cfg["max_sample_rate"]:
             self._lockout_refuse(
                 f"Sample rate {_mhz(rate)} MS/s is above this device's limit of {_mhz(cfg['max_sample_rate'])} MS/s.", bypass)
-        if "tx_min_freq" not in cfg:
+        if tx_limits is None:
             return
         a, b = lo - rate / 2, lo + rate / 2
-        if not cfg["tx_min_freq"] <= a <= b <= cfg["tx_max_freq"]:
-            self._lockout_refuse(
-                f"TX refused: the signal would occupy {_mhz(a)}–{_mhz(b)} MHz (tx_lo ± sample_rate/2), "
-                f"outside this device's TX range {_mhz(cfg['tx_min_freq'])}–{_mhz(cfg['tx_max_freq'])} MHz.", bypass)
+        if not tx_limits.allows_band(a, b):
+            self._lockout_refuse(tx_limits.format_band_error("tx", a, b), bypass)
 
     def _lockout_checks(self, name, args, bypass):
         cfg = self._lockouts
+        tx_limits = self._freq_limits_for("tx")
         value = args.get("value")
         live = self._tx_flag or self._rf_loopback
         start = (name == "call_tx" or name in _DDS_CALLS
@@ -433,17 +465,17 @@ class PlutoSchema(DeviceSchema):
                  or (name == "set_loopback" and value == 2))
         refuse = lambda message: self._lockout_refuse(message, bypass)
         if name == "set_filter":
-            if live and "tx_min_freq" in cfg:
+            if live and tx_limits is not None:
                 refuse("FIR filter cannot change while this device is transmitting; call tx_destroy_buffer() first.")
             refuse("Loading FIR filter files is disabled on this device.")
-        if live and "tx_min_freq" in cfg and name in {"set_sample_rate", "set_tx_int8_filter_en"}:
+        if live and tx_limits is not None and name in {"set_sample_rate", "set_tx_int8_filter_en"}:
             label = "Sample rate" if name == "set_sample_rate" else "TX interpolation filter"
             refuse(f"{label} cannot change while this device is transmitting; call tx_destroy_buffer() first.")
         if name in {"set_tx_lo", "set_rx_lo"}:
             side = "tx" if name == "set_tx_lo" else "rx"
-            low, high = cfg.get(f"{side}_min_freq"), cfg.get(f"{side}_max_freq")
-            if low is not None and not low <= value <= high:
-                refuse(f"{side.upper()} LO {_mhz(value)} MHz is outside this device's {side.upper()} range {_mhz(low)}–{_mhz(high)} MHz.")
+            side_limits = self._freq_limits_for(side)
+            if side_limits is not None and not side_limits.allows_freq(value):
+                refuse(side_limits.format_freq_error(side, value))
             if side == "tx" and live:
                 self._lockout_band(bypass, value)
         if name in {"set_tx_hardwaregain_chan0", "set_tx_hardwaregain_chan1"}:
