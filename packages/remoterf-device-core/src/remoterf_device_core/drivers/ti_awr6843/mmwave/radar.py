@@ -4,7 +4,7 @@ from typing import Any, Dict, Generator, Optional
 
 from .connection import RadarConnection
 from .parser import RadarFrame, TLVParser
-from .config_builder import build_config, PRESETS
+from .config_builder import build_config, preset_settings, PRESETS
 
 
 class Radar:
@@ -191,8 +191,7 @@ class Radar:
         """
         if preset is not None:
             self._settings["preset"] = preset
-            if preset in PRESETS:
-                self._settings.update(PRESETS[preset])
+            self._settings.update(preset_settings(preset))
         if mode is not None:
             self._settings["mode"] = mode
         if clutter_removal is not None:
@@ -210,7 +209,7 @@ class Radar:
         if self.connection.cli_ser and self.connection.cli_ser.is_open:
             cfg = self._build_active_config()
             was_running = self._is_running if start is None else start
-            self.connection.send_config_text(cfg, verbose=False)
+            self.connection.send_config_text(cfg, verbose=False, start=was_running)
             self._is_running = was_running
             self.flush()
 

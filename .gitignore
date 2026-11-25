@@ -61,3 +61,6 @@ secrets/
 *.sqlite
 *.sqlite3
 .devdata/
+
+# Server repo-local config fallback (tests write here)
+server/.config/

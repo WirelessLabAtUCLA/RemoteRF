@@ -60,10 +60,25 @@ from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
 from remoterf_device_core.drivers.ti_awr6843.mmwave.radar import Radar
 from remoterf_device_core.drivers.ti_awr6843.mmwave.connection import RadarConnection, find_radar_ports
 from remoterf_device_core.drivers.ti_awr6843.mmwave.parser import RadarFrame, TLVParser
-from remoterf_device_core.drivers.ti_awr6843.mmwave.config_builder import build_config, PRESETS
+from remoterf_device_core.drivers.ti_awr6843.mmwave.config_builder import build_config, preset_settings, PRESETS
 
 # configs/ ships inside this driver package (also when an override copy loads from the drivers dir).
 _PARENT_DIR = os.path.dirname(os.path.abspath(importlib.import_module("remoterf_device_core.drivers.ti_awr6843").__file__))
+
+# Bounds on what a client may ask for in one call.
+MAX_TIMEOUT_S = 30.0
+MIN_ANGLE_BINS = 8
+MAX_ANGLE_BINS = 1024
+MAX_CONFIG_BYTES = 64 * 1024
+MAX_CONFIG_LINES = 512
+
+
+def _check_timeout(value: float, name: str = "timeout") -> float:
+    """A finite timeout in (0, MAX_TIMEOUT_S] seconds, or ValueError."""
+    val = float(value)
+    if not math.isfinite(val) or val <= 0 or val > MAX_TIMEOUT_S:
+        raise ValueError(f"{name} must be greater than 0 and at most {MAX_TIMEOUT_S:g} s, got {value!r}")
+    return val
 
 
 class TiMmWaveDevice:
@@ -93,13 +108,12 @@ class TiMmWaveDevice:
             data_baud=data_baud,
         )
 
-        self._active_config: Dict[str, Any] = {
-            "preset": "default",
-            "mode": "3d",
-            "clutter_removal": False,
-            "fps": 10.0,
-            "config_file": None,
-        }
+        # radar._settings is the one record of preset/mode/clutter/fps/...;
+        # this only notes where the last uploaded config came from.
+        self._config_file: Optional[str] = None
+        self._last_config_text: Optional[str] = None
+        # What reset_for_next_holder restores (set by save_defaults()).
+        self._defaults: Optional[Tuple[Dict[str, Any], Optional[str], Optional[str]]] = None
 
         # Frame and streaming statistics
         self._total_frames: int = 0
@@ -123,9 +137,8 @@ class TiMmWaveDevice:
 
     @clutter_removal.setter
     def clutter_removal(self, value: bool) -> None:
-        val = bool(value)
-        self.radar.clutter_removal = val
-        self._active_config["clutter_removal"] = val
+        self._ensure_connected()
+        self.radar.clutter_removal = bool(value)
 
     @property
     def fps(self) -> float:
@@ -134,9 +147,7 @@ class TiMmWaveDevice:
 
     @fps.setter
     def fps(self, value: float) -> None:
-        val = float(value)
-        self.radar.fps = val
-        self._active_config["fps"] = val
+        self.radar.fps = float(value)
 
     @property
     def preset(self) -> str:
@@ -145,9 +156,7 @@ class TiMmWaveDevice:
 
     @preset.setter
     def preset(self, value: str) -> None:
-        val = str(value)
-        self.radar.preset = val
-        self._active_config["preset"] = val
+        self.radar.preset = str(value)
 
     @property
     def mode(self) -> str:
@@ -156,9 +165,7 @@ class TiMmWaveDevice:
 
     @mode.setter
     def mode(self, value: str) -> None:
-        val = str(value)
-        self.radar.mode = val
-        self._active_config["mode"] = val
+        self.radar.mode = str(value)
 
     @property
     def sensitivity(self) -> str:
@@ -167,9 +174,7 @@ class TiMmWaveDevice:
 
     @sensitivity.setter
     def sensitivity(self, value: str) -> None:
-        val = str(value)
-        self.radar.sensitivity = val
-        self._active_config["sensitivity"] = val
+        self.radar.sensitivity = str(value)
 
     @property
     def min_range(self) -> float:
@@ -178,9 +183,7 @@ class TiMmWaveDevice:
 
     @min_range.setter
     def min_range(self, value: float) -> None:
-        val = float(value)
-        self.radar.min_range = val
-        self._active_config["min_range"] = val
+        self.radar.min_range = float(value)
 
     @property
     def max_range(self) -> float:
@@ -189,9 +192,7 @@ class TiMmWaveDevice:
 
     @max_range.setter
     def max_range(self, value: float) -> None:
-        val = float(value)
-        self.radar.max_range = val
-        self._active_config["max_range"] = val
+        self.radar.max_range = float(value)
 
     def get_device_info(self) -> Dict[str, Any]:
         """Returns static and runtime connection information."""
@@ -204,7 +205,7 @@ class TiMmWaveDevice:
             "cli_baud": self.cli_baud,
             "data_baud": self.data_baud,
             "is_running": self.is_running,
-            "active_config": self._active_config,
+            "active_config": self.get_config(),
         }
 
     def get_stream_stats(self) -> Dict[str, Any]:
@@ -218,56 +219,101 @@ class TiMmWaveDevice:
             "is_running": self.is_running,
         }
 
+    def get_config(self) -> Dict[str, Any]:
+        """Active configuration, derived from the radar's settings."""
+        return {**self.radar._settings, "config_file": self._config_file}
+
+    def _ensure_connected(self) -> None:
+        """Opens the serial ports if they are not open (e.g. after close)."""
+        if not self.radar.connection.cli_ser or not self.radar.connection.cli_ser.is_open:
+            self.radar.connection.connect()
+
     def apply_config_text(
         self,
         config_text: str,
         start: bool = True,
         command_timeout: float = 5.0,
+        config_file: Optional[str] = "custom_text",
     ) -> bool:
-        """Applies raw newline-delimited TI mmWave CLI configuration commands."""
-        # Connect serial ports if not already open
-        if not self.radar.connection.cli_ser or not self.radar.connection.cli_ser.is_open:
-            self.radar.connection.connect()
+        """Applies raw newline-delimited TI mmWave CLI configuration commands.
 
-        self.radar.connection.send_config_text(config_text, verbose=False)
+        With start=False any sensorStart line is skipped, so the radar stays stopped.
+        """
+        command_timeout = _check_timeout(command_timeout, "command_timeout")
+        if len(config_text.encode("utf-8")) > MAX_CONFIG_BYTES:
+            raise ValueError(f"config_text is larger than {MAX_CONFIG_BYTES} bytes")
+        if len(config_text.splitlines()) > MAX_CONFIG_LINES:
+            raise ValueError(f"config_text has more than {MAX_CONFIG_LINES} lines")
+
+        self._ensure_connected()
+        self.radar.connection.send_config_text(
+            config_text, verbose=False, start=start, command_timeout=command_timeout,
+        )
         self.radar._is_running = start
-        self._active_config["config_file"] = "custom_text"
+        self._config_file = config_file
+        self._last_config_text = config_text
         return True
 
     def configure_preset(
         self,
         preset: str = "default",
-        mode: str = "3d",
-        clutter_removal: bool = False,
-        fps: float = 10.0,
+        mode: Optional[str] = None,
+        clutter_removal: Optional[bool] = None,
+        fps: Optional[float] = None,
         start: bool = True,
     ) -> bool:
-        """Builds configuration from high-level parameters and applies it to radar."""
-        if preset == "heatmap":
-            cfg_path = os.path.join(_PARENT_DIR, "configs", "awr6843_heatmap_default.cfg")
-            if not os.path.isfile(cfg_path):
-                raise FileNotFoundError(f"Heatmap configuration file not found: {cfg_path}")
-            with open(cfg_path, "r") as f:
-                cfg_text = f.read()
-        else:
-            cfg_text = build_config(
-                preset=preset,
-                mode=mode,
-                clutter_removal=clutter_removal,
-                fps=fps,
-            )
+        """Builds configuration from high-level parameters and applies it to radar.
 
-        self.apply_config_text(cfg_text, start=start)
-        self._active_config.update({
-            "preset": preset,
-            "mode": mode,
-            "clutter_removal": clutter_removal,
-            "fps": fps,
-        })
+        mode, clutter_removal and fps left as None keep the preset's own values.
+        """
+        mode = None if mode is None else str(mode).lower()
+        if mode is not None and mode not in ("3d", "2d"):
+            raise ValueError("Mode must be '3d' or '2d'")
+        if fps is not None and not (math.isfinite(fps) and fps > 0):
+            raise ValueError(f"FPS must be positive, got {fps}")
+
+        settings = dict(self.radar._settings)
+        settings.update(preset_settings(preset) or preset_settings("default"))
+        settings["preset"] = preset
+        if mode is not None:
+            settings["mode"] = mode
+        if clutter_removal is not None:
+            settings["clutter_removal"] = bool(clutter_removal)
+        if fps is not None:
+            settings["fps"] = float(fps)
+
+        previous = self.radar._settings
+        self.radar._settings = settings
+        try:
+            cfg_text = self.radar._build_active_config()
+            self.apply_config_text(cfg_text, start=start, config_file=None)
+        except Exception:
+            self.radar._settings = previous
+            raise
         return True
+
+    def save_defaults(self) -> None:
+        """Remembers the current settings and config as what reset() restores."""
+        self._defaults = (dict(self.radar._settings), self._config_file, self._last_config_text)
+
+    def reset(self, timeout: float = 5.0) -> None:
+        """Stops chirping, re-uploads the saved default config (stopped), and drops buffered frames.
+
+        The serial ports stay open for the next caller.
+        """
+        self.stop(timeout=timeout)
+        if self._defaults is not None:
+            settings, config_file, config_text = self._defaults
+            self.radar._settings = dict(settings)
+            if config_text:
+                self.apply_config_text(config_text, start=False, config_file=config_file)
+            self._config_file = config_file
+        self.flush_frames()
 
     def send_command(self, command: str, timeout: float = 2.0) -> str:
         """Sends a single CLI command to the radar CLI port and returns response."""
+        timeout = _check_timeout(timeout)
+        self._ensure_connected()
         return self.radar.connection.send_command(command, timeout=timeout)
 
     def query_version(self, timeout: float = 2.0) -> str:
@@ -278,7 +324,7 @@ class TiMmWaveDevice:
         """Enables or disables static clutter removal filter at runtime."""
         val = 1 if enabled else 0
         resp = self.send_command(f"clutterRemoval -1 {val}")
-        self._active_config["clutter_removal"] = enabled
+        self.radar._settings["clutter_removal"] = bool(enabled)
         return "Done" in resp or "mmwDemo:/>" in resp
 
     def flush_frames(self) -> int:
@@ -393,8 +439,11 @@ class TiMmWaveDevice:
                 azimuth_grid_deg: 1D np.ndarray of azimuth angle coordinates in degrees
                 heatmap_db: 2D np.ndarray (float32) of shape [num_ranges, num_angles] in dB
         """
+        if not MIN_ANGLE_BINS <= int(num_angle_bins) <= MAX_ANGLE_BINS:
+            raise ValueError(f"num_angle_bins must be between {MIN_ANGLE_BINS} and {MAX_ANGLE_BINS}, got {num_angle_bins}")
+        num_angle_bins = int(num_angle_bins)
         frame = self._read_next_frame(timeout=timeout)
-        if not frame or frame.azimuth_static_heatmap is None:
+        if not frame or frame.azimuth_static_heatmap is None or frame.azimuth_static_heatmap.ndim != 2:
             return {
                 "frame_number": frame.frame_number if frame else -1,
                 "timestamp": frame.timestamp if frame else time.time(),
@@ -438,19 +487,20 @@ class TiMmWaveDevice:
 
     def start(self, timeout: float = 5.0) -> bool:
         """Starts radar chirping via sensorStart."""
-        if not self.radar.connection.cli_ser or not self.radar.connection.cli_ser.is_open:
-            self.radar.connection.connect()
         resp = self.send_command("sensorStart", timeout=timeout)
         self.radar._is_running = True
         return "Done" in resp or "mmwDemo:/>" in resp
 
     def stop(self, timeout: float = 5.0) -> bool:
-        """Stops radar chirping via sensorStop and halts streams."""
-        self.radar.stop()
-        return True
+        """Stops radar chirping via sensorStop; the serial ports stay open."""
+        resp = self.send_command("sensorStop", timeout=timeout)
+        self.radar._is_running = False
+        self.radar.flush()
+        return "Done" in resp or "mmwDemo:/>" in resp
 
     def _read_next_frame(self, timeout: float = 1.0) -> Optional[RadarFrame]:
         """Internal helper to read and track frame statistics."""
+        timeout = _check_timeout(timeout)
         start_t = time.time()
         while time.time() - start_t < timeout:
             chunk = self.radar.connection.read_data(max_bytes=4096)
@@ -490,7 +540,7 @@ class TiMmWaveSchema(DeviceSchema):
     """
     device_type = "ti_awr6843"
     client_class = "TiMmWave"
-    driver_version = "0.1.0"
+    driver_version = "0.1.1"
 
     # Enables client to import remoteRF.drivers.support.ti_mmwave for local frame decoding
     client_modules = {"ti_mmwave": "remoteRF.drivers.support.ti_mmwave"}
@@ -508,9 +558,9 @@ class TiMmWaveSchema(DeviceSchema):
             config_file (str, optional): Path to .cfg profile file
             config_text (str, optional): Multiline string of radar CLI commands
             preset (str, optional): 'default', 'indoor-people', 'gesture', 'fast-motion', 'heatmap'
-            mode (str, optional): '3d' or '2d' (default: '3d')
-            clutter_removal (bool, optional): Enable static clutter filter (default: False)
-            fps (float, optional): Frame rate in Hz (default: 10.0)
+            mode (str, optional): '3d' or '2d' (default: the preset's)
+            clutter_removal (bool, optional): Enable static clutter filter (default: the preset's)
+            fps (float, optional): Frame rate in Hz (default: the preset's)
             auto_start (bool, optional): Start chirping immediately (default: True)
 
         Returns:
@@ -521,16 +571,19 @@ class TiMmWaveSchema(DeviceSchema):
         cli_baud = int(kwargs.get("cli_baud", 115200))
         data_baud = int(kwargs.get("data_baud", 921600))
         preset = kwargs.get("preset", "default")
-        mode = kwargs.get("mode", "3d")
-        clutter_removal = bool(kwargs.get("clutter_removal", False))
-        fps = float(kwargs.get("fps", 10.0))
+        mode = kwargs.get("mode")
+        clutter_removal = kwargs.get("clutter_removal")
+        clutter_removal = None if clutter_removal is None else bool(clutter_removal)
+        fps = kwargs.get("fps")
+        fps = None if fps is None else float(fps)
         config_file = kwargs.get("config_file")
         config_text = kwargs.get("config_text")
         auto_start = bool(kwargs.get("auto_start", True))
 
-        # Auto-detect ports if not explicitly specified
+        # Auto-detect ports if not explicitly specified. Guessing the first two
+        # ttyUSB/ttyACM devices is only done when devices.yml names neither port.
         if not cli_port or not data_port:
-            detected_cli, detected_data = find_radar_ports()
+            detected_cli, detected_data = find_radar_ports(fallback=not (cli_port or data_port))
             cli_port = cli_port or detected_cli
             data_port = data_port or detected_data
 
@@ -554,7 +607,7 @@ class TiMmWaveSchema(DeviceSchema):
             elif config_file:
                 cfg_path = config_file if os.path.isabs(config_file) else os.path.join(_PARENT_DIR, config_file)
                 with open(cfg_path, "r") as f:
-                    device.apply_config_text(f.read(), start=auto_start)
+                    device.apply_config_text(f.read(), start=auto_start, config_file=config_file)
             else:
                 device.configure_preset(
                     preset=preset,
@@ -563,8 +616,9 @@ class TiMmWaveSchema(DeviceSchema):
                     fps=fps,
                     start=auto_start,
                 )
+            device.save_defaults()
 
-            print(f"[ti_mmwave] Radar successfully initialized (Preset: '{preset}', Mode: '{mode}').")
+            print(f"[ti_mmwave] Radar successfully initialized (Preset: '{device.preset}', Mode: '{device.mode}').")
             return device
 
         except Exception as exc:
@@ -595,7 +649,7 @@ class TiMmWaveSchema(DeviceSchema):
 
     @idl_expose(kind="get", doc="Active configuration parameters (preset, mode, clutter, fps).")
     def get_config(self) -> Dict[str, Any]:
-        return dict(self.device._active_config)
+        return self.device.get_config()
 
     # -------------------------------------------------------------------------
     # Exposed Getters & Setters (Properties writable directly on radar object)
@@ -690,6 +744,7 @@ class TiMmWaveSchema(DeviceSchema):
     ) -> Dict[str, Any]:
         """
         Captures azimuth static heatmap and computes 2D Angle-FFT power in dB.
+        num_angle_bins is 8..1024; timeout at most 30 s.
         """
         return self.device.capture_heatmap(
             num_angle_bins=int(num_angle_bins),
@@ -715,17 +770,18 @@ class TiMmWaveSchema(DeviceSchema):
     def call_configure(
         self,
         preset: str = "default",
-        mode: str = "3d",
-        clutter_removal: bool = False,
-        fps: float = 10.0,
+        mode: Optional[str] = None,
+        clutter_removal: Optional[bool] = None,
+        fps: Optional[float] = None,
         start: bool = True,
     ) -> bool:
-        """Reconfigures the radar with preset settings and restarts streaming."""
+        """Reconfigures the radar with preset settings; mode/clutter_removal/fps
+        left as None keep the preset's values. start=False leaves it stopped."""
         return self.device.configure_preset(
             preset=str(preset),
-            mode=str(mode),
-            clutter_removal=bool(clutter_removal),
-            fps=float(fps),
+            mode=None if mode is None else str(mode),
+            clutter_removal=None if clutter_removal is None else bool(clutter_removal),
+            fps=None if fps is None else float(fps),
             start=bool(start),
         )
 
@@ -759,6 +815,12 @@ class TiMmWaveSchema(DeviceSchema):
         """Flushes parser and resets driver state."""
         self.device.flush_frames()
         return True
+
+    def reset_for_next_holder(self):
+        """A reservation ended: stop chirping, restore the default config and drop unread frames."""
+        if self.device is None:
+            return
+        self.device.reset()
 
 
 # -----------------------------------------------------------------------------
