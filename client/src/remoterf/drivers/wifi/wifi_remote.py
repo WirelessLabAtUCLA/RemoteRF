@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: wifi  driver_version: 0.1.0  schema_hash: sha256:64e8e3ddbdb214abbade83769a87dd9a3ec730d6d924e339388dcc245cff5d09
+# device_type: wifi  driver_version: 0.1.1  schema_hash: sha256:d314479deac6725cf755eccb97bda4603c287780c38efeab22b1879b0e0bd504
 
 _PREFIX = "Wifi"
-_SCHEMA_HASH = "sha256:64e8e3ddbdb214abbade83769a87dd9a3ec730d6d924e339388dcc245cff5d09"
+_SCHEMA_HASH = "sha256:d314479deac6725cf755eccb97bda4603c287780c38efeab22b1879b0e0bd504"
 _CLIENT_MODULES = {'wifi': 'remoterf.drivers.support.wifi'}
 _CLIENT_OBJECTS = {}
 

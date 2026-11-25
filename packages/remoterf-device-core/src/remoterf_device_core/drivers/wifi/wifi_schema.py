@@ -60,6 +60,11 @@ from remoterf_device_core.drivers.wifi.rssi.safety import verify_network_safety,
 from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
 
 
+# Upper bound on one get_rssi_burst call: it holds the dongle's I/O lock, and the
+# end-of-reservation reset waits for that lock.
+MAX_BURST_SECONDS = 30.0
+
+
 # -----------------------------------------------------------------------------
 # Linear Power Math Utilities
 # -----------------------------------------------------------------------------
@@ -76,7 +81,7 @@ def mw_to_dbm(mw: float) -> float:
     return 10.0 * math.log10(mw)
 
 
-def compute_linear_stats(dbm_values: List[float]) -> Dict[str, float]:
+def compute_linear_stats(dbm_values: List[float]) -> Dict[str, Optional[float]]:
     """
     Compute rigorous physical statistics in the linear power domain (mW),
     and convert the resulting mean back to dBm.
@@ -86,16 +91,18 @@ def compute_linear_stats(dbm_values: List[float]) -> Dict[str, float]:
     True average received power requires averaging in linear milliwatts:
       P_avg_mW = (1/N) * sum(10^(dBm_i / 10))
       mean_dbm = 10 * log10(P_avg_mW)
+
+    With no values the dBm fields are None (NaN is not valid JSON).
     """
     if not dbm_values:
         return {
             "count": 0,
-            "mean_dbm": float("nan"),
+            "mean_dbm": None,
             "mean_mw": 0.0,
-            "min_dbm": float("nan"),
-            "max_dbm": float("nan"),
+            "min_dbm": None,
+            "max_dbm": None,
             "std_dbm": 0.0,
-            "median_dbm": float("nan"),
+            "median_dbm": None,
         }
 
     # Convert to linear power (mW)
@@ -136,6 +143,7 @@ class WifiDongleDevice:
         self.scanner = RSSIScanner(interface=interface)
         self.interface = self.scanner.interface
         self.auto_rescan = auto_rescan
+        self.init_auto_rescan = auto_rescan
         self.max_history = max_history
 
         self._scan_count = 0
@@ -159,8 +167,8 @@ class WifiDongleDevice:
     def default_route_safe(self) -> bool:
         """Verify that default gateway is active and is NOT this Wi-Fi interface."""
         route = get_default_route_info()
-        default_iface = route.get("interface")
-        return bool(default_iface and default_iface != self.interface)
+        interfaces = route.get("interfaces") or []
+        return bool(interfaces) and self.interface not in interfaces
 
     def get_device_info(self) -> Dict[str, Any]:
         """Hardware identity, driver, and sysfs information."""
@@ -203,17 +211,28 @@ class WifiDongleDevice:
             })
         return info
 
+    def _rescan(self, rescan: Optional[bool]) -> bool:
+        """An explicit rescan wins; None falls back to auto_rescan."""
+        return bool(rescan) if rescan is not None else bool(self.auto_rescan)
+
+    def reset(self) -> None:
+        """Forget scan state and restore the configured auto_rescan."""
+        self._history.clear()
+        self._last_results = []
+        self._scan_count = 0
+        self._last_scan_time = 0.0
+        self.auto_rescan = self.init_auto_rescan
+
     def scan(
         self,
-        rescan: bool = True,
+        rescan: Optional[bool] = None,
         band: str = "",
         min_rssi: float = -120.0
     ) -> List[Dict[str, Any]]:
         """
         Perform a Wi-Fi scan and return all detected Access Points.
         """
-        do_rescan = rescan if rescan is not None else self.auto_rescan
-        aps = self.scanner.scan(rescan=do_rescan)
+        aps = self.scanner.scan(rescan=self._rescan(rescan))
         self._last_results = aps
         self._scan_count += 1
         self._last_scan_time = time.time()
@@ -239,7 +258,7 @@ class WifiDongleDevice:
 
         return [ap.to_dict() for ap in filtered]
 
-    def get_rssi(self, target: str, rescan: bool = True) -> Optional[float]:
+    def get_rssi(self, target: str, rescan: Optional[bool] = None) -> Optional[float]:
         """
         Get the latest signal strength (in dBm) for a target SSID or BSSID.
         Returns float dBm value, or None if target is not found.
@@ -247,9 +266,9 @@ class WifiDongleDevice:
         if not target:
             return None
 
-        # If rescan is requested or no previous results, run scan
-        if rescan or not self._last_results:
-            self.scan(rescan=True)
+        # Scan unless the cached results may be reused
+        if self._rescan(rescan) or not self._last_results:
+            self.scan(rescan=rescan)
 
         target_clean = target.strip().lower()
         for ap in self._last_results:
@@ -258,13 +277,13 @@ class WifiDongleDevice:
 
         return None
 
-    def get_ap(self, target: str, rescan: bool = True) -> Optional[Dict[str, Any]]:
+    def get_ap(self, target: str, rescan: Optional[bool] = None) -> Optional[Dict[str, Any]]:
         """Get full AccessPoint dictionary for a target SSID or BSSID."""
         if not target:
             return None
 
-        if rescan or not self._last_results:
-            self.scan(rescan=True)
+        if self._rescan(rescan) or not self._last_results:
+            self.scan(rescan=rescan)
 
         target_clean = target.strip().lower()
         for ap in self._last_results:
@@ -278,12 +297,22 @@ class WifiDongleDevice:
         target: str,
         count: int = 10,
         max_time: float = 5.0,
-        rescan: bool = True
+        rescan: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
         Collect a burst of multiple RSSI measurements for a target network,
         computing rigorous physical statistics in the linear power domain (mW & dBm).
+
+        max_time must be positive and is capped at MAX_BURST_SECONDS. An active
+        rescan (which can take seconds) runs only before the first sample; later
+        samples read the kernel's BSS cache.
         """
+        max_time = float(max_time)
+        if not max_time > 0:
+            raise ValueError(f"max_time must be positive, got {max_time}")
+        max_time = min(max_time, MAX_BURST_SECONDS)
+        do_rescan = self._rescan(rescan)
+
         target_clean = target.strip().lower()
         rssi_list: List[float] = []
         timestamps: List[float] = []
@@ -299,7 +328,7 @@ class WifiDongleDevice:
         while len(rssi_list) < max_samples and (time.time() - t0) < max_time:
             iterations += 1
             # Execute scan
-            aps = self.scanner.scan(rescan=rescan)
+            aps = self.scanner.scan(rescan=do_rescan and iterations == 1)
             self._scan_count += 1
             self._last_scan_time = time.time()
 
@@ -315,8 +344,8 @@ class WifiDongleDevice:
                     found_in_scan = True
                     break
 
-            # Small dwell before next scan
-            time.sleep(0.1)
+            # Small dwell before next scan, never past the deadline
+            time.sleep(max(0.0, min(0.1, max_time - (time.time() - t0))))
 
         stats = compute_linear_stats(rssi_list)
         return {
@@ -353,7 +382,8 @@ class WifiDongleDevice:
             out = subprocess.check_output(
                 ["iw", "dev", self.interface, "scan", "dump"],
                 text=True,
-                errors="replace"
+                errors="replace",
+                timeout=10
             )
         except Exception as e:
             return {"error": str(e), "target": target}
@@ -447,7 +477,10 @@ class WifiDongleDevice:
         }
 
     def get_channel_distribution(self) -> Dict[str, Any]:
-        """AP counts and average signal metrics grouped by Wi-Fi channel."""
+        """
+        AP counts and average signal metrics grouped by Wi-Fi channel.
+        Keys are channel numbers as strings ("0" = unknown), as JSON delivers them.
+        """
         if not self._last_results:
             self.scan(rescan=True)
 
@@ -460,7 +493,7 @@ class WifiDongleDevice:
 
         summary = {}
         for ch, vals in sorted(channels.items()):
-            summary[ch] = {
+            summary[str(ch)] = {
                 "ap_count": len(vals),
                 "linear_mean_dbm": compute_linear_stats(vals)["mean_dbm"],
                 "max_dbm": max(vals),
@@ -494,7 +527,7 @@ class WifiDongleSchema(DeviceSchema):
     """
     device_type = "wifi"
     client_class = "WifiDongle"
-    driver_version = "0.1.0"
+    driver_version = "0.1.1"
 
     client_modules = {"wifi": "remoteRF.drivers.support.wifi"}
 
@@ -528,6 +561,11 @@ class WifiDongleSchema(DeviceSchema):
         except Exception as exc:
             print(f"[wifi_dongle] Failed to initialize device: {exc}")
             return None
+
+    def reset_for_next_holder(self):
+        """A reservation ended: drop its scan history and restore the configured auto_rescan."""
+        if self.device is not None:
+            self.device.reset()
 
     # -------------------------------------------------------------------------
     # Exposed Getters
@@ -576,7 +614,7 @@ class WifiDongleSchema(DeviceSchema):
     @idl_expose(kind="call", doc="Scan nearby Wi-Fi APs. Returns list of access point dictionaries.")
     def call_scan(
         self,
-        rescan: bool = True,
+        rescan: Optional[bool] = None,
         *,
         band: str = "",
         min_rssi: float = -120.0,
@@ -586,15 +624,15 @@ class WifiDongleSchema(DeviceSchema):
         Returns list of AP dicts sorted by signal strength.
         """
         return self.device.scan(
-            rescan=bool(rescan),
+            rescan=rescan,
             band=str(band),
             min_rssi=float(min_rssi)
         )
 
     @idl_expose(kind="call", doc="Get the RSSI value (in dBm) for a target SSID or BSSID.")
-    def call_get_rssi(self, target: str, *, rescan: bool = True) -> Optional[float]:
+    def call_get_rssi(self, target: str, *, rescan: Optional[bool] = None) -> Optional[float]:
         """Returns float signal strength in dBm, or None if target is not detected."""
-        return self.device.get_rssi(target=str(target), rescan=bool(rescan))
+        return self.device.get_rssi(target=str(target), rescan=rescan)
 
     @idl_expose(kind="call", doc="Collect burst of RSSI measurements with linear-power averaging.")
     def call_get_rssi_burst(
@@ -603,23 +641,24 @@ class WifiDongleSchema(DeviceSchema):
         *,
         count: int = 10,
         max_time: float = 5.0,
-        rescan: bool = True,
+        rescan: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Takes multiple RSSI samples in rapid succession.
         Calculates physical average power in linear milliwatts and converts to dBm.
+        max_time is capped at MAX_BURST_SECONDS; rescan applies to the first sample only.
         """
         return self.device.get_rssi_burst(
             target=str(target),
             count=int(count),
             max_time=float(max_time),
-            rescan=bool(rescan)
+            rescan=rescan
         )
 
     @idl_expose(kind="call", doc="Get full AccessPoint metadata dictionary for a target.")
-    def call_get_ap(self, target: str, *, rescan: bool = True) -> Optional[Dict[str, Any]]:
+    def call_get_ap(self, target: str, *, rescan: Optional[bool] = None) -> Optional[Dict[str, Any]]:
         """Returns full AP dictionary (SSID, BSSID, RSSI, channel, freq, security)."""
-        return self.device.get_ap(target=str(target), rescan=bool(rescan))
+        return self.device.get_ap(target=str(target), rescan=rescan)
 
     @idl_expose(kind="call", doc="Extract deep hardware & WPS telemetry (manufacturer, model, TSF clock).")
     def call_get_ap_details(self, target: str) -> Dict[str, Any]:
