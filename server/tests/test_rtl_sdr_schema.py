@@ -192,6 +192,108 @@ class RtlSdrSchemaTests(unittest.TestCase):
         schema.dispatch("call_reset_buffer", {})
         self.assertEqual(native.reset_count, 1)
 
+    def _assert_defaults(self, schema, native):
+        self.assertEqual(native.center_freq, 915e6)
+        self.assertEqual(native.sample_rate, 2.048e6)
+        self.assertEqual(native.gain, "auto")
+        self.assertEqual(native.bandwidth, 0)
+        self.assertEqual(native.freq_correction, 0)
+        self.assertEqual(schema.get_center_freq(), 915e6)
+        self.assertEqual(schema.get_sample_rate(), 2.048e6)
+        self.assertEqual(schema.get_gain(), "auto")
+        self.assertEqual(schema.get_bandwidth(), 0)
+        self.assertEqual(schema.get_freq_correction(), 0)
+        self.assertIs(schema.get_bias_tee(), False)
+        self.assertIs(schema.get_offset_tuning(), False)
+        self.assertIs(schema.get_agc_mode(), False)
+        self.assertEqual(schema.get_direct_sampling(), 0)
+        self.assertIs(schema.get_dithering(), True)
+
+    def test_reset_for_next_holder_restores_fixed_defaults(self):
+        schema, _adapter, native = _bound_schema()
+        schema.set_center_freq(433_920_000)
+        schema.set_sample_rate(1_024_000)
+        schema.set_gain(40.2)
+        schema.set_bandwidth(300_000)
+        schema.set_freq_correction(7)
+        schema.set_bias_tee(True)
+        schema.set_direct_sampling(2)
+        schema.set_offset_tuning(True)
+        schema.set_agc_mode(True)
+        schema.set_dithering(False)
+
+        schema.reset_for_next_holder()
+
+        self._assert_defaults(schema, native)
+        self.assertEqual(native.reset_count, 1)
+
+    def test_reset_for_next_holder_skips_missing_native_controls(self):
+        class NoBiasTeeFake(FakeRtlSdr):
+            set_bias_tee = None
+            set_dithering = None
+
+        schema, adapter, native = _bound_schema(NoBiasTeeFake())
+        native.center_freq = 433_920_000.0
+
+        schema.reset_for_next_holder()
+
+        self.assertEqual(native.center_freq, 915e6)
+        self.assertIsNone(adapter.control_state["bias_tee"])
+
+    def test_reset_for_next_holder_keeps_going_after_a_failure_and_raises_it(self):
+        class FailingRateFake(FakeRtlSdr):
+            def __setattr__(self, name, value):
+                if name == "sample_rate" and getattr(self, "armed", False):
+                    raise OSError("Could not set sample rate")
+                super().__setattr__(name, value)
+
+            def set_bias_tee(self, enabled):
+                raise OSError("Could not set bias tee")
+
+        native = FailingRateFake()
+        schema, adapter, _native = _bound_schema(native)
+        native.center_freq = 433_920_000.0
+        native.gain = 40.2
+        native.armed = True
+
+        with self.assertRaisesRegex(OSError, "bias tee"):
+            schema.reset_for_next_holder()
+        self.assertEqual(native.center_freq, 915e6)
+        self.assertEqual(native.gain, "auto")
+        self.assertEqual(native.reset_count, 1)
+        self.assertIsNone(adapter.control_state["bias_tee"])
+
+    def test_reset_for_next_holder_on_a_closed_device_is_a_no_op(self):
+        native = PyRtlSdrLikeFake()
+        schema, _adapter, _native = _bound_schema(native)
+        native.center_freq = 433_920_000.0
+        native.close()
+
+        schema.reset_for_next_holder()
+
+        self.assertEqual(native.center_freq, 433_920_000.0)
+        self.assertEqual(native.reset_count, 0)
+        unbound = RtlSdrSchema()
+        unbound.reset_for_next_holder()
+
+    def test_open_applies_the_same_defaults(self):
+        class OpenFake(FakeRtlSdr):
+            def __init__(self, **kwargs):
+                super().__init__()
+                self.center_freq = 80e6
+                self.bias_tee = True
+
+        with patch(
+            "remoteRF_server.drivers.rtl_sdr.rtl_sdr_schema._require_rtlsdr",
+            return_value=OpenFake,
+        ):
+            adapter = _connect_rtl_sdr(device_index=0)
+        schema = RtlSdrSchema()
+        schema.bind(adapter)
+
+        self._assert_defaults(schema, adapter.native)
+        self.assertFalse(adapter.native.bias_tee)
+
     def test_reset_buffer_without_native_support_discards_one_usb_packet(self):
         class NoResetFake(PyRtlSdrLikeFake):
             reset_buffer = None
