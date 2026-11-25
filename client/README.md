@@ -165,11 +165,18 @@ not close the physical radio. `read_samples` and `read_bytes` are bounded to a
 4 MiB response. Call them repeatedly for longer captures. Native asynchronous
 callbacks are not transported remotely.
 
-Through the RemoteRF Global relay one reply is capped at 768 KiB. A deployment on a
-current Server keeps a larger reply (up to 4 MiB) and the client fetches it in
-pages; an older deployment refuses it with `response_too_large`, so keep reads there
-to about 98k complex64 samples (`read_samples(65536)` is safe). LAN and direct
-paths are not capped.
+Through the RemoteRF Global relay, requests are capped at 192 KiB (unpaged) and
+a single unpaged reply is capped at 768 KiB. A deployment on a current Server
+holds a larger reply (up to 4 MiB + 64 KiB) for 30 s and the client fetches it
+in 764 KiB pages; an older deployment or a lab-as-HOME server-to-server relay
+does not page and refuses replies above 768 KiB with `response_too_large`, so
+keep reads there under ~98k `complex64` samples (`read_samples(65536)` is safe).
+LAN gRPC and direct QUIC paths to a lab Server are capped at 100 MiB per message
+or frame (16 MiB for incoming requests directly to a Host), with per-ndarray
+caps of 64 MiB (legacy `GenericRPC`) / 16 MiB (Dynamic v2 control) and 4 MiB
+sample caps on RTL-SDR, HackRF, KrakenSDR, and Dynamic v2 USRP (128 KiB on
+federated Dynamic v2 sessions). See [Payload Size Limits](../docs/payload-limits.md)
+for the complete per-path breakdown.
 
 When a Tailscale address differs from the IP or DNS identity in the server
 certificate, keep TLS verification enabled and set the expected identity:

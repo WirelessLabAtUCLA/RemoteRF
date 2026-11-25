@@ -27,7 +27,11 @@ import numpy as np
 
 from remoterf.common.grpc import grpc_pb2
 from remoterf.common.grpc.v2_codec import decode_value, encode_value
-from remoterf.core.dynamic_v2_transport import DynamicV2Transport
+from remoterf.core.dynamic_v2_transport import (
+    DynamicV2Transport,
+    SC16_DTYPE,
+    _wire_dtype,
+)
 from remoterf.core.v2_errors import (
     RemoteRFPolicyError,
     RemoteRFProtocolError,
@@ -916,6 +920,301 @@ class DynamicV2Tests(unittest.TestCase):
                     details_json='{"rule":"tx_enabled"}',
                 )
             )
+
+    def test_sc16_streamers_size_batches_accept_both_layouts_and_reject_invalid_inputs(self):
+        class SC16FakeTransport(FakeTransport):
+            def __init__(self):
+                super().__init__()
+                self.recvs = []
+                self.sent = []
+
+            def open_session(self, token, schema_hash):
+                result = super().open_session(token, schema_hash)
+                result["capabilities"] = {
+                    "hardware_profile": "usrp2901",
+                    "remote_resource_limits": {
+                        "maximum_sample_payload_bytes": 1024,
+                    },
+                }
+                return result
+
+            def recv(self, **kwargs):
+                buf = kwargs["buffer"]
+                self.recvs.append(
+                    (buf.dtype, buf.shape, kwargs["sample_count"], list(kwargs["channels"]))
+                )
+                if buf.ndim == 1:
+                    samples = np.array([(10, -20), (30, -40)], dtype=SC16_DTYPE)
+                else:
+                    channels = buf.shape[0]
+                    samples = np.empty((channels, 2), dtype=SC16_DTYPE)
+                    for ch in range(channels):
+                        samples[ch] = np.array(
+                            [(10 + ch, -20 - ch), (30 + ch, -40 - ch)],
+                            dtype=SC16_DTYPE,
+                        )
+                return (
+                    2,
+                    samples,
+                    {
+                        "__uhd_type__": "RXMetadata",
+                        "error_code": "none",
+                        "time_spec": {"__uhd_type__": "TimeSpec", "secs": 7.0},
+                    },
+                )
+
+            def send(self, **kwargs):
+                self.sent.append((kwargs["samples"].copy(), list(kwargs["channels"])))
+                return int(kwargs["samples"].shape[-1])
+
+        transport = SC16FakeTransport()
+        uhd, MultiUSRP = build_uhd_bindings(
+            schema(), transport_factory=lambda: transport
+        )
+        device = MultiUSRP("token")
+
+        fc32_args = uhd.usrp.StreamArgs("fc32", "sc16")
+        fc32_args.channels = [0]
+        self.assertEqual(device.get_rx_stream(fc32_args).get_max_num_samps(), 128)
+
+        sc16_1ch = uhd.usrp.StreamArgs("sc16", "sc16")
+        sc16_1ch.channels = [0]
+        rx1 = device.get_rx_stream(sc16_1ch)
+        tx1 = device.get_tx_stream(sc16_1ch)
+        self.assertEqual(rx1.get_max_num_samps(), 256)
+        self.assertEqual(tx1.get_max_num_samps(), 256)
+
+        sc16_2ch = uhd.usrp.StreamArgs("sc16", "sc16")
+        sc16_2ch.channels = [0, 1]
+        rx2 = device.get_rx_stream(sc16_2ch)
+        tx2 = device.get_tx_stream(sc16_2ch)
+        self.assertEqual(rx2.get_max_num_samps(), 128)
+        self.assertEqual(tx2.get_max_num_samps(), 128)
+
+        md = uhd.types.RXMetadata()
+        struct_buf = np.empty(4, dtype=SC16_DTYPE)
+        struct_buf["re"] = 99
+        struct_buf["im"] = -99
+        self.assertEqual(rx1.recv(struct_buf, 3, md, 0.25), 2)
+        self.assertEqual(transport.recvs[-1], (SC16_DTYPE, (4,), 3, [0]))
+        np.testing.assert_array_equal(
+            struct_buf[:2],
+            np.array([(10, -20), (30, -40)], dtype=SC16_DTYPE),
+        )
+        np.testing.assert_array_equal(struct_buf[2:]["re"], np.array([99, 99], dtype="<i2"))
+        np.testing.assert_array_equal(struct_buf[2:]["im"], np.array([-99, -99], dtype="<i2"))
+        self.assertEqual(md.time_spec.get_real_secs(), 7.0)
+
+        iq_buf = np.full((4, 2), 77, dtype=np.int16)
+        self.assertEqual(rx1.recv(iq_buf, 3, md, 0.25), 2)
+        self.assertEqual(transport.recvs[-1], (SC16_DTYPE, (4,), 3, [0]))
+        np.testing.assert_array_equal(
+            iq_buf[:2],
+            np.array([[10, -20], [30, -40]], dtype=np.int16),
+        )
+        np.testing.assert_array_equal(iq_buf[2:], np.full((2, 2), 77, dtype=np.int16))
+
+        struct_buf2 = np.empty((2, 3), dtype=SC16_DTYPE)
+        struct_buf2["re"] = 5
+        struct_buf2["im"] = -5
+        self.assertEqual(rx2.recv(struct_buf2, md), 2)
+        np.testing.assert_array_equal(
+            struct_buf2[0, :2],
+            np.array([(10, -20), (30, -40)], dtype=SC16_DTYPE),
+        )
+        np.testing.assert_array_equal(
+            struct_buf2[1, :2],
+            np.array([(11, -21), (31, -41)], dtype=SC16_DTYPE),
+        )
+        self.assertEqual(int(struct_buf2[0, 2]["re"]), 5)
+        self.assertEqual(int(struct_buf2[1, 2]["im"]), -5)
+
+        backing = np.full((2, 5, 2), 88, dtype=np.int16)
+        iq_buf2 = backing[:, :3, :]
+        self.assertEqual(rx2.recv(iq_buf2, md), 2)
+        np.testing.assert_array_equal(
+            iq_buf2[0, :2],
+            np.array([[10, -20], [30, -40]], dtype=np.int16),
+        )
+        np.testing.assert_array_equal(
+            iq_buf2[1, :2],
+            np.array([[11, -21], [31, -41]], dtype=np.int16),
+        )
+        np.testing.assert_array_equal(iq_buf2[:, 2, :], np.full((2, 2), 88, dtype=np.int16))
+
+        tx_md = uhd.types.TXMetadata()
+        struct_src = np.array([(1, -2), (3, -4), (5, -6)], dtype=SC16_DTYPE)
+        self.assertEqual(tx1.send(struct_src, 2, tx_md), 2)
+        sent_arr, sent_ch = transport.sent[-1]
+        self.assertEqual((sent_arr.dtype, sent_arr.shape, sent_ch), (SC16_DTYPE, (2,), [0]))
+        np.testing.assert_array_equal(sent_arr, struct_src[:2])
+
+        iq_src = np.array([[100, -200], [300, -400], [500, -600]], dtype=np.int16)
+        self.assertEqual(tx1.send(iq_src, 2, tx_md), 2)
+        sent_arr, _ = transport.sent[-1]
+        self.assertEqual(sent_arr.dtype, SC16_DTYPE)
+        np.testing.assert_array_equal(
+            sent_arr,
+            np.array([(100, -200), (300, -400)], dtype=SC16_DTYPE),
+        )
+
+        iq2_src = np.array([[[1, -1], [2, -2]], [[3, -3], [4, -4]]], dtype=np.int16)
+        self.assertEqual(tx2.send(iq2_src, tx_md), 2)
+        sent_arr, sent_ch = transport.sent[-1]
+        self.assertEqual((sent_arr.dtype, sent_arr.shape, sent_ch), (SC16_DTYPE, (2, 2), [0, 1]))
+        np.testing.assert_array_equal(sent_arr["re"], np.array([[1, 2], [3, 4]], dtype="<i2"))
+        np.testing.assert_array_equal(sent_arr["im"], np.array([[-1, -2], [-3, -4]], dtype="<i2"))
+
+        self.assertEqual(tx1.send(np.zeros((0, 2), dtype=np.int16), tx_md), 0)
+        self.assertEqual(
+            (transport.sent[-1][0].dtype, transport.sent[-1][0].shape),
+            (SC16_DTYPE, (0,)),
+        )
+
+        bad_buffers = (
+            np.zeros(4, dtype=np.complex64),
+            np.zeros(4, dtype=np.complex128),
+            np.zeros(4, dtype=np.float32),
+            np.zeros(4, dtype=np.int32),
+            np.zeros(4, dtype=np.int16),
+            np.zeros((2, 4), dtype=np.int16),
+            np.zeros((1, 4, 3), dtype=np.int16),
+            np.zeros(4, dtype=np.dtype([("i", "<i2"), ("q", "<i2")])),
+            np.zeros(4, dtype=np.dtype("|V4")),
+        )
+        for bad in bad_buffers:
+            with self.subTest(dtype=bad.dtype, shape=bad.shape):
+                with self.assertRaises(ValueError):
+                    rx1.recv(bad, md)
+                with self.assertRaises(ValueError):
+                    tx1.send(bad, tx_md)
+
+        with self.assertRaises(ValueError):
+            rx2.recv(np.zeros((4, 2), dtype=np.int16), md)
+        with self.assertRaises(ValueError):
+            tx2.send(np.zeros((4, 2), dtype=np.int16), tx_md)
+
+    def test_transport_sc16_uses_canonical_wire_tag_and_rejects_raw_void_and_structured_tags(self):
+        class CapturingSC16Stub:
+            def __init__(self):
+                self.frames = []
+
+            def SampleStream(self, request_iterator, timeout=None):
+                self.frames = list(request_iterator)
+                opened, request = self.frames
+                yield grpc_pb2.SampleFrame(
+                    session_id=opened.session_id,
+                    handle=opened.handle,
+                    generation=opened.generation,
+                    operation_id=opened.operation_id,
+                    sequence=opened.sequence,
+                    direction=opened.direction,
+                    kind=grpc_pb2.SAMPLE_FRAME_RESULT,
+                    credits=1,
+                )
+                if request.direction == grpc_pb2.SAMPLE_DIRECTION_RX:
+                    samples = np.array([(12, -34), (56, -78)], dtype=SC16_DTYPE)
+                    yield grpc_pb2.SampleFrame(
+                        session_id=request.session_id,
+                        handle=request.handle,
+                        generation=request.generation,
+                        operation_id=request.operation_id,
+                        sequence=request.sequence,
+                        direction=request.direction,
+                        kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                        dtype="sc16",
+                        shape=[2],
+                        channels=list(request.channels),
+                        sample_count=2,
+                        payload=samples.tobytes(),
+                        metadata_json='{"__uhd_type__":"RXMetadata","error_code":"none"}',
+                    )
+                else:
+                    yield grpc_pb2.SampleFrame(
+                        session_id=request.session_id,
+                        handle=request.handle,
+                        generation=request.generation,
+                        operation_id=request.operation_id,
+                        sequence=request.sequence,
+                        direction=request.direction,
+                        kind=grpc_pb2.SAMPLE_FRAME_RESULT,
+                        sample_count=request.sample_count,
+                    )
+
+        self.assertEqual(_wire_dtype(SC16_DTYPE), SC16_DTYPE)
+        self.assertEqual(_wire_dtype(np.dtype([("re", ">i2"), ("im", ">i2")])), SC16_DTYPE)
+        for invalid in (np.dtype("|V4"), np.dtype([("sample", "<c8")]), np.dtype(np.int32)):
+            with self.assertRaises(ValueError):
+                _wire_dtype(invalid)
+
+        stub = CapturingSC16Stub()
+        transport = DynamicV2Transport(control_stub=object(), sample_stub=stub)
+        source = np.array([(12, -34), (56, -78)], dtype=SC16_DTYPE)
+        sent = transport.send(
+            session_id="session",
+            handle="tx",
+            generation=4,
+            sequence=1,
+            samples=source,
+            channels=[0],
+            timeout=0.1,
+            metadata=uhd_v2.TXMetadata(),
+        )
+        self.assertEqual(sent, 2)
+        self.assertEqual(stub.frames[1].dtype, "sc16")
+        self.assertEqual(list(stub.frames[1].shape), [2])
+        self.assertEqual(
+            stub.frames[1].payload,
+            np.array([12, -34, 56, -78], dtype="<i2").tobytes(),
+        )
+
+        count, received, metadata = transport.recv(
+            session_id="session",
+            handle="rx",
+            generation=5,
+            sequence=1,
+            buffer=np.empty(2, dtype=SC16_DTYPE),
+            sample_count=2,
+            channels=[0],
+            timeout=0.1,
+            one_packet=False,
+            metadata=uhd_v2.RXMetadata(),
+        )
+        self.assertEqual(stub.frames[1].dtype, "sc16")
+        self.assertEqual(count, 2)
+        self.assertEqual(received.dtype, SC16_DTYPE)
+        np.testing.assert_array_equal(received, source)
+        self.assertEqual(metadata["error_code"], "none")
+
+        for bad_tag in (
+            "|V4",
+            "[('re','<i2'),('im','<i2')]",
+            "[('sample','<c8')]",
+            "<i2",
+            "<c8",
+        ):
+            with self.subTest(bad_tag=bad_tag):
+                bad_transport = DynamicV2Transport(
+                    control_stub=object(),
+                    sample_stub=MalformedRXStub(
+                        dtype=bad_tag,
+                        shape=(2,),
+                        payload=b"\0" * 8,
+                    ),
+                )
+                with self.assertRaises(RemoteRFProtocolError):
+                    bad_transport.recv(
+                        session_id="session",
+                        handle="rx",
+                        generation=5,
+                        sequence=1,
+                        buffer=np.empty(2, dtype=SC16_DTYPE),
+                        sample_count=2,
+                        channels=[0],
+                        timeout=0.1,
+                        one_packet=False,
+                        metadata=uhd_v2.RXMetadata(),
+                    )
 
 
 if __name__ == "__main__":
