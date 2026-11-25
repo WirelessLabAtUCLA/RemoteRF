@@ -76,3 +76,14 @@ def test_enroll_through_global_names_the_password_and_a_working_login_command():
     assert "RemoteRF Global password" in asked[0] and " ucla " in asked[0] and ".global.remoterf.net" not in asked[0]
     assert fake.backend.enroll.call_args.kwargs["password"] == "pw-123456"
     assert any("remoterf --login ucla" in n for n in notes) and not any("-l jdoe@ucla" in n for n in notes)
+
+
+def test_enroll_prompt_names_a_non_global_lab_by_its_saved_name():
+    fake = Mock(is_https_home=True, username="jdoe")
+    fake.backend.enroll.return_value = {"status": "enrolled", "lab": {}}
+    asked = []
+    with patch.object(client_app, "account", fake), patch.object(client_app, "home_name", "global"), \
+         patch.object(client_app, "_ask", side_effect=lambda text, **kw: asked.append(text) or ""), \
+         patch.object(client_app, "_note"), patch.object(client_app, "_sync_labs"):
+        client_app.enroll("rf.lab.example.edu:8443/ABC123")
+    assert " rf-lab-example-edu " in asked[0] and " rf " not in asked[0]
