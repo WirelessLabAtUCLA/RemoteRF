@@ -356,6 +356,9 @@ class HackRFSchema(DeviceSchema):
     @idl_expose(kind="call")
     def call_read_samples(self, num_samples=131072):
         """Synchronously read a bounded complex64 IQ array."""
+        # The HackRF is half-duplex; reading would fail or disrupt the TX stream.
+        if getattr(self.device, "_remoterf_tx_active", False):
+            raise RuntimeError("stop HackRF TX before reading samples")
         count = _bounded_sample_count(num_samples)
         samples = _correct_pyhackrf2_iq(self.device.read_samples(count))
         if samples.size != count:
@@ -433,9 +436,19 @@ class HackRFSchema(DeviceSchema):
         return None
 
     def reset_for_next_holder(self):
-        """A reservation ended: stop its transmission and drop its IQ bytes."""
-        if self.device is not None:
+        """A reservation ended: stop its transmission, drop its IQ bytes, and
+        turn off the antenna bias tee and front-end amplifier."""
+        if self.device is None:
+            return
+        # Each step runs even if an earlier one fails: DC on the antenna port or
+        # a stray amp must not carry over to the next holder.
+        try:
             self.call_close()
+        finally:
+            try:
+                self.set_bias_tee_on(False)
+            finally:
+                self.set_amplifier_on(False)
 
     @idl_expose(kind="call")
     def call_enumerate(self):
