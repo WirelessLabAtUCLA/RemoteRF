@@ -1,6 +1,7 @@
 """ACC:availability: permitted devices with anonymous occupancy, one call per
 interval per account; and the busy_until/next_start the status note carries."""
 
+import inspect
 import json
 import sqlite3
 import tempfile
@@ -116,3 +117,72 @@ class AvailabilityTests(_Devices):
         self.assertEqual(noted[0]["next_start"], 0)
         self.assertEqual(noted[1]["busy_until"], 0)
         self.assertGreater(noted[1]["next_start"], 0)
+
+    def _insert_row(self, user, start_s, end_s, gid=GID):
+        with sqlite3.connect(self.h.filepath) as conn:
+            return conn.execute(
+                "INSERT INTO Reservations (username, device_id, start_time, end_time, salt, hash) "
+                "VALUES (?, ?, ?, ?, 's', 'h')",
+                (user, gid, start_s, end_s),
+            ).lastrowid
+
+    def test_get_res_skips_ended_inverted_and_unparseable_rows(self):
+        fixed = datetime(2026, 6, 1, 12, 0, 0)
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        ended = self._insert_row("jdoe", _ts(fixed - timedelta(hours=2)), _ts(fixed - timedelta(hours=1)))
+        at_now = self._insert_row("jdoe", _ts(fixed - timedelta(hours=1)), _ts(fixed))
+        equal_bounds = self._insert_row("jdoe", _ts(fixed + timedelta(hours=1)), _ts(fixed + timedelta(hours=1)))
+        inverted = self._insert_row("jdoe", _ts(fixed + timedelta(hours=2)), _ts(fixed + timedelta(hours=1)))
+        bad = self._insert_row("jdoe", _ts(fixed + timedelta(hours=1)), _ts(fixed + timedelta(hours=2)))
+        with sqlite3.connect(self.h.filepath) as conn:
+            conn.execute(
+                "UPDATE Reservations SET start_time = 'not-a-timestamp', end_time = 'not-a-timestamp' WHERE res_id = ?",
+                (bad,),
+            )
+        live = self._insert_row("jdoe", _ts(fixed - timedelta(minutes=10)), _ts(fixed + timedelta(minutes=20)))
+        upcoming = self._insert_row("asmith", _ts(fixed + timedelta(hours=1)), _ts(fixed + timedelta(hours=2)))
+        other_dev = self._insert_row("asmith", _ts(fixed + timedelta(hours=1)), _ts(fixed + timedelta(hours=2)), gid=OTHER)
+
+        self.reservation.perms.set_admin("boss", confirm=False, quiet=True)
+        self.reservation.perms.set_poweruser("power", max_reservations=5, max_reservation_time_sec=3600, devices_allowed=[GID])
+
+        with mock.patch.object(self.reservation, "datetime", _Frozen):
+            normal_via_acc = {
+                k: unmap_arg(v)
+                for k, v in self.h.handle_call(
+                    function_name="get_res",
+                    args={"un": map_arg("jdoe"), "pw": map_arg("password1")},
+                ).items()
+            }
+            power = {k: unmap_arg(v) for k, v in self.h.grab_all_reservations("power").items()}
+            admin = {k: unmap_arg(v) for k, v in self.h.grab_all_reservations("boss").items()}
+
+        self.assertEqual(set(normal_via_acc), {str(live), str(upcoming)})
+        self.assertTrue(normal_via_acc[str(live)].startswith(f"jdoe,{GID},"))
+        self.assertTrue(normal_via_acc[str(upcoming)].startswith(f"reserved,{GID},"))
+        self.assertEqual(set(power), {str(live), str(upcoming)})
+        self.assertTrue(power[str(live)].startswith(f"reserved,{GID},"))
+        self.assertEqual(set(admin), {str(live), str(upcoming), str(other_dev)})
+        self.assertTrue(admin[str(upcoming)].startswith(f"asmith,{GID},"))
+        for skipped in (ended, at_now, equal_bounds, inverted, bad):
+            self.assertNotIn(str(skipped), admin)
+
+    def test_grab_all_reservations_computes_now_at_call_time(self):
+        self.assertEqual(list(inspect.signature(self.h.grab_all_reservations).parameters), ["username"])
+        current = [datetime(2026, 6, 1, 12, 0, 0)]
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return current[0]
+
+        res_id = self._insert_row("jdoe", "2026-06-01 11:30:00", "2026-06-01 12:30:00")
+        with mock.patch.object(self.reservation, "datetime", _Clock):
+            self.assertEqual(set(self.h.grab_all_reservations("jdoe")), {str(res_id)})
+            current[0] = datetime(2026, 6, 1, 12, 30, 0)
+            self.assertEqual(self.h.grab_all_reservations("jdoe"), {})

@@ -694,9 +694,13 @@ def list_reservations(s, *, mine_only=True) -> dict:
         names = {d["deployment_id"]: d["display_name"] for d in data["destinations"]
                  if d.get("display_name") != d["deployment_id"]}
         notes = _destination_notes(data)
+        now = datetime.now(timezone.utc).timestamp()
         slugs = {}
         for r in data["reservations"]:
             if mine_only and not r.get("mine"):
+                continue
+            # Older labs still send reservations that have already ended.
+            if (r.get("end_time") or 0) <= now:
                 continue
             dev = devices.get(r["device_id"], {})
             lab = dev.get("deployment_name") or names.get(r["deployment_id"])

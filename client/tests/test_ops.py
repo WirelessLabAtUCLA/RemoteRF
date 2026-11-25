@@ -79,7 +79,7 @@ class Home:
         return data
 
     def reservations(self):
-        start = int(datetime(2026, 3, 2, 13, tzinfo=timezone.utc).timestamp())
+        start = int(datetime(2099, 3, 2, 13, tzinfo=timezone.utc).timestamp())
         return {"reservations": [{"reservation_id": f"{DEP}:9", "device_id": REF, "deployment_id": DEP,
                                   "start_time": start, "end_time": start + 3600, "mine": True}],
                 "destinations": [{"deployment_id": DEP, "display_name": "ucla", "status": "ok"}]}
@@ -156,11 +156,11 @@ def test_lab_slots_align_and_skip_the_past_and_taken(lab):
 
 
 def test_global_slots_in_a_named_zone(home):
-    out = ops.find_slots(home, "Pluto_01@ucla", tz="UTC", now=datetime(2026, 3, 2, 10, 5, tzinfo=timezone.utc))
+    out = ops.find_slots(home, "Pluto_01@ucla", tz="UTC", now=datetime(2099, 3, 2, 10, 5, tzinfo=timezone.utc))
     starts = [s["start"] for s in out["slots"]]
     assert out["timezone"] == "UTC" and out["slot_minutes"] == 30
-    assert starts[0] == "2026-03-02T10:00:00Z" and starts[-1] == "2026-03-02T23:30:00Z"
-    assert "2026-03-02T13:00:00Z" not in starts and "2026-03-02T13:30:00Z" not in starts and "2026-03-02T14:00:00Z" in starts
+    assert starts[0] == "2099-03-02T10:00:00Z" and starts[-1] == "2099-03-02T23:30:00Z"
+    assert "2099-03-02T13:00:00Z" not in starts and "2099-03-02T13:30:00Z" not in starts and "2099-03-02T14:00:00Z" in starts
 
 
 def test_auto_reserve_books_only_the_current_slot(lab):
@@ -237,7 +237,37 @@ def test_global_reserve_and_reservations(home):
     assert out["start"] == "2026-03-02T15:00:00Z"
     rows = ops.list_reservations(home)["reservations"]
     assert [(r["handle"], r["device"], r["deployment"], r["start"], r["mine"]) for r in rows] == [
-        ("Pluto_01@ucla", "Pluto 01", "ucla", "2026-03-02T13:00:00Z", True)]
+        ("Pluto_01@ucla", "Pluto 01", "ucla", "2099-03-02T13:00:00Z", True)]
+
+
+def test_global_list_reservations_skips_ended_rows(home, monkeypatch):
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    now_ts = int(now.timestamp())
+
+    class _Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(ops, "datetime", _Fixed)
+    monkeypatch.setattr(home.account.backend, "reservations", lambda: {
+        "reservations": [
+            {"reservation_id": f"{DEP}:1", "device_id": REF, "deployment_id": DEP,
+             "start_time": now_ts - 7200, "end_time": now_ts - 3600, "mine": True},
+            {"reservation_id": f"{DEP}:2", "device_id": REF, "deployment_id": DEP,
+             "start_time": now_ts - 3600, "end_time": now_ts, "mine": True},
+            {"reservation_id": f"{DEP}:3", "device_id": REF, "deployment_id": DEP,
+             "start_time": now_ts - 1800, "end_time": now_ts + 1800, "mine": True},
+            {"reservation_id": f"{DEP}:4", "device_id": REF, "deployment_id": DEP,
+             "start_time": now_ts - 7200, "end_time": now_ts - 3600, "mine": False},
+            {"reservation_id": f"{DEP}:5", "device_id": REF, "deployment_id": DEP,
+             "start_time": now_ts + 3600, "end_time": now_ts + 7200, "mine": False},
+        ],
+        "destinations": [{"deployment_id": DEP, "display_name": "ucla", "status": "ok"}],
+    })
+    assert [r["reservation_id"] for r in ops.list_reservations(home)["reservations"]] == [f"{DEP}:3"]
+    assert [r["reservation_id"] for r in ops.list_reservations(home, mine_only=False)["reservations"]] == [
+        f"{DEP}:3", f"{DEP}:5"]
 
 
 def test_lab_reservations_name_devices_by_handle(lab):
@@ -297,7 +327,7 @@ def test_errors_are_typed_and_mapped(lab, home, monkeypatch):
         "reservation_too_long", 2, "ucla turned the reservation down: Pluto_01@ucla can be reserved for at most 30 minutes at a time.")
     monkeypatch.setattr(home.account.backend, "reserve", refuse("reservation_limit"))
     err = _code(ops.reserve, home, "Pluto_01@ucla", "2026-03-02T15:00:00Z", "2026-03-02T15:30:00Z")
-    assert (err.code, err.exit_code) == ("reservation_limit", 6) and "as many reservations there as you're allowed" in err.message
+    assert (err.code, err.exit_code) == ("reservation_limit", 6) and "maximum of 1 reservations there" in err.message
 
     monkeypatch.setattr(grpc_client, "rpc_client", lambda **kw: _r({"ace": "Invalid login credentials."}))
     assert _code(ops.list_devices, lab).code == "session_expired"
