@@ -33,6 +33,7 @@ from remoteRF_host.drivers.usrp.uhd_manifest import (
 )
 from remoteRF_host.server.dynamic_v2 import (
     HandleEntry,
+    SC16_DTYPE,
     SampleDataV1Servicer,
     SessionManager,
     session_manager,
@@ -511,6 +512,320 @@ class DynamicV2BridgeTests(unittest.TestCase):
         self.assertEqual(frame.kind, grpc_pb2.SAMPLE_FRAME_RESULT)
         self.assertLess(time.monotonic() - started, 0.2)
 
+    def test_sc16_rx_tx_and_wire_tag_validation_across_tunnel_calls(self):
+        class FakeTXMetadata:
+            def __init__(self):
+                self.has_time_spec = False
+                self.time_spec = None
+                self.start_of_burst = False
+                self.end_of_burst = False
+
+        class FakeSC16RXStreamer:
+            def __init__(self):
+                self.seen = []
+                self.calls = 0
+
+            def issue_stream_cmd(self, command):
+                pass
+
+            def recv(self, buffer, metadata, timeout):
+                self.calls += 1
+                self.seen.append((buffer.dtype, buffer.shape, buffer.itemsize))
+                if self.calls > 1:
+                    return 0
+                view = buffer.view(SC16_DTYPE)
+                if buffer.ndim == 1:
+                    view[:2] = np.array([(21, -42), (63, -84)], dtype=SC16_DTYPE)
+                else:
+                    for ch in range(buffer.shape[0]):
+                        view[ch, :2] = np.array(
+                            [(21 + ch, -42 - ch), (63 + ch, -84 - ch)],
+                            dtype=SC16_DTYPE,
+                        )
+                metadata.error_code = "none"
+                return 2
+
+        class FakeSC16TXStreamer:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, buffer, metadata, timeout):
+                self.sent.append(
+                    (
+                        buffer.dtype,
+                        buffer.shape,
+                        buffer.itemsize,
+                        buffer.view(SC16_DTYPE).copy(),
+                        metadata.start_of_burst,
+                        metadata.end_of_burst,
+                    )
+                )
+                return int(buffer.shape[-1])
+
+        fake_uhd = types.SimpleNamespace(
+            types=types.SimpleNamespace(
+                RXMetadata=FakeRXMetadata,
+                TXMetadata=FakeTXMetadata,
+                TXAsyncMetadata=None,
+                StreamCMD=lambda mode: types.SimpleNamespace(mode=mode),
+                StreamMode=types.SimpleNamespace(stop_cont="stop_cont"),
+            )
+        )
+        opened = self.open_session()
+        session = session_manager.get(opened.session_id)
+        rx1_native = FakeSC16RXStreamer()
+        rx2_native = FakeSC16RXStreamer()
+        tx1_native = FakeSC16TXStreamer()
+        tx2_native = FakeSC16TXStreamer()
+
+        with patch.dict(sys.modules, {"uhd": fake_uhd}):
+            rx1 = session_manager.register_handle(
+                session, rx1_native, "uhd.usrp.RXStreamer", parent=opened.device_handle
+            )
+            rx1.cpu_format = "sc16"
+            rx1.stream_channels = [0]
+
+            rx2 = session_manager.register_handle(
+                session, rx2_native, "uhd.usrp.RXStreamer", parent=opened.device_handle
+            )
+            rx2.cpu_format = "sc16"
+            rx2.stream_channels = [0, 1]
+
+            tx1 = session_manager.register_handle(
+                session, tx1_native, "uhd.usrp.TXStreamer", parent=opened.device_handle
+            )
+            tx1.cpu_format = "sc16"
+            tx1.stream_channels = [0]
+
+            tx2 = session_manager.register_handle(
+                session, tx2_native, "uhd.usrp.TXStreamer", parent=opened.device_handle
+            )
+            tx2.cpu_format = "sc16"
+            tx2.stream_channels = [0, 1]
+
+        construct_metadata = lambda value: (  # noqa: E731
+            FakeTXMetadata()
+            if isinstance(value, dict) and value.get("__uhd_type__") == "TXMetadata"
+            else FakeRXMetadata()
+        )
+        with (
+            patch(
+                "remoteRF_host.drivers.usrp.usrp_schema._construct",
+                side_effect=construct_metadata,
+            ),
+            patch.dict(sys.modules, {"uhd": fake_uhd}),
+        ):
+            rx1_common = {
+                "session_id": opened.session_id,
+                "handle": rx1.handle,
+                "generation": rx1.generation,
+                "operation_id": "sc16-rx1",
+                "direction": grpc_pb2.SAMPLE_DIRECTION_RX,
+            }
+            self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **rx1_common, sequence=0, kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            received1 = self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **rx1_common,
+                    sequence=1,
+                    kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                    dtype="sc16",
+                    shape=[4],
+                    channels=[0],
+                    sample_count=4,
+                    timeout_sec=1.0,
+                    metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(received1.kind, grpc_pb2.SAMPLE_FRAME_DATA)
+            self.assertEqual(received1.dtype, "sc16")
+            self.assertEqual(received1.sample_count, 2)
+            np.testing.assert_array_equal(
+                np.frombuffer(received1.payload, dtype=SC16_DTYPE),
+                np.array([(21, -42), (63, -84)], dtype=SC16_DTYPE),
+            )
+            self.assertEqual(rx1_native.seen[0], (np.dtype(np.int32), (4,), 4))
+
+            rx2_common = {
+                "session_id": opened.session_id,
+                "handle": rx2.handle,
+                "generation": rx2.generation,
+                "operation_id": "sc16-rx2",
+                "direction": grpc_pb2.SAMPLE_DIRECTION_RX,
+            }
+            self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **rx2_common, sequence=0, kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            received2 = self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **rx2_common,
+                    sequence=1,
+                    kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                    dtype="sc16",
+                    shape=[2, 2],
+                    channels=[0, 1],
+                    sample_count=2,
+                    timeout_sec=1.0,
+                    metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(received2.dtype, "sc16")
+            self.assertEqual(list(received2.shape), [2, 2])
+            np.testing.assert_array_equal(
+                np.frombuffer(received2.payload, dtype=SC16_DTYPE).reshape(2, 2),
+                np.array(
+                    [[(21, -42), (63, -84)], [(22, -43), (64, -85)]],
+                    dtype=SC16_DTYPE,
+                ),
+            )
+            self.assertEqual(rx2_native.seen[0], (np.dtype(np.int32), (2, 2), 4))
+
+            tx1_samples = np.array([(5, -10), (15, -20)], dtype=SC16_DTYPE)
+            tx1_common = {
+                "session_id": opened.session_id,
+                "handle": tx1.handle,
+                "generation": tx1.generation,
+                "operation_id": "sc16-tx1",
+                "direction": grpc_pb2.SAMPLE_DIRECTION_TX,
+            }
+            self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **tx1_common, sequence=0, kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            tx1_result = self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **tx1_common,
+                    sequence=1,
+                    kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                    dtype="sc16",
+                    shape=[2],
+                    channels=[0],
+                    sample_count=2,
+                    payload=tx1_samples.tobytes(),
+                    timeout_sec=1.0,
+                    metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(tx1_result.kind, grpc_pb2.SAMPLE_FRAME_RESULT)
+            self.assertEqual(tx1_result.sample_count, 2)
+            self.assertEqual(tx1_native.sent[0][:3], (np.dtype(np.int32), (2,), 4))
+            np.testing.assert_array_equal(tx1_native.sent[0][3], tx1_samples)
+
+            tx2_samples = np.array(
+                [[(1, -2), (3, -4)], [(5, -6), (7, -8)]],
+                dtype=SC16_DTYPE,
+            )
+            tx2_common = {
+                "session_id": opened.session_id,
+                "handle": tx2.handle,
+                "generation": tx2.generation,
+                "operation_id": "sc16-tx2",
+                "direction": grpc_pb2.SAMPLE_DIRECTION_TX,
+            }
+            self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **tx2_common, sequence=0, kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            tx2_result = self.call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    **tx2_common,
+                    sequence=1,
+                    kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                    dtype="sc16",
+                    shape=[2, 2],
+                    channels=[0, 1],
+                    sample_count=2,
+                    payload=tx2_samples.tobytes(),
+                    timeout_sec=1.0,
+                    metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(tx2_result.kind, grpc_pb2.SAMPLE_FRAME_RESULT)
+            self.assertEqual(tx2_result.sample_count, 2)
+            self.assertEqual(tx2_native.sent[0][:3], (np.dtype(np.int32), (2, 2), 4))
+            np.testing.assert_array_equal(tx2_native.sent[0][3], tx2_samples)
+
+            sequence = 2
+            for bad_dtype in (
+                "|V4",
+                "[('re','<i2'),('im','<i2')]",
+                "[('sample','<c8')]",
+                "<c8",
+                "<i2",
+            ):
+                with self.subTest(bad_dtype=bad_dtype):
+                    op = f"bad-{sequence}"
+                    self.call(
+                        "SampleFrame",
+                        grpc_pb2.SampleFrame(
+                            session_id=opened.session_id,
+                            handle=rx1.handle,
+                            generation=rx1.generation,
+                            operation_id=op,
+                            sequence=sequence,
+                            direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                            kind=grpc_pb2.SAMPLE_FRAME_OPEN,
+                        ),
+                        grpc_pb2.SampleFrame,
+                    )
+                    rejected = self.call(
+                        "SampleFrame",
+                        grpc_pb2.SampleFrame(
+                            session_id=opened.session_id,
+                            handle=rx1.handle,
+                            generation=rx1.generation,
+                            operation_id=op,
+                            sequence=sequence + 1,
+                            direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                            kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                            dtype=bad_dtype,
+                            shape=[1],
+                            channels=[0],
+                            sample_count=1,
+                        ),
+                        grpc_pb2.SampleFrame,
+                    )
+                    self.assertEqual(rejected.kind, grpc_pb2.SAMPLE_FRAME_ERROR)
+                    self.assertEqual(rejected.error.code, "RemoteRFProtocolError")
+                    sequence += 2
+
+            self.call(
+                "CloseSession",
+                grpc_pb2.CloseSessionRequest(session_id=opened.session_id),
+                grpc_pb2.CloseResponse,
+            )
+            self.assertEqual(
+                (tx1_native.sent[-1][0], tx1_native.sent[-1][1], tx1_native.sent[-1][4], tx1_native.sent[-1][5]),
+                (np.dtype(np.int32), (0,), False, True),
+            )
+            self.assertEqual(
+                (tx2_native.sent[-1][0], tx2_native.sent[-1][1], tx2_native.sent[-1][4], tx2_native.sent[-1][5]),
+                (np.dtype(np.int32), (2, 0), False, True),
+            )
+
 class RXPrefetchTests(unittest.TestCase):
     @staticmethod
     def entry(**kwargs):
@@ -623,6 +938,110 @@ class RXPrefetchTests(unittest.TestCase):
                 release.set()
                 manager._stop_rx_prefetch(entry)
         self.assertEqual(peak[0], 1)
+
+    def test_sc16_prefetch_and_tx_eob_flush(self):
+        class FakeTXMetadata:
+            def __init__(self):
+                self.start_of_burst = True
+                self.end_of_burst = False
+
+        class StreamingSC16RX:
+            def __init__(self):
+                self.seen = []
+
+            def recv(self, buffer, metadata, timeout):
+                self.seen.append((buffer.dtype, buffer.shape, buffer.itemsize))
+                view = buffer.view(SC16_DTYPE)
+                view["re"] = 321
+                view["im"] = -654
+                metadata.error_code = "none"
+                time.sleep(0.001)
+                return buffer.shape[-1]
+
+        class RecordingTX:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, buffer, metadata, timeout):
+                self.sent.append(
+                    (
+                        buffer.dtype,
+                        buffer.shape,
+                        buffer.itemsize,
+                        metadata.start_of_burst,
+                        metadata.end_of_burst,
+                    )
+                )
+                return int(buffer.shape[-1])
+
+        streamer = StreamingSC16RX()
+        entry = self.entry(value=streamer, stream_channels=[0, 1], cpu_format="sc16")
+        session = types.SimpleNamespace(
+            closed=False,
+            gid=7,
+            lifecycle_lock=threading.RLock(),
+        )
+        fake_uhd = types.SimpleNamespace(
+            types=types.SimpleNamespace(
+                RXMetadata=FakeRXMetadata,
+                TXMetadata=FakeTXMetadata,
+            )
+        )
+        manager = SessionManager()
+        with (
+            patch.dict(sys.modules, {"uhd": fake_uhd}),
+            patch("remoteRF_host.server.dynamic_v2._MAX_SAMPLE_PAYLOAD_BYTES", 1024),
+        ):
+            manager._start_rx_prefetch(session, entry)
+            try:
+                deadline = time.monotonic() + 1.0
+                while entry.rx_prefetch.empty() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertFalse(entry.rx_prefetch.empty())
+                chunk, _ = entry.rx_prefetch.get_nowait()
+            finally:
+                manager._stop_rx_prefetch(entry)
+
+        self.assertEqual(chunk.dtype, SC16_DTYPE)
+        self.assertEqual(chunk.dtype.itemsize, 4)
+        self.assertEqual(chunk.shape, (2, 128))
+        self.assertTrue(np.all(chunk["re"] == 321))
+        self.assertTrue(np.all(chunk["im"] == -654))
+        self.assertEqual(streamer.seen[0], (np.dtype(np.int32), (2, 128), 4))
+
+        entry.rx_prefetch.put((chunk[:, :4], {"error_code": "none"}))
+        out = np.empty((2, 4), dtype=SC16_DTYPE)
+        count, metadata = SampleDataV1Servicer._recv_prefetched(entry, out, 0.1)
+        self.assertEqual(count, 4)
+        self.assertEqual(metadata["error_code"], "none")
+        self.assertTrue(np.all(out["re"] == 321))
+        self.assertTrue(np.all(out["im"] == -654))
+
+        tx1 = RecordingTX()
+        tx1_entry = HandleEntry(
+            handle="tx1",
+            type_id="uhd.usrp.TXStreamer",
+            value=tx1,
+            parent=None,
+            generation=2,
+            stream_channels=[0],
+            cpu_format="sc16",
+        )
+        tx2 = RecordingTX()
+        tx2_entry = HandleEntry(
+            handle="tx2",
+            type_id="uhd.usrp.TXStreamer",
+            value=tx2,
+            parent=None,
+            generation=3,
+            stream_channels=[0, 1],
+            cpu_format="sc16",
+        )
+        with patch.dict(sys.modules, {"uhd": fake_uhd}):
+            SessionManager._stop_streamer(tx1_entry)
+            SessionManager._stop_streamer(tx2_entry)
+        self.assertEqual(tx1.sent, [(np.dtype(np.int32), (0,), 4, False, True)])
+        self.assertEqual(tx2.sent, [(np.dtype(np.int32), (2, 0), 4, False, True)])
 
 
 if __name__ == "__main__":
