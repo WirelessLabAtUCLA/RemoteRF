@@ -129,6 +129,14 @@ class Radar:
     # Lifecycle & Control
     # -------------------------------------------------------------------------
 
+    def _record_command(self, line: str) -> None:
+        """Updates _is_running when a sensorStart or sensorStop command is acknowledged."""
+        cmd = line.split()[0]
+        if cmd == "sensorStart":
+            self._is_running = True
+        elif cmd == "sensorStop":
+            self._is_running = False
+
     def start(
         self,
         config_filepath: Optional[str] = None,
@@ -143,9 +151,12 @@ class Radar:
         self.connection.connect()
 
         if config_text:
-            self.connection.send_config_text(config_text, verbose=verbose)
+            self.connection.send_config_text(
+                config_text, verbose=verbose, on_command=self._record_command,
+            )
         elif config_filepath:
             self.connection.send_config_file(config_filepath, verbose=verbose)
+            self._is_running = True
         else:
             # Build and send configuration from settings/preset
             if preset is not None:
@@ -158,9 +169,9 @@ class Radar:
                 self._settings["fps"] = float(fps)
 
             cfg = self._build_active_config()
-            self.connection.send_config_text(cfg, verbose=verbose)
-
-        self._is_running = True
+            self.connection.send_config_text(
+                cfg, verbose=verbose, on_command=self._record_command,
+            )
 
     def _validate_settings(
         self,
@@ -248,9 +259,12 @@ class Radar:
             if self.connection.cli_ser and self.connection.cli_ser.is_open:
                 was_running = self._is_running if start is None else bool(start)
                 self.connection.send_config_text(
-                    cfg, verbose=False, start=was_running, total_timeout=20.0,
+                    cfg,
+                    verbose=False,
+                    start=was_running,
+                    total_timeout=20.0,
+                    on_command=self._record_command,
                 )
-                self._is_running = was_running
                 self.flush()
             return cfg
         except Exception:

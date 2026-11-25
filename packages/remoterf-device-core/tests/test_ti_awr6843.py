@@ -458,3 +458,146 @@ def test_is_running_tracks_actual_start_and_config_commands(schema, ti, monkeypa
     FakeSerial.response_fn = lambda cmd: b"Error -1\nmmwDemo:/>"
     assert schema.call_stop() is False
     assert schema.get_is_running() is True
+
+
+def test_send_config_text_rejects_unacknowledged_echo(schema, ti, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(
+        ti.connection,
+        "time",
+        types.SimpleNamespace(time=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s)),
+    )
+    FakeSerial.response_fn = lambda cmd: b"sensorStart\n" if cmd == "sensorStart" else PROMPT
+
+    with pytest.raises(RuntimeError, match="sensorStart"):
+        schema.call_apply_config("sensorStop\nsensorStart\n", command_timeout=0.2)
+    assert schema.get_is_running() is False
+
+    # Prompt-only or Done-only replies still count as acknowledged.
+    FakeSerial.response_fn = lambda cmd: b"sensorStart\nmmwDemo:/>" if cmd == "sensorStart" else PROMPT
+    assert schema.call_apply_config("sensorStop\nsensorStart\n", command_timeout=0.2)
+    assert schema.get_is_running() is True
+
+
+def test_apply_config_preserves_is_running_without_start_or_stop(schema):
+    schema.call_configure(preset="default", start=True)
+    assert schema.get_is_running() is True
+
+    # Runtime snippet without sensorStart/sensorStop keeps is_running True,
+    # so a subsequent reconfigure still restarts the sensor.
+    assert schema.call_apply_config("clutterRemoval -1 1\n")
+    assert schema.get_is_running() is True
+
+    FakeSerial.opened["cli"].written.clear()
+    schema.set_fps(20.0)
+    assert "sensorStart" in commands()
+    assert schema.get_is_running() is True
+
+    # Same runtime snippet while stopped keeps is_running False.
+    schema.call_configure(preset="default", start=False)
+    assert schema.get_is_running() is False
+    assert schema.call_apply_config("clutterRemoval -1 1\n")
+    assert schema.get_is_running() is False
+
+
+def test_reconfigure_allows_slow_sensor_start_and_fails_fast_on_silent_line(schema, ti, monkeypatch):
+    schema.call_configure(preset="default", start=True)
+
+    clock = [100.0]
+    pending = []
+
+    def fake_sleep(s):
+        clock[0] += s
+        for item in list(pending):
+            if clock[0] >= item[0]:
+                FakeSerial.opened["cli"]._in.extend(item[1])
+                pending.remove(item)
+
+    monkeypatch.setattr(
+        ti.connection,
+        "time",
+        types.SimpleNamespace(time=lambda: clock[0], sleep=fake_sleep),
+    )
+
+    # Slow RF calibration on sensorStart (1.5 s > old 0.8 s timeout) still succeeds
+    # and returns as soon as Done arrives.
+    sensor_start_at = []
+
+    def slow_start_response(cmd):
+        if cmd == "sensorStart":
+            sensor_start_at.append(clock[0])
+            pending.append((clock[0] + 1.5, PROMPT))
+            return b"sensorStart\n"
+        return PROMPT
+
+    FakeSerial.response_fn = slow_start_response
+    schema.set_fps(20.0)
+    assert schema.get_fps() == 20.0
+    assert schema.get_is_running() is True
+    assert sensor_start_at and 1.4 <= clock[0] - sensor_start_at[0] < 2.0
+
+    # Silent radar fails on its first unacknowledged line without sending later lines.
+    FakeSerial.opened["cli"].written.clear()
+    FakeSerial.response_fn = lambda cmd: PROMPT if cmd in ("", "sensorStop") else b""
+    t0 = clock[0]
+    with pytest.raises(RuntimeError, match="flushCfg"):
+        schema.set_fps(15.0)
+    assert commands() == ["sensorStop", "flushCfg"]
+    assert clock[0] - t0 < 6.0
+    assert schema.get_fps() == 20.0
+
+    # total_timeout still bounds per-command wait when remaining time is smaller.
+    FakeSerial.response_fn = lambda cmd: PROMPT if cmd == "" else b""
+    t0 = clock[0]
+    with pytest.raises(RuntimeError, match="sensorStop"):
+        schema.device.radar.connection.send_config_text(
+            "sensorStop\nsensorStart\n", verbose=False, total_timeout=1.2,
+        )
+    assert clock[0] - t0 < 1.5
+
+
+def test_is_running_updates_when_config_fails_mid_script(schema, ti, monkeypatch):
+    schema.call_configure(preset="default", start=True)
+    assert schema.get_is_running() is True
+
+    clock = [100.0]
+    monkeypatch.setattr(
+        ti.connection,
+        "time",
+        types.SimpleNamespace(time=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s)),
+    )
+
+    # sensorStop succeeds, then an unacknowledged line raises: _is_running becomes False
+    # so a subsequent set_fps does not unexpectedly restart the sensor.
+    FakeSerial.response_fn = lambda cmd: b"foo\n" if cmd == "foo" else PROMPT
+    with pytest.raises(RuntimeError, match="foo"):
+        schema.call_apply_config("sensorStop\nfoo\n", command_timeout=0.2)
+    assert schema.get_is_running() is False
+
+    FakeSerial.response_fn = None
+    FakeSerial.opened["cli"].written.clear()
+    schema.set_fps(15.0)
+    assert "sensorStart" not in commands()
+    assert schema.get_is_running() is False
+
+    # sensorStart succeeds, then a later line fails: _is_running becomes True.
+    FakeSerial.response_fn = lambda cmd: b"Error -1\nmmwDemo:/>" if cmd == "badCmd" else PROMPT
+    with pytest.raises(RuntimeError, match="badCmd"):
+        schema.call_apply_config("sensorStart\nbadCmd\n", command_timeout=0.2)
+    assert schema.get_is_running() is True
+
+    # Reconfigure fails mid-script after sensorStop: _is_running becomes False and settings roll back.
+    FakeSerial.response_fn = lambda cmd: b"Error -1\nmmwDemo:/>" if cmd.startswith("frameCfg") else PROMPT
+    with pytest.raises(RuntimeError, match="frameCfg"):
+        schema.set_fps(20.0)
+    assert schema.get_is_running() is False
+    assert schema.get_fps() == 15.0
+
+    # If sensorStop itself fails, _is_running stays True.
+    FakeSerial.response_fn = None
+    assert schema.call_start() is True
+    assert schema.get_is_running() is True
+    FakeSerial.response_fn = lambda cmd: b"Error -1\nmmwDemo:/>" if cmd == "sensorStop" else PROMPT
+    with pytest.raises(RuntimeError, match="sensorStop"):
+        schema.call_apply_config("sensorStop\nflushCfg\n", command_timeout=0.2)
+    assert schema.get_is_running() is True

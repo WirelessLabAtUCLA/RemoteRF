@@ -86,21 +86,6 @@ def _cli_ok(resp: str) -> bool:
     return "Error" not in resp and ("Done" in resp or "mmwDemo:/>" in resp)
 
 
-def _config_starts_sensor(config_text: str, start: bool) -> bool:
-    """True when applying config_text with `start` sends sensorStart not followed by sensorStop."""
-    running = False
-    for raw_line in config_text.strip().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("%"):
-            continue
-        cmd = line.split()[0]
-        if cmd == "sensorStart" and start:
-            running = True
-        elif cmd == "sensorStop":
-            running = False
-    return running
-
-
 class TiMmWaveDevice:
     """
     Hardware controller managing the TI mmWave radar for RemoteRF.
@@ -285,8 +270,8 @@ class TiMmWaveDevice:
             start=start,
             command_timeout=command_timeout,
             total_timeout=MAX_TIMEOUT_S,
+            on_command=self.radar._record_command,
         )
-        self.radar._is_running = _config_starts_sensor(config_text, start=start)
         self._config_file = config_file
         self._last_config_text = config_text
         return True

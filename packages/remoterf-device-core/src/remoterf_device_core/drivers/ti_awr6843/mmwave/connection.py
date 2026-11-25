@@ -2,7 +2,7 @@ import glob
 import logging
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 import serial
 
 logger = logging.getLogger(__name__)
@@ -206,8 +206,9 @@ class RadarConnection:
         config_text: str,
         verbose: bool = True,
         start: bool = True,
-        command_timeout: float = 0.8,
+        command_timeout: float = 5.0,
         total_timeout: Optional[float] = None,
+        on_command: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """
         Sends configuration commands from a multiline string directly to the radar.
@@ -254,6 +255,12 @@ class RadarConnection:
                 raise RuntimeError(
                     f"Radar returned error on command '{line}': {resp}"
                 )
+            if "Done" not in resp and "mmwDemo:/>" not in resp:
+                raise RuntimeError(
+                    f"Radar did not acknowledge command '{line}': {resp!r}"
+                )
+            if on_command is not None:
+                on_command(line)
             if verbose:
                 print(f"  [OK] {line}")
 
