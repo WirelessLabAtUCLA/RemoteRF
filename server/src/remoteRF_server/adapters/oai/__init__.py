@@ -121,6 +121,8 @@ EXTRA_RING_STREAMS = ("ofdm_grid", "constellation")
 RING_STREAMS = CSI_STREAMS + EXTRA_RING_STREAMS
 OFDM_SYMBOLS_PER_SLOT = 14
 CSI_MAGIC = b"RRFCSI\0\0"
+CSI_MAX_SEQ = 1 << 63  # payloads carry signed int64
+CSI_MAX_DROPPED = 1 << 31
 CSI_VERSION = 1
 CSI_HEADER = struct.Struct("<8sIIIIQ")
 CSI_HEADER_BYTES = 64
@@ -1259,20 +1261,28 @@ class OAI:
                                  " and optional timeout_s (0-600]")
         path = Path(self._context.work_dir) / "shm" / f"{stream}.ring"
         try:
-            with open(path, "rb") as handle:
-                ring = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+            handle = open(path, "rb")
         except FileNotFoundError:
             # A raised action tears the operation down; stock OAI writes no ring.
             return {"ok": False, "error": "ring_missing"}
-        except (OSError, ValueError):
+        except OSError:
             return {"ok": False, "error": "ring_invalid"}
-        with ring:
+        try:
+            ring = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        except (OSError, ValueError):
+            handle.close()
+            return {"ok": False, "error": "ring_invalid"}
+        with handle, ring:
             if len(ring) < CSI_HEADER_BYTES:
                 return {"ok": False, "error": "ring_invalid"}
             magic, version, entry_bytes, n_entries, _, _ = CSI_HEADER.unpack_from(ring)
             if (magic != CSI_MAGIC or version != CSI_VERSION or entry_bytes < CSI_ENTRY.size
                     or n_entries < 1 or len(ring) < CSI_HEADER_BYTES + entry_bytes * n_entries):
                 return {"ok": False, "error": "ring_invalid"}
+            # A writer must never shrink a live ring (reading past EOF of an mmap kills the
+            # process with SIGBUS); stop as soon as the file is shorter than it was.
+            need = CSI_HEADER_BYTES + entry_bytes * n_entries
+            self._ring_intact = lambda: os.fstat(handle.fileno()).st_size >= need
             # Upper bound from entry_bytes: int16 pairs become complex64, twice the size.
             if not self._artifact_room(count * (entry_bytes - CSI_ENTRY.size) * 2):
                 return {"ok": False, "error": "artifact_limit"}
@@ -1294,7 +1304,7 @@ class OAI:
 
     def _csi_entry(self, ring, entry_bytes, n_entries, seq, deadline=None):
         """Copy entry seq; None if it is being written, torn, overwritten or malformed."""
-        if seq >= 1 << 63:
+        if seq >= CSI_MAX_SEQ:
             return None
         offset = CSI_HEADER_BYTES + (seq % n_entries) * entry_bytes
         for _ in range(CSI_RETRIES):
@@ -1340,9 +1350,11 @@ class OAI:
         while len(entries) < count:
             if self._context.cancelled.is_set():
                 raise RuntimeError("OAI CSI capture was cancelled")
-            if time.monotonic() >= deadline:
-                return None, dropped
+            if time.monotonic() >= deadline or not self._ring_intact():
+                return None, min(dropped, CSI_MAX_DROPPED)
             newest = CSI_HEADER.unpack_from(ring)[5]
+            if newest >= CSI_MAX_SEQ:  # a corrupt header: never let it overflow dropped
+                return None, min(dropped, CSI_MAX_DROPPED)
             if newest <= last:
                 time.sleep(CSI_POLL_S)
                 continue
@@ -1355,7 +1367,7 @@ class OAI:
                 if self._context.cancelled.is_set():
                     raise RuntimeError("OAI CSI capture was cancelled")
                 if time.monotonic() >= deadline:
-                    return None, dropped
+                    return None, min(dropped, CSI_MAX_DROPPED)
                 entry = self._csi_entry(ring, entry_bytes, n_entries, seq, deadline)
                 if entry is None:
                     if self._context.cancelled.is_set() or time.monotonic() >= deadline:
@@ -1364,7 +1376,7 @@ class OAI:
                 else:
                     entries.append(entry)
             last = newest
-        return entries, dropped
+        return entries, min(dropped, CSI_MAX_DROPPED)
 
     def _publish_csi(self, stream, entries, single, dropped):
         self._csi_count += 1
@@ -1401,7 +1413,10 @@ class OAI:
         if work_dir.is_absolute():
             shm = work_dir / "shm"
             for stream in RING_STREAMS:
-                (shm / f"{stream}.ring").unlink(missing_ok=True)
+                try:  # best effort: a stuck ring must not keep the lease from being released
+                    (shm / f"{stream}.ring").unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
                 shm.rmdir()
             except OSError:

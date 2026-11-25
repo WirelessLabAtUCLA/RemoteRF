@@ -1904,3 +1904,32 @@ def test_runtime_keeps_cell_running_on_expansion_action_errors(monkeypatch, tmp_
         wait_until(lambda: runtime.status(binding, op_id)["released"])
         runtime.close()
         journal.close()
+
+
+def test_csi_burst_survives_a_corrupt_write_seq_and_payload_stays_valid(tmp_path):
+    from remoterf_device_core.integrations.payload import object_data
+
+    ring = Ring(tmp_path)
+    ring.write(1)
+    timer = threading.Timer(0.05, ring._header, args=(oai.CSI_MAGIC, oai.CSI_VERSION, (1 << 64) - 1))
+    timer.start()
+    try:
+        result = oai.OAI(context(tmp_path)).call(
+            "capture_csi_burst", {"stream": "ul_pusch", "count": 2, "timeout_s": 1})
+    finally:
+        timer.join()
+    assert result["ok"] is False and result["dropped"] <= oai.CSI_MAX_DROPPED
+    object_data(result, max_bytes=48 * 1024)  # what the runtime does; raising here tears the cell down
+
+
+def test_csi_burst_stops_when_the_ring_shrinks(tmp_path):
+    ring = Ring(tmp_path)
+    ring.write(1)
+    timer = threading.Timer(0.05, lambda: open(ring.path, "r+b").truncate(oai.CSI_HEADER_BYTES))
+    timer.start()
+    try:
+        result = oai.OAI(context(tmp_path)).call(
+            "capture_csi_burst", {"stream": "ul_pusch", "count": 2, "timeout_s": 1})
+    finally:
+        timer.join()
+    assert result["ok"] is False
