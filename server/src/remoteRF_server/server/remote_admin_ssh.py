@@ -492,12 +492,17 @@ def _run_shell(server, channel, session: _Session, transport) -> None:
 
 def _watchdog(sid, session: _Session, proc, channel, transport, pumped) -> None:
     seen = _last_audit_id()
+    was_waiting_safe = False
     while not pumped.wait(CHECK_SECONDS):
         now = time.monotonic()
         try:
             seen = _echo_commands(sid, session, seen)
+            waiting_safe = _safe_wait_open(sid)
+            if was_waiting_safe and not waiting_safe:
+                session.last_input = max(session.last_input, now)
+            was_waiting_safe = waiting_safe
             reason = (_still_allowed(session)
-                      or ("idle for 15 minutes" if now - session.last_input > IDLE_SECONDS else None)
+                      or (None if waiting_safe else ("idle for 15 minutes" if now - session.last_input > IDLE_SECONDS else None))
                       or ("8-hour limit" if now - session.started > MAX_SECONDS else None))
         except Exception as exc:  # noqa: BLE001 - cannot check: end it (fail closed)
             reason = f"check failed ({type(exc).__name__})"
@@ -551,3 +556,38 @@ def _echo_commands(sid: str, session: _Session, seen: int) -> int:
         _notice(f"{session.login} ({session.label}, {session.route}): {'refused: ' if row['event'] == 'refused' else ''}{what}")
         seen = row["id"]
     return seen
+
+
+def _is_safe_wait_command(detail: object) -> bool:
+    if not isinstance(detail, dict):
+        return False
+    name = detail.get("command")
+    if name not in ("restart", "reload devices"):
+        return False
+    argv = detail.get("argv")
+    if not isinstance(argv, list):
+        return False
+    prefix = name.split()
+    if argv[:len(prefix)] != prefix:
+        return False
+    from . import safe_restart
+
+    opts, err = safe_restart.parse_args(argv[len(prefix):], action=name)
+    return err is None and opts is not None and opts.safe and not opts.help and not opts.check
+
+
+def _safe_wait_open(sid: str) -> bool:
+    """Whether `sid` currently has an open `restart --safe` or `reload devices --safe` command."""
+    with contextlib.closing(ra.connect()) as conn:
+        row = conn.execute(
+            "SELECT event, argv_json FROM remote_admin_audit WHERE session_id=? "
+            "AND event IN ('command', 'command_end') ORDER BY id DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
+    if row is None or row["event"] != "command":
+        return False
+    try:
+        detail = json.loads(row["argv_json"] or "{}")
+    except ValueError:
+        return False
+    return _is_safe_wait_command(detail)
