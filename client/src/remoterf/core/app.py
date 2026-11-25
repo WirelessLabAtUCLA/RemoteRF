@@ -738,7 +738,9 @@ def _federated_reservation_rows(*, mine_only):
     data = account.get_reservations()
     offline = _render_destinations(data["destinations"])
     names = {d["deployment_id"]: d["display_name"] for d in data["destinations"] if d["display_name"] != d["deployment_id"]}
-    rows = [r for r in data["reservations"] if r["mine"] or not mine_only]
+    # Older labs still send reservations that have already ended.
+    now = time.time()
+    rows = [r for r in data["reservations"] if (r["mine"] or not mine_only) and r["end_time"] > now]
     # A reservation's display_name is the lab's owner label ("you"/"reserved"),
     # not the device; name devices from getdev instead.
     labels = {}
@@ -763,7 +765,7 @@ def _reservation_panel(label, items, *, numbered=False, offline=(), mine=()):
     _panel(label, [
         ((f"{i:>{index_width}}. ", Sty.CYAN) if numbered else ())
         + (f"{device:<{width}}", Sty.MAGENTA)
-        + (("  (you)", Sty.GREEN) if i < len(mine) and mine[i] else ())
+        + (("  (you)", Sty.GREEN) if i < len(mine) and mine[i] else ("       ", Sty.DEFAULT) if any(mine) else ())
         + ("  ", Sty.DEFAULT, _format_reservation_range(start, end), Sty.CYAN)
         for i, (device, start, end) in enumerate(items)
     ] + ([(), *_down_rows(offline)] if offline else []))
