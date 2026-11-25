@@ -106,7 +106,8 @@ class RSSIScanner:
             out = subprocess.check_output(
                 ["iw", "dev", self.interface, "scan", "dump"],
                 text=True,
-                errors="replace"
+                errors="replace",
+                timeout=10
             )
         except Exception as e:
             return []
@@ -184,7 +185,8 @@ class RSSIScanner:
             out = subprocess.check_output(
                 ["nmcli", "-t", "-f", "BSSID,SSID,CHAN,FREQ,SIGNAL,SECURITY", "dev", "wifi", "list", "ifname", self.interface],
                 text=True,
-                errors="replace"
+                errors="replace",
+                timeout=10
             )
         except Exception:
             return []

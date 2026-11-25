@@ -16,12 +16,12 @@ from remoteRF_server.common.idl import schema as idl_schema
 CONTRIB = Path(__file__).resolve().parents[1] / "contrib" / "drivers"
 
 
-def _load(name, fakes):
+def _load(name, fakes, path=None):
     saved = dict(idl_schema._DRIVER_REGISTRY)
     missing = {key: value for key, value in fakes.items() if key not in sys.modules}
     sys.modules.update(missing)
     try:
-        spec = importlib.util.spec_from_file_location(f"contrib_{name}", CONTRIB / f"{name}.py")
+        spec = importlib.util.spec_from_file_location(f"contrib_{name}", path or CONTRIB / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
@@ -48,12 +48,23 @@ class RMC:
         self.spd_over_grnd = self.timestamp = self.datestamp = None
 
 
+class GSA:
+    pdop, hdop, vdop = "1.9", "1.1", "1.5"
+
+
+class GSV:
+    msg_num, num_sv_in_view = "1", "2"
+    sv_prn_num_1, elevation_deg_1, azimuth_1, snr_1 = "12", "45", "180", "38"
+    sv_prn_num_2, elevation_deg_2, azimuth_2, snr_2 = "7", "10", "", ""
+
+
 class _FakeNmea(types.ModuleType):
-    FIXES = {"$FIX1": RMC(34.07, -118.44), "$FIX2": RMC(34.08, -118.45)}
+    FIXES = {"$FIX1": RMC(34.07, -118.44), "$FIX2": RMC(34.08, -118.45), "$GSA": GSA(), "$GSV": GSV()}
 
     def __init__(self):
         super().__init__("pynmea2")
-        self.types = types.SimpleNamespace(talker=types.SimpleNamespace(RMC=RMC, GGA=type("GGA", (), {}), GLL=type("GLL", (), {})))
+        self.types = types.SimpleNamespace(talker=types.SimpleNamespace(
+            RMC=RMC, GGA=type("GGA", (), {}), GLL=type("GLL", (), {}), GSA=GSA, GSV=GSV))
 
     def parse(self, line):
         return self.FIXES[line]
@@ -83,9 +94,21 @@ class FakePort:
             return b""
 
 
-@pytest.fixture(scope="module")
-def gps():
-    return _load("gps_schema", {"pynmea2": _FakeNmea()})
+DEVICE_CORE_GPS = (Path(__file__).resolve().parents[2] / "packages" / "remoterf-device-core" / "src"
+                   / "remoterf_device_core" / "drivers" / "gps" / "gps_schema.py")
+
+
+@pytest.fixture(scope="module", params=["contrib", "device-core"])
+def gps(request):
+    if request.param == "contrib":
+        return _load("gps_schema", {"pynmea2": _FakeNmea()})
+    return _load("gps_schema", {"pynmea2": _FakeNmea()}, path=DEVICE_CORE_GPS)
+
+
+def test_gps_contrib_copy_is_the_device_core_driver():
+    contrib = (CONTRIB / "gps_schema.py").read_text(encoding="utf-8")
+    core = DEVICE_CORE_GPS.read_text(encoding="utf-8")
+    assert contrib == core.replace("from remoterf_device_core.idl import", "from remoteRF_server.common.idl import")
 
 
 def test_gps_reopens_its_port_after_a_replug_and_marks_old_data_stale(gps, monkeypatch):
@@ -119,7 +142,56 @@ def test_gps_reopens_its_port_after_a_replug_and_marks_old_data_stale(gps, monke
         dev.close()
     assert len(port.opened) == 2 and {handle.port for handle in port.opened} == {path}
     assert all(handle.closed for handle in port.opened)
-    assert gps.GpsSchema.driver_version == "0.1.3"
+    assert gps.GpsSchema.driver_version == "0.2.0"
+
+
+def _open(gps, monkeypatch):
+    port = FakePort()
+    monkeypatch.setattr(gps.serial, "Serial", port.Serial)
+    dev = gps.GpsDevice(port="/dev/ttyACM0")
+    schema = gps.GpsSchema()
+    schema.bind(dev)
+    return port, dev, schema
+
+
+def test_gps_parses_dop_and_satellites_and_next_holder_starts_clean(gps, monkeypatch):
+    port, dev, schema = _open(gps, monkeypatch)
+    try:
+        for line in (b"$FIX1\r\n", b"$GSA\r\n", b"$GSV\r\n"):
+            port.lines.put(line)
+        _wait(lambda: len(dev.read_raw(10)) == 3)
+        assert (schema.dispatch("get_hdop", {}), schema.dispatch("get_pdop", {}), schema.dispatch("get_vdop", {})) == (1.1, 1.9, 1.5)
+        assert schema.dispatch("call_get_satellites_in_view", {}) == [
+            {"prn": 7, "elevation_deg": 10.0, "azimuth_deg": None, "snr_db": None},
+            {"prn": 12, "elevation_deg": 45.0, "azimuth_deg": 180.0, "snr_db": 38.0}]
+        assert dev.get_lat_long() == (34.07, -118.44)
+
+        schema.reset_for_next_holder()
+        position = dev.get_position()
+        assert position["latitude"] is None and not position["has_fix"] and position["satellites"] == 0
+        assert (position["hdop"], position["pdop"], position["vdop"]) == (None, None, None)
+        assert dev.get_satellites_in_view() == [] and dev.read_raw(50) == []
+    finally:
+        dev.close()
+
+
+def test_gps_wait_for_fix_is_capped_and_read_raw_ignores_non_positive_counts(gps, monkeypatch):
+    port, dev, schema = _open(gps, monkeypatch)
+    monkeypatch.setattr(gps.GpsDevice, "MAX_WAIT_FOR_FIX", 0.2)
+    try:
+        start = time.monotonic()
+        assert schema.dispatch("call_wait_for_fix", {"timeout": 1e9}) is False
+        assert time.monotonic() - start < 2.0
+        assert schema.dispatch("call_wait_for_fix", {"timeout": -5}) is False
+
+        for line in (b"$GSA\r\n", b"$GSV\r\n", b"$FIX1\r\n"):
+            port.lines.put(line)
+        _wait(lambda: len(dev.read_raw(10)) == 3)
+        assert schema.dispatch("call_read_raw", {"count": 0}) == []
+        assert schema.dispatch("call_read_raw", {"count": -3}) == []
+        assert schema.dispatch("call_read_raw", {"count": 2}) == ["$GSV", "$FIX1"]
+    finally:
+        dev.close()
 
 
 def test_gps_auto_detect_takes_any_u_blox_but_no_other_serial_port(gps, monkeypatch):
@@ -229,7 +301,7 @@ def test_auto_detect_never_falls_back_to_another_adapter(bt, sysfs):
     plug("hci1", "0a12", "0001", "CSR8510 A10")
     dev = bt.BluetoothSchema.make_device()
     assert (dev.adapter_name, dev.is_zexmte, dev.bd_address) == ("hci1", True, "00:11:22:33:44:55")
-    assert bt.BluetoothSchema.driver_version == "0.1.3"
+    assert bt.BluetoothSchema.driver_version == "0.1.4"
 
 
 def test_auto_detect_takes_any_usb_dongle_but_no_built_in_adapter(bt, sysfs):
