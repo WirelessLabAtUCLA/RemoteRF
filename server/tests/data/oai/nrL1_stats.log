@@ -1,0 +1,11 @@
+Blacklisted PRBs 0/52
+ 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 1.-40. 0.-1.-1.-1.-1.-1.-1.-2.-1.-2.-2.-1.-2.-2.-1.-1.-1.-1.-1.-1.-1.-1.-1.
+-1.-1.
+max_IO = 41 (0), min_I0 = 0 (26), avg_I0 = 40 dB
+PRACH I0 = 27.3 dB
+DLSCH RNTI 4eca: current_Qm 2, current_RI 1, total_bytes TX 16404
+ULSCH RNTI 4eca, 429: ulsch_power[0] 56,2 ulsch_noise_power[0] 39.5, sync_pos 0
+                 round_trials 214(3.3e-02):7(0.0e+00):0(0.0e+00):0, DTX 328, current_Qm 2, current_RI 1, total_bytes RX/SCHED 0/369
+                     Name                Total                 Max                 Std       Num Trials
+
