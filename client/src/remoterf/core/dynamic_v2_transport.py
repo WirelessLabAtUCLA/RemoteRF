@@ -38,24 +38,44 @@ from .v2_errors import (
 SCHEMA_VERSION = "2.0"
 CONTROL_PROTOCOL_VERSION = "2.0"
 STREAMING_PROTOCOL_VERSION = "1.0"
+SC16_DTYPE = np.dtype([("re", "<i2"), ("im", "<i2")])
+_SC16_WIRE_DTYPE = "sc16"
 _SAMPLE_DTYPES = {
     "<c8": np.dtype("<c8"),
     "<c16": np.dtype("<c16"),
+    _SC16_WIRE_DTYPE: SC16_DTYPE,
     "<i2": np.dtype("<i2"),
     "<f4": np.dtype("<f4"),
     "<f8": np.dtype("<f8"),
 }
 
 
+def _is_sc16_dtype(dtype: np.dtype) -> bool:
+    return (
+        not dtype.hasobject
+        and dtype.fields is not None
+        and dtype.itemsize == SC16_DTYPE.itemsize
+        and dtype.newbyteorder("<") == SC16_DTYPE
+    )
+
+
 def _wire_dtype(dtype) -> np.dtype:
     dtype = np.dtype(dtype)
+    if _is_sc16_dtype(dtype):
+        return SC16_DTYPE
     if dtype.hasobject or dtype.fields is not None or dtype.subdtype is not None:
-        raise ValueError("sample dtype must be a scalar numeric dtype")
+        raise ValueError("sample dtype must be a scalar numeric or sc16 dtype")
     if dtype.itemsize > 1:
         dtype = dtype.newbyteorder("<")
     if dtype.str not in _SAMPLE_DTYPES:
         raise ValueError(f"unsupported sample dtype: {dtype}")
     return dtype
+
+
+def _wire_dtype_tag(dtype: np.dtype) -> str:
+    if dtype == SC16_DTYPE:
+        return _SC16_WIRE_DTYPE
+    return dtype.str
 
 
 def _response_dtype(value: str) -> np.dtype:
@@ -478,7 +498,7 @@ class DynamicV2Transport:
                     **common,
                     sequence=sequence,
                     kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
-                    dtype=wire_dtype.str,
+                    dtype=_wire_dtype_tag(wire_dtype),
                     shape=shape,
                     channels=list(channels),
                     sample_count=int(sample_count),
@@ -585,7 +605,7 @@ class DynamicV2Transport:
                     **common,
                     sequence=sequence,
                     kind=grpc_pb2.SAMPLE_FRAME_DATA,
-                    dtype=array.dtype.str,
+                    dtype=_wire_dtype_tag(wire_dtype),
                     shape=list(array.shape),
                     channels=list(channels),
                     sample_count=int(array.shape[-1] if array.ndim else 0),
