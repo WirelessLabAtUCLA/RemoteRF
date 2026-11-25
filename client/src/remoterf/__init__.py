@@ -29,17 +29,13 @@ _API = ("use", "whoami", "list_devices", "get_active_frequencies", "slots", "res
 
 def __getattr__(name):
     if name in _API:
-        from . import api
+        import importlib
 
-        return getattr(api, name)
-    if name == "ops":
-        from . import ops
+        return getattr(importlib.import_module(".api", __name__), name)
+    if name in ("ops", "api"):
+        import importlib
 
-        return ops
-    if name == "api":
-        from . import api
-
-        return api
+        return importlib.import_module(f".{name}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

@@ -148,7 +148,7 @@ class HostActiveFrequenciesTests(unittest.TestCase):
         tuned.bind(_FakeRadio())
         tuned.dispatch("set_rx_lo", {"value": 915_000_000})
         tuned.dispatch("call_tx", {"value": np.zeros(8, dtype=np.complex64)})
-        st = host_dm._DeviceState(schema=tuned, name="Pluto 7", ident="7", dtype="adalm_pluto")
+        st = host_dm._DeviceState(schema=tuned, name="Pluto 7", ident="7", dtype="adalm_pluto", init={})
 
         with mock.patch.dict(host_dm._devices, {7: st}, clear=True), \
              mock.patch.object(host_dm, "_reservation_end_callbacks", []), \
