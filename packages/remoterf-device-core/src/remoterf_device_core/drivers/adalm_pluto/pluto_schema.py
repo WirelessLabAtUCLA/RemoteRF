@@ -753,17 +753,34 @@ class PlutoSchema(DeviceSchema):
         """A reservation ended: a PoE Pluto powers off. Otherwise stop its cyclic
         transmission, clear tx_cyclic_buffer, and drop its RX buffer so the next holder's rx_buffer_size takes effect."""
         self._fir_rate = None
+        pending = None
         if self._lockouts is not None:
             with self._lockout_lock():
-                self._lockout_hygiene(park=True)
+                try:
+                    self._lockout_hygiene(park=True)
+                except RemoteRFPolicyError as exc:
+                    pending = exc
         if isinstance(self.device, PoePluto):
             self._custom_filter_loaded = False
+            if pending is not None:
+                raise pending
             errors = []
 
             def attempt(step):
                 try:
                     step()
                 except Exception as exc:
+                    # Drop traceback frames so no reference keeps adi.Pluto alive into power_down().
+                    stack = [exc]
+                    seen = set()
+                    while stack:
+                        item = stack.pop()
+                        if item is None or id(item) in seen:
+                            continue
+                        seen.add(id(item))
+                        item.with_traceback(None)
+                        stack.append(item.__cause__)
+                        stack.append(item.__context__)
                     errors.append(exc)
 
             if self._lockout_on():
@@ -810,8 +827,12 @@ class PlutoSchema(DeviceSchema):
                     allowed = self._lockouts["tx_allowed_channels"]
                     tx_channels = [c for c in tx_channels if c in allowed] or list(allowed)
                 attempt(lambda: setattr(radio, "tx_enabled_channels", tx_channels))
+            if pending is not None:
+                raise pending
             if errors:
                 raise errors[0]
+        elif pending is not None:
+            raise pending
 
     def prepare_for_holder(self):
         """A reservation started: a PoE Pluto boots now, not at the holder's first command."""

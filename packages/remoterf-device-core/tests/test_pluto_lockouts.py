@@ -873,6 +873,92 @@ def test_non_poe_reset_zeros_dds_scales_on_failure_and_restores_filters_output_a
     assert rate_writes == [2_000_000]
 
 
+def test_locked_out_non_poe_reset_still_cleans_rx_state_when_hygiene_fails():
+    radio = FakeRadio()
+    radio.rx_dec8_filter_en = False
+    radio.tx_int8_filter_en = False
+    radio.rx_output_type = "raw"
+    radio.rx_annotated = False
+    obj = schema({**BAND, "tx_allowed_channels": [0]}, radio=radio)
+
+    radio.rx_dec8_filter_en = True
+    radio.tx_int8_filter_en = True
+    radio.rx_output_type = "SI"
+    radio.rx_annotated = True
+    radio.rx_enabled_channels = [0]
+    radio.tx_enabled_channels = []
+    radio.events.clear()
+    radio.fail_dds = True
+
+    with pytest.raises(RemoteRFPolicyError, match="locked until"):
+        obj.reset_for_next_holder()
+
+    assert obj._broken
+    assert "rx_destroy_buffer" in radio.events
+    assert radio.rx_dec8_filter_en is False
+    assert radio.tx_int8_filter_en is False
+    assert radio.rx_output_type == "raw"
+    assert radio.rx_annotated is False
+    assert radio.rx_enabled_channels == [0, 1]
+    assert radio.tx_enabled_channels == [0]
+
+    # Once the transient IIO error clears, the next student recovers into clean state.
+    radio.fail_dds = False
+    rpc(obj, "set_rx_lo", 915_000_000)
+    assert not obj._broken
+    assert radio.rx_dec8_filter_en is False
+    assert radio.tx_int8_filter_en is False
+    assert radio.rx_output_type == "raw"
+    assert radio.rx_annotated is False
+    assert radio.rx_enabled_channels == [0, 1]
+
+    # On a locked-out PoE Pluto whose hygiene fails, power_down is already called
+    # by _lockout_cut_power() and must not be called a second time.
+    poe_radio = FakeRadio()
+    poe_radio.fail_dds = True
+    proxy = FakePoe(poe_radio)
+    poe_obj = PlutoSchema()
+    poe_obj.bind(proxy)
+    poe_obj._lockouts = parse_lockouts(BAND)
+    poe_obj._custom_filter_loaded = True
+    with pytest.raises(RemoteRFPolicyError, match="locked until"):
+        poe_obj.reset_for_next_holder()
+    assert proxy.downs == 1
+    assert poe_obj._custom_filter_loaded is False
+
+
+def test_poe_reset_drops_radio_before_power_down_even_when_tx_stop_fails():
+    import weakref
+
+    for chained in (False, True):
+        class FailingRadio(FakeRadio):
+            def disable_dds(self):
+                self.events.append("disable_dds")
+                if chained:
+                    try:
+                        raise OSError("iio link down")
+                    except OSError as inner:
+                        raise RuntimeError("DDS stop failed") from inner
+                raise RuntimeError("DDS stop failed")
+
+        radio = FailingRadio()
+        radio_ref = weakref.ref(radio)
+        alive_at_power_down = []
+
+        class ObservingPoe(FakePoe):
+            def power_down(self):
+                vars(self)["_pluto"] = None
+                alive_at_power_down.append(radio_ref() is not None)
+
+        proxy = ObservingPoe(radio)
+        obj = schema({}, radio=proxy)
+        del radio
+
+        with pytest.raises(RuntimeError, match="DDS stop failed"):
+            obj.reset_for_next_holder()
+        assert alive_at_power_down == [False]
+
+
 def test_poe_power_off_failure_reports_fault_until_next_boot(monkeypatch):
     from remoterf_device_core.drivers.adalm_pluto import poe
 

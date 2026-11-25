@@ -75,17 +75,22 @@ class _RtlSdrAdapter:
         usb_strings: tuple[str, str, str],
         test_mode_enabled: bool,
         dithering_enabled: bool | None,
+        freq_correction: int = _DEFAULT_FREQ_CORRECTION_PPM,
     ):
         self.native = native
         self.device_index = int(device_index)
         self.serial_number = str(serial_number or "")
         self.usb_strings = tuple(str(item or "") for item in usb_strings)
         self.test_mode_enabled = bool(test_mode_enabled)
+        self.default_dithering = (
+            _DEFAULT_DITHERING if dithering_enabled is None else bool(dithering_enabled)
+        )
         self.control_state = {
             "agc_mode": None,
             "bias_tee": None,
             "direct_sampling": None,
             "offset_tuning": None,
+            "freq_correction": int(freq_correction),
             "dithering": (
                 None if dithering_enabled is None else bool(dithering_enabled)
             ),
@@ -135,9 +140,12 @@ def _restore_defaults(adapter: _RtlSdrAdapter, *, dithering: bool = _DEFAULT_DIT
             attempt(step)
 
     def freq_correction():
-        # librtlsdr rejects setting the ppm it already has.
-        if int(native.freq_correction) != _DEFAULT_FREQ_CORRECTION_PPM:
-            native.freq_correction = _DEFAULT_FREQ_CORRECTION_PPM
+        # Never read native.freq_correction: pyrtlsdr closes the handle on
+        # negative ppm, and librtlsdr rejects setting the ppm it already has.
+        if adapter.control_state.get("freq_correction") == _DEFAULT_FREQ_CORRECTION_PPM:
+            return
+        native.freq_correction = _DEFAULT_FREQ_CORRECTION_PPM
+        adapter.control_state["freq_correction"] = _DEFAULT_FREQ_CORRECTION_PPM
 
     attempt(freq_correction)
     for name, value in (
@@ -195,6 +203,10 @@ def _connect_rtl_sdr(
         open_kwargs["dithering_enabled"] = bool(dithering_enabled)
     native = RtlSdr(**open_kwargs)
     resolved_serial = serial or (usb_strings[2] if len(usb_strings) > 2 else "")
+    # Safe once on a freshly opened handle (librtlsdr zeroes dev->corr on open).
+    initial_freq_correction = int(
+        getattr(native, "freq_correction", _DEFAULT_FREQ_CORRECTION_PPM)
+    )
     adapter = _RtlSdrAdapter(
         native,
         device_index=resolved_index,
@@ -207,9 +219,10 @@ def _connect_rtl_sdr(
             or callable(getattr(native, "set_dithering", None))
             else None
         ),
+        freq_correction=initial_freq_correction,
     )
     # Best effort: the first reservation after a start sees the same defaults.
-    error = _restore_defaults(adapter, dithering=dithering_enabled)
+    error = _restore_defaults(adapter, dithering=adapter.default_dithering)
     if error is not None and getattr(native, "device_opened", True) is False:
         raise error
     return adapter
@@ -232,7 +245,8 @@ class RtlSdrSchema(DeviceSchema):
         native = getattr(self.device, "native", None)
         if native is None or getattr(native, "device_opened", True) is False:
             return
-        error = _restore_defaults(self.device)
+        dithering = getattr(self.device, "default_dithering", _DEFAULT_DITHERING)
+        error = _restore_defaults(self.device, dithering=dithering)
         if error is not None:
             raise error
 
@@ -304,11 +318,16 @@ class RtlSdrSchema(DeviceSchema):
     @idl_expose(kind="get")
     def get_freq_correction(self):
         """Frequency correction in parts per million."""
-        return int(self._native.freq_correction)
+        return int(self.device.control_state["freq_correction"])
 
     @idl_expose(kind="set")
     def set_freq_correction(self, value):
-        self._native.freq_correction = int(value)
+        ppm = int(value)
+        # librtlsdr rejects an unchanged ppm (-2) and pyrtlsdr then closes the device.
+        if self.device.control_state.get("freq_correction") == ppm:
+            return
+        self._native.freq_correction = ppm
+        self.device.control_state["freq_correction"] = ppm
 
     @idl_expose(kind="get")
     def get_bandwidth(self):
