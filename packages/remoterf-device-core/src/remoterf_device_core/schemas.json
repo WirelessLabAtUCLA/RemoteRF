@@ -1,14 +1,14 @@
 [
  {
   "device_type": "adalm_pluto",
-  "driver_version": "0.0.4",
-  "v1": "sha256:9cbbbbc0cd76fc7897dd702adc0c4a0aa9b5042484c6cb38d0057ca217cb92ce",
+  "driver_version": "0.0.5",
+  "v1": "sha256:93097fbb33d6680473ccb681d1854d031702b216ebd9f35dfd03d58eea797ad5",
   "v2": null
  },
  {
   "device_type": "adalm_pluto_mimo",
-  "driver_version": "0.0.2",
-  "v1": "sha256:cff95f07bbfeeff5ac1f02e0c6564f262ec9c69bbbb31efc104b4a14959d772a",
+  "driver_version": "0.0.3",
+  "v1": "sha256:2a492432fecdab19672f50edfb054a69927091d1c78024a1a7dcf20cc0867784",
   "v2": null
  },
  {

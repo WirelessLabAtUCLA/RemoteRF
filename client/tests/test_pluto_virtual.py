@@ -60,5 +60,15 @@ class VirtualPlutoTests(unittest.TestCase):
             adi.Pluto()
 
 
+class VirtualPlutoTemperatureTests(unittest.TestCase):
+    def test_temperature_and_temp_alias(self):
+        from remoterf.drivers.adalm_pluto_mimo import PlutoMIMO
+
+        for sdr in (adi.Pluto(virtual=True), PlutoMIMO(virtual=True)):
+            self.assertIsInstance(sdr.temperature, float)
+            self.assertEqual(sdr.temp, sdr.temperature)
+
+
 if __name__ == "__main__":
     unittest.main()
+
