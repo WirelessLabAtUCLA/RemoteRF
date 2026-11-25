@@ -104,6 +104,9 @@ def _restore_defaults(adapter: _RtlSdrAdapter, *, dithering: bool = _DEFAULT_DIT
     errors = []
 
     def attempt(step):
+        # pyrtlsdr closes the handle when a setter fails; later steps would use the freed handle.
+        if getattr(native, "device_opened", True) is False:
+            return
         try:
             step()
         except Exception as exc:
