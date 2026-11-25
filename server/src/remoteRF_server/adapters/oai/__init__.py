@@ -39,6 +39,7 @@ from __future__ import annotations
 import fcntl
 import ipaddress
 import json
+import math
 import mmap
 import os
 from pathlib import Path
@@ -417,10 +418,14 @@ class OAI:
         files = [entry.stat().st_size for entry in directory.iterdir()] if directory.is_dir() else []
         return len(files) < MAX_ENTRIES and sum(files) + size <= QUOTA_BYTES
 
-    def _csi_entry(self, ring, entry_bytes, n_entries, seq):
+    def _csi_entry(self, ring, entry_bytes, n_entries, seq, deadline=None):
         """Copy entry seq; None if it is being written, torn, overwritten or malformed."""
+        if seq >= 1 << 63:
+            return None
         offset = CSI_HEADER_BYTES + (seq % n_entries) * entry_bytes
         for _ in range(CSI_RETRIES):
+            if self._context.cancelled.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                return None
             lock = struct.unpack_from("<Q", ring, offset)[0]
             if lock & 1:
                 time.sleep(CSI_POLL_S / 10)
@@ -430,24 +435,28 @@ class OAI:
                 continue
             _, got, frame, slot, rnti, snr_db, ta, *dims = CSI_ENTRY.unpack_from(data)
             size = 4 * dims[0] * dims[1] * dims[2]
-            if got != seq or CSI_ENTRY.size + size > entry_bytes:
+            if got != seq or size == 0 or CSI_ENTRY.size + size > entry_bytes:
                 return None
-            return {"seq": seq, "frame": frame, "slot": slot, "rnti": rnti, "snr_db": round(snr_db, 2),
+            return {"seq": seq, "frame": frame, "slot": slot, "rnti": rnti,
+                    "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
                     "ta": ta, "dims": tuple(dims), "timestamp_s": time.time(),
                     "iq": data[CSI_ENTRY.size:CSI_ENTRY.size + size]}
         return None
 
     def _csi_latest(self, ring, entry_bytes, n_entries, wait):
         deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
+        while True:
             if self._context.cancelled.is_set():
                 raise RuntimeError("OAI CSI read was cancelled")
+            if time.monotonic() >= deadline:
+                return None
             seq = CSI_HEADER.unpack_from(ring)[5]
-            entry = self._csi_entry(ring, entry_bytes, n_entries, seq) if seq else None
+            entry = self._csi_entry(ring, entry_bytes, n_entries, seq, deadline) if seq else None
             if entry is not None:
                 return [entry]
+            if self._context.cancelled.is_set() or time.monotonic() >= deadline:
+                continue
             time.sleep(CSI_POLL_S)
-        return None
 
     def _csi_burst(self, ring, entry_bytes, n_entries, count, wait):
         """Wait for count entries newer than now; seqs lost to the writer are dropped."""
@@ -469,8 +478,14 @@ class OAI:
             for seq in range(first, newest + 1):
                 if len(entries) == count:
                     break
-                entry = self._csi_entry(ring, entry_bytes, n_entries, seq)
+                if self._context.cancelled.is_set():
+                    raise RuntimeError("OAI CSI capture was cancelled")
+                if time.monotonic() >= deadline:
+                    return None, dropped
+                entry = self._csi_entry(ring, entry_bytes, n_entries, seq, deadline)
                 if entry is None:
+                    if self._context.cancelled.is_set() or time.monotonic() >= deadline:
+                        break
                     dropped += 1
                 else:
                     entries.append(entry)
@@ -503,6 +518,15 @@ class OAI:
             return
         if not self._context.processes.stop(timeout=self._bound("stop_timeout_s")):
             raise RuntimeError("OAI cleanup could not be verified")
+        work_dir = Path(self._context.work_dir)
+        if work_dir.is_absolute():
+            shm = work_dir / "shm"
+            for stream in CSI_STREAMS:
+                (shm / f"{stream}.ring").unlink(missing_ok=True)
+            try:
+                shm.rmdir()
+            except OSError:
+                pass
         if self._ifname is not None and self._process_id is not None:
             deadline = time.monotonic() + UE_IFACE_GONE_S
             while interface_exists(self._ifname):

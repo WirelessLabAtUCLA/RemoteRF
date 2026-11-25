@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from remoteRF_server.adapters import oai
+from remoterf_device_core.integrations.payload import object_data
 from remoterf_device_core.integrations.registry import Manifest
 
 
@@ -477,10 +478,13 @@ class Ring:
         with open(self.path, "r+b") as handle:
             handle.write(oai.CSI_HEADER.pack(magic, version, self.entry_bytes, self.n_entries, 0, write_seq))
 
-    def write(self, seq, lock=2, publish=True):
-        n = self.dims[0] * self.dims[1] * self.dims[2]
-        iq = np.arange(2 * n, dtype="<i2") + seq
-        entry = oai.CSI_ENTRY.pack(lock, seq, seq // 20, seq % 20, 0x4601, 12.5, 3, *self.dims) + iq.tobytes()
+    def write(self, seq, lock=2, publish=True, snr_db=12.5, dims=None):
+        dims = self.dims if dims is None else dims
+        n = dims[0] * dims[1] * dims[2]
+        iq = (np.arange(2 * n, dtype=np.int64) + (seq & 0xFF)).astype("<i2")
+        entry = oai.CSI_ENTRY.pack(
+            lock, seq, (seq // 20) & 0xFFFFFFFF, seq % 20, 0x4601, snr_db, 3, *dims
+        ) + iq.tobytes()
         with open(self.path, "r+b") as handle:
             handle.seek(oai.CSI_HEADER_BYTES + (seq % self.n_entries) * self.entry_bytes)
             handle.write(entry)
@@ -608,3 +612,177 @@ def test_csi_artifact_decodes_through_client(tmp_path):
     assert decoded["artifact"].dtype == np.complex64
     assert np.array_equal(decoded["artifact"], ring.expected(9))
     assert decoded["metadata"]["seq"] == [9]
+
+
+@pytest.mark.parametrize("snr_db", [float("nan"), float("inf"), float("-inf")])
+def test_read_csi_non_finite_snr_is_none_and_valid_payload(tmp_path, snr_db):
+    ring = Ring(tmp_path)
+    ring.write(1, snr_db=snr_db)
+    result = oai.OAI(context(tmp_path)).call("read_csi", {"stream": "ul_pusch"})
+    assert result["ok"] is True
+    assert result["metadata"]["snr_db"] == [None]
+    # Runtime._call validates every action result with object_data(..., max_bytes=48 * 1024).
+    assert object_data(result, max_bytes=48 * 1024)["metadata"]["snr_db"] == [None]
+
+
+@pytest.mark.parametrize("stop_by", ["deadline", "cancel"])
+def test_csi_burst_inner_loop_checks_deadline_and_cancellation(monkeypatch, tmp_path, stop_by):
+    ring = Ring(tmp_path, n_entries=8)
+    ring.write(1)
+    ctx = context(tmp_path)
+    now = [0.0]
+    reads = [0]
+
+    def sleep(seconds):
+        if now[0] == 0.0:
+            for seq in (2, 3, 4, 5):
+                ring.write(seq)
+        now[0] += seconds
+
+    def wall_time():
+        reads[0] += 1
+        if stop_by == "deadline":
+            now[0] = 100.0
+        else:
+            ctx.cancelled.set()
+        return 1.0
+
+    monkeypatch.setattr(oai, "time", SimpleNamespace(
+        monotonic=lambda: now[0], sleep=sleep, time=wall_time))
+
+    if stop_by == "deadline":
+        result = oai.OAI(ctx).call("capture_csi_burst", {"stream": "ul_pusch", "count": 4, "timeout_s": 5})
+        assert result == {"ok": False, "error": "timeout", "dropped": 0}
+    else:
+        with pytest.raises(RuntimeError, match="cancelled"):
+            oai.OAI(ctx).call("capture_csi_burst", {"stream": "ul_pusch", "count": 4, "timeout_s": 5})
+    assert reads[0] == 1
+
+
+def test_csi_burst_retry_loop_stops_at_deadline(monkeypatch, tmp_path):
+    ring = Ring(tmp_path, n_entries=8)
+    ring.write(1)
+    now = [0.0]
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            for seq in (2, 3, 4, 5):
+                ring.write(seq, lock=3)  # mid-write
+        now[0] += seconds
+
+    monkeypatch.setattr(oai, "time", SimpleNamespace(
+        monotonic=lambda: now[0], sleep=sleep, time=time.time))
+    monkeypatch.setattr(oai, "CSI_POLL_S", 10.0)  # retry sleep is 1.0 s
+
+    result = oai.OAI(context(tmp_path)).call(
+        "capture_csi_burst", {"stream": "ul_pusch", "count": 4, "timeout_s": 15})
+
+    assert result == {"ok": False, "error": "timeout", "dropped": 0}
+    assert sleeps == [10.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+
+@pytest.mark.parametrize("stop_by", ["deadline", "cancel"])
+def test_read_csi_retry_loop_stops_on_deadline_and_cancellation(monkeypatch, tmp_path, stop_by):
+    ring = Ring(tmp_path)
+    ring.write(1, lock=3)  # mid-write
+    ctx = context(tmp_path)
+    ctx.action_timeout_s = 10.0  # _bound -> 5.0 s
+    now = [0.0]
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+        if stop_by == "cancel" and len(sleeps) == 2:
+            ctx.cancelled.set()
+
+    monkeypatch.setattr(oai, "time", SimpleNamespace(
+        monotonic=lambda: now[0], sleep=sleep, time=time.time))
+    monkeypatch.setattr(oai, "CSI_POLL_S", 10.0)  # retry sleep is 1.0 s
+
+    if stop_by == "deadline":
+        result = oai.OAI(ctx).call("read_csi", {"stream": "ul_pusch"})
+        assert result == {"ok": False, "error": "timeout", "dropped": 0}
+        assert sleeps == [1.0] * 5
+    else:
+        with pytest.raises(RuntimeError, match="cancelled"):
+            oai.OAI(ctx).call("read_csi", {"stream": "ul_pusch"})
+        assert sleeps == [1.0, 1.0]
+
+
+def test_stop_unlinks_csi_rings_and_removes_empty_shm(tmp_path):
+    Ring(tmp_path, stream="ul_pusch")
+    Ring(tmp_path, stream="dl_ssb")
+    processes = Processes()
+    processes.stop_ok = False
+    adapter = oai.OAI(context(tmp_path, processes=processes))
+
+    with pytest.raises(RuntimeError, match="cleanup could not be verified"):
+        adapter.stop()
+    assert (tmp_path / "shm" / "ul_pusch.ring").exists()
+
+    processes.stop_ok = True
+    adapter.stop()
+    assert not (tmp_path / "shm").exists()
+
+
+def test_stop_keeps_non_empty_shm_after_unlinking_rings(tmp_path):
+    Ring(tmp_path, stream="ul_pusch")
+    other = tmp_path / "shm" / "xapp.shm"
+    other.write_bytes(b"keep")
+    oai.OAI(context(tmp_path)).stop()
+    assert not (tmp_path / "shm" / "ul_pusch.ring").exists()
+    assert other.is_file()
+
+
+@pytest.mark.parametrize("bad_dims", [(0, 2, 3), (1, 0, 3), (1, 2, 0)])
+def test_csi_rejects_zero_dim_entry(monkeypatch, tmp_path, bad_dims):
+    ring = Ring(tmp_path, dims=(1, 2, 3))
+    ring.write(1)
+    now = [0.0]
+
+    def sleep(seconds):
+        if now[0] == 0.0:
+            ring.write(2, dims=bad_dims)
+            ring.write(3)
+        now[0] += seconds
+
+    monkeypatch.setattr(oai, "time", SimpleNamespace(
+        monotonic=lambda: now[0], sleep=sleep, time=time.time))
+    result = oai.OAI(context(tmp_path)).call(
+        "capture_csi_burst", {"stream": "ul_pusch", "count": 1, "timeout_s": 5})
+
+    assert result["ok"] is True and result["dropped"] == 1
+    assert result["metadata"]["seq"] == [3]
+    assert np.array_equal(csi_artifact(tmp_path, result), ring.expected(3)[None])
+
+
+@pytest.mark.parametrize("seq", [1 << 63, (1 << 64) - 1])
+def test_csi_rejects_seq_outside_int64(monkeypatch, tmp_path, seq):
+    ring = Ring(tmp_path)
+    ring.write(seq)
+    ctx = context(tmp_path)
+    ctx.action_timeout_s = 6.0  # _bound -> 1.0 s
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    monkeypatch.setattr(oai, "time", SimpleNamespace(
+        monotonic=lambda: now[0], sleep=sleep, time=time.time))
+    monkeypatch.setattr(oai, "CSI_POLL_S", 1.0)
+
+    assert oai.OAI(ctx).call("read_csi", {"stream": "ul_pusch"}) == {
+        "ok": False, "error": "timeout", "dropped": 0}
+
+
+def test_csi_accepts_max_int64_seq(tmp_path):
+    ring = Ring(tmp_path)
+    max_seq = (1 << 63) - 1
+    ring.write(max_seq)
+    result = oai.OAI(context(tmp_path)).call("read_csi", {"stream": "ul_pusch"})
+    assert result["ok"] is True
+    assert result["metadata"]["seq"] == [max_seq]
+    assert object_data(result, max_bytes=48 * 1024)["metadata"]["seq"] == [max_seq]
