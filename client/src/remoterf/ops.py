@@ -699,8 +699,9 @@ def list_reservations(s, *, mine_only=True) -> dict:
         for r in data["reservations"]:
             if mine_only and not r.get("mine"):
                 continue
-            # Older labs still send reservations that have already ended.
-            if (r.get("end_time") or 0) <= now:
+            # Older labs still send reservations that have already ended. A 2-minute grace:
+            # this is the student's clock, not the lab's, so it must never hide a live one.
+            if (r.get("end_time") or 0) <= now - 120:
                 continue
             dev = devices.get(r["device_id"], {})
             lab = dev.get("deployment_name") or names.get(r["deployment_id"])

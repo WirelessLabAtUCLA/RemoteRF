@@ -255,7 +255,7 @@ def test_global_list_reservations_skips_ended_rows(home, monkeypatch):
             {"reservation_id": f"{DEP}:1", "device_id": REF, "deployment_id": DEP,
              "start_time": now_ts - 7200, "end_time": now_ts - 3600, "mine": True},
             {"reservation_id": f"{DEP}:2", "device_id": REF, "deployment_id": DEP,
-             "start_time": now_ts - 3600, "end_time": now_ts, "mine": True},
+             "start_time": now_ts - 3600, "end_time": now_ts - 600, "mine": True},
             {"reservation_id": f"{DEP}:3", "device_id": REF, "deployment_id": DEP,
              "start_time": now_ts - 1800, "end_time": now_ts + 1800, "mine": True},
             {"reservation_id": f"{DEP}:4", "device_id": REF, "deployment_id": DEP,
