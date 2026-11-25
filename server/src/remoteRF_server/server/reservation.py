@@ -2021,14 +2021,17 @@ class ReservationHandler:
         device_id: int,
         *,
         uid: int | None = None,
+        relayed_only: bool = False,
     ) -> tuple[str, ...]:
         """Effective blocked function tags for ``username`` on ``device_id``.
 
         Admins, Power Users, and members of the built-in ``admin`` group are
-        never blocked. For Normal Users, a tag is blocked only when every
-        non-LAN-only user group granting access to ``device_id`` blacklists it.
-        Fails closed (blocking every tagged function) on lookup errors or when
-        no group grants the device.
+        never blocked. For Normal Users, non-LAN-only groups granting access to
+        ``device_id`` are evaluated first so a LAN-only group never lifts a
+        remote group's blacklist. Only when no non-LAN-only group grants the
+        device and ``relayed_only`` is False (not a federated reservation) are
+        LAN-only groups consulted. Fails closed (blocking every tagged function)
+        on lookup errors or when no eligible group grants the device.
         """
         try:
             role_rows = perms.get_perms(username) or ()
@@ -2045,6 +2048,14 @@ class ReservationHandler:
                 )
             finally:
                 RELAYED.reset(relayed)
+            if not allowed and not relayed_only:
+                relayed = RELAYED.set(False)
+                try:
+                    allowed, blocked = user_group_handler.get_users_blocked_tags(
+                        uid=uid, device_id=int(device_id)
+                    )
+                finally:
+                    RELAYED.reset(relayed)
             if not allowed:
                 return (BLOCK_ALL_TAG,)
             return tuple(blocked)
@@ -2083,7 +2094,8 @@ class ReservationHandler:
                 security_state = self._account_security_state_locked(reservation[1])
                 if security_state == "incoherent":
                     continue
-                if security_state == "federated" and not self._federated_reservation_authorized(
+                is_federated = security_state == "federated"
+                if is_federated and not self._federated_reservation_authorized(
                     int(reservation[0])
                 ):
                     # An out-of-band row on a proxy account is never honoured.
@@ -2109,13 +2121,21 @@ class ReservationHandler:
                         RELAYED.reset(relayed)
                     if bypass:
                         print(f"lockout bypass on: {dev_id} (gid {int(dev_id)})")
-                    blocked_tags = (
-                        ()
-                        if bypass
-                        else ReservationHandler._blocked_tags_for_holder_locked(
-                            self, reservation[1], int(dev_id), uid=uid
+                        blocked_tags = ()
+                    else:
+                        fed_check = getattr(self, "_federated_reservation_authorized", None)
+                        if not is_federated and callable(fed_check):
+                            try:
+                                is_federated = bool(fed_check(int(reservation[0])))
+                            except sqlite3.OperationalError:
+                                is_federated = False
+                        blocked_tags = ReservationHandler._blocked_tags_for_holder_locked(
+                            self,
+                            reservation[1],
+                            int(dev_id),
+                            uid=uid,
+                            relayed_only=is_federated,
                         )
-                    )
                     if blocked_tags:
                         set_device(dev_id, *held, bypass=bypass, blocked_tags=blocked_tags)
                     else:

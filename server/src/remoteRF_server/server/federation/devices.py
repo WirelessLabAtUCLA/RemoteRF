@@ -628,16 +628,36 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
         try:
             from .. import device_manager, direct_path
 
+            expected = (live["salt"], live["hash"])
             resolved = device_manager.get_device_by_id(device_id)
-            device = resolved[0] if isinstance(resolved, tuple) else resolved
+            if isinstance(resolved, tuple) and len(resolved) == 3:
+                device, salt, hsh = resolved
+            else:
+                device, salt, hsh = resolved, "", ""
             if isinstance(device, device_manager.VirtualDevice):
+                if not all(expected) or (salt, hsh) != expected:
+                    self.reservations.update_devices()
+                    resolved = device_manager.get_device_by_id(device_id)
+                    if isinstance(resolved, tuple) and len(resolved) == 3:
+                        device, salt, hsh = resolved
+                    else:
+                        device, salt, hsh = resolved, "", ""
+                if (
+                    not isinstance(device, device_manager.VirtualDevice)
+                    or not all(expected)
+                    or (salt, hsh) != expected
+                ):
+                    raise FederationBusinessError("direct_path_unavailable")
+                blocked_tags = device_manager.get_device_blocked_tags(
+                    device_id, expected_reservation=expected
+                )
                 from .. import host_direct
 
                 answer = host_direct.offer(
                     device, payload["ice"], rid=str(reservation_id), reservation_end=live["end_time"],
                     still_live=lambda: authorize("get_time_now") is None,
                     tag=device_manager.reservation_tag(live["salt"], live["hash"]),
-                    blocked_tags=device_manager.get_device_blocked_tags(device_id),
+                    blocked_tags=blocked_tags,
                 )
                 if answer is not None:
                     return {**result, "status": "ok", "error_code": None, "payload": {"ice": json.dumps(answer)}}
@@ -646,6 +666,8 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
                 f"federated/{claims['iss']}/{claims['sub']}/{reservation_id}",
                 live["username"], payload["ice"], bound={"run": run, "authorize": authorize},
             )
+        except FederationBusinessError:
+            raise
         except RemoteRFPolicyError:
             raise FederationBusinessError("host_too_old_for_restrictions") from None
         except Exception:

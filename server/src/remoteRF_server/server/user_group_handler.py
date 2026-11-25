@@ -51,18 +51,15 @@ def _parse_blacklisted_tags(raw) -> list[str]:
         try:
             parsed = json.loads(text)
         except Exception:
-            parsed = [part.strip() for part in text.split(",") if part.strip()]
+            return [BLOCK_ALL_TAG]
     elif isinstance(raw, (list, tuple)):
         parsed = list(raw)
     else:
         return [BLOCK_ALL_TAG]
     if not isinstance(parsed, list):
         return [BLOCK_ALL_TAG]
-    cleaned = [str(item).strip() for item in parsed if item is not None and str(item).strip()]
-    if not cleaned:
-        return []
     try:
-        return list(normalize_tags(cleaned))
+        return list(normalize_tags(parsed))
     except (TypeError, ValueError):
         return [BLOCK_ALL_TAG]
 

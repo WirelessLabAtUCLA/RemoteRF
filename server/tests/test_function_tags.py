@@ -282,11 +282,189 @@ class ReservationBlockedTagsTests(unittest.TestCase):
                 # LAN-only group without blacklist does NOT lift TX for alice.
                 self.assertEqual(handler._blocked_tags_for_holder_locked("alice", 3), ("TX",))
                 self.assertFalse(reservation.RELAYED.get())
-                # User only in LAN-only group fails closed under conservative RELAYED=True.
-                self.assertEqual(handler._blocked_tags_for_holder_locked("bob", 3), (BLOCK_ALL_TAG,))
+                # User only in LAN-only group gets that group's own blacklist on LAN,
+                # and still fails closed when evaluated as relayed_only (federated).
+                self.assertEqual(handler._blocked_tags_for_holder_locked("bob", 3), ())
+                self.assertEqual(handler._blocked_tags_for_holder_locked("bob", 3, relayed_only=True), (BLOCK_ALL_TAG,))
                 self.assertFalse(reservation.RELAYED.get())
         finally:
             reservation.RELAYED.reset(relayed_token)
+
+    def test_blocked_tags_lan_only_group_allowed_on_lan_but_not_for_federated(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "usergroups.db"
+        res_db_path = Path(tmp.name) / "reservations.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE UserGroups (
+                    group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT NOT NULL UNIQUE,
+                    devices_whitelist TEXT NOT NULL DEFAULT '[]',
+                    max_reservation_time_sec INTEGER NOT NULL DEFAULT 3600,
+                    max_reservations INTEGER NOT NULL DEFAULT 1,
+                    lifetime_sec INTEGER NOT NULL DEFAULT 0,
+                    lan_only INTEGER NOT NULL DEFAULT 0,
+                    max_horizon_sec INTEGER NOT NULL DEFAULT 604800,
+                    blacklisted_tags TEXT NOT NULL DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE UsersLookup (
+                    user_id INTEGER NOT NULL,
+                    group_id INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, group_id)
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, lan_only, blacklisted_tags) "
+                "VALUES (1, 'remote-rx', '[3]', 0, '[\"TX\"]')"
+            )
+            conn.execute(
+                "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, lan_only, blacklisted_tags) "
+                "VALUES (2, 'lan-full', '[3, 4]', 1, '[]')"
+            )
+            conn.execute(
+                "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, lan_only, blacklisted_tags) "
+                "VALUES (3, 'lan-rx', '[5]', 1, '[\"TX\"]')"
+            )
+            conn.execute("INSERT INTO UsersLookup VALUES (10, 1), (10, 2), (11, 2), (12, 3)")
+
+        groups = UserGroupHandler.__new__(UserGroupHandler)
+        groups.filepath = db_path
+        groups.lock = threading.RLock()
+
+        now = datetime.now()
+        with sqlite3.connect(res_db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE Reservations (
+                    res_id INTEGER PRIMARY KEY, username TEXT, device_id INTEGER,
+                    start_time TEXT, end_time TEXT, salt TEXT, hash TEXT
+                );
+                CREATE TABLE FederatedReservations (
+                    res_id INTEGER PRIMARY KEY
+                );
+                """
+            )
+            start_s = (now - timedelta(minutes=1)).isoformat()
+            end_s = (now + timedelta(minutes=10)).isoformat()
+            # res 1: bob (LAN-only unrestricted) native LAN reservation on dev 3
+            conn.execute("INSERT INTO Reservations VALUES (1, 'bob', 3, ?, ?, 'sb', 'hb')", (start_s, end_s))
+            # res 2: bob_fed (linked account only in lan-full) federated reservation on dev 4
+            conn.execute("INSERT INTO Reservations VALUES (2, 'bob', 4, ?, ?, 'sf', 'hf')", (start_s, end_s))
+            conn.execute("INSERT INTO FederatedReservations VALUES (2)")
+            # res 3: charlie (LAN-only TX-blacklisted) native LAN reservation on dev 5
+            conn.execute("INSERT INTO Reservations VALUES (3, 'charlie', 5, ?, ?, 'sc', 'hc')", (start_s, end_s))
+            # res 4: alice (remote-rx + lan-full) native/relayed reservation on dev 3 (skip conflict by using helper directly below)
+
+        handler = reservation.ReservationHandler.__new__(reservation.ReservationHandler)
+        handler.filepath = res_db_path
+        handler.lock = threading.RLock()
+        handler._clean_expired_reservations = mock.Mock()
+        handler._account_security_state_locked = mock.Mock(return_value="native")
+        uid_map = {"alice": 10, "bob": 11, "charlie": 12, "nobody": 13}
+        handler.get_uid = mock.Mock(side_effect=lambda u: uid_map[u])
+        fake_perms = mock.Mock()
+        fake_perms.get_perms.return_value = [["Normal User"]]
+
+        set_calls = []
+        # Even if update_devices() runs while ambient RELAYED=True (e.g. triggered by a federated booking),
+        # LAN holders must get their LAN-only group tags and federated holders must stay restricted.
+        relayed_token = reservation.RELAYED.set(True)
+        try:
+            with mock.patch.object(reservation, "perms", fake_perms), \
+                    mock.patch.object(reservation, "user_group_handler", groups), \
+                    mock.patch.object(reservation, "get_all_devices", return_value={3: (object(), "", ""), 4: (object(), "", ""), 5: (object(), "", "")}), \
+                    mock.patch.object(reservation, "get_registered_devices", return_value={3: (object(), "", ""), 4: (object(), "", ""), 5: (object(), "", "")}), \
+                    mock.patch.object(reservation, "set_device", side_effect=lambda *a, **kw: set_calls.append((a, kw))):
+                self.assertEqual(handler._blocked_tags_for_holder_locked("bob", 3), ())
+                self.assertEqual(handler._blocked_tags_for_holder_locked("charlie", 5), ("TX",))
+                self.assertEqual(handler._blocked_tags_for_holder_locked("alice", 3), ("TX",))
+                self.assertEqual(handler._blocked_tags_for_holder_locked("nobody", 3), (BLOCK_ALL_TAG,))
+                self.assertEqual(handler._blocked_tags_for_holder_locked("bob", 3, relayed_only=True), (BLOCK_ALL_TAG,))
+                self.assertTrue(reservation.RELAYED.get())
+
+                handler.update_devices()
+        finally:
+            reservation.RELAYED.reset(relayed_token)
+
+        by_dev = {args[0]: kwargs for args, kwargs in set_calls}
+        self.assertEqual(by_dev["3"], {"bypass": False})
+        self.assertEqual(by_dev["4"], {"bypass": False, "blocked_tags": (BLOCK_ALL_TAG,)})
+        self.assertEqual(by_dev["5"], {"bypass": False, "blocked_tags": ("TX",)})
+
+    def test_parse_blacklisted_tags_fails_closed_on_malformed_json_and_invalid_entries(self):
+        from remoteRF_server.server.user_group_handler import _parse_blacklisted_tags
+
+        self.assertEqual(_parse_blacklisted_tags(None), [])
+        self.assertEqual(_parse_blacklisted_tags(""), [])
+        self.assertEqual(_parse_blacklisted_tags("   "), [])
+        self.assertEqual(_parse_blacklisted_tags("[]"), [])
+        self.assertEqual(_parse_blacklisted_tags('["TX", "tx", "Cal"]'), ["TX", "Cal"])
+        self.assertEqual(_parse_blacklisted_tags(["TX", "Cal"]), ["TX", "Cal"])
+
+        for malformed in (
+            '["TX"',
+            "TX,RX",
+            "{bad",
+            "{}",
+            "123",
+            '"TX"',
+            "true",
+            "null",
+            "[null]",
+            '[""]',
+            '["   "]',
+            "[123]",
+            '["TX", null]',
+            '["TX", 1]',
+            '["TX", ""]',
+            [None],
+            [""],
+            [42],
+            ["TX", None],
+            123,
+            {"TX": True},
+        ):
+            self.assertEqual(_parse_blacklisted_tags(malformed), [BLOCK_ALL_TAG], repr(malformed))
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "usergroups.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE UserGroups (
+                    group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT NOT NULL UNIQUE,
+                    devices_whitelist TEXT NOT NULL DEFAULT '[]',
+                    max_reservation_time_sec INTEGER NOT NULL DEFAULT 3600,
+                    max_reservations INTEGER NOT NULL DEFAULT 1,
+                    lifetime_sec INTEGER NOT NULL DEFAULT 0,
+                    lan_only INTEGER NOT NULL DEFAULT 0,
+                    max_horizon_sec INTEGER NOT NULL DEFAULT 604800,
+                    blacklisted_tags TEXT NOT NULL DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE UsersLookup (
+                    user_id INTEGER NOT NULL,
+                    group_id INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, group_id)
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, blacklisted_tags) "
+                "VALUES (1, 'corrupt-json', '[3]', '[\"TX\"'), (2, 'corrupt-item', '[4]', '[null]')"
+            )
+            conn.execute("INSERT INTO UsersLookup VALUES (10, 1), (10, 2)")
+        groups = UserGroupHandler.__new__(UserGroupHandler)
+        groups.filepath = db_path
+        groups.lock = threading.RLock()
+        self.assertEqual(groups.get_users_blocked_tags(uid=10, device_id=3), (True, [BLOCK_ALL_TAG]))
+        self.assertEqual(groups.get_users_blocked_tags(uid=10, device_id=4), (True, [BLOCK_ALL_TAG]))
 
     def test_update_devices_pushes_blocked_tags_and_admin_bypass(self):
         tmp = tempfile.TemporaryDirectory()
@@ -530,6 +708,42 @@ class ServerV1DispatchTagEnforcementTests(unittest.TestCase):
             self.assertNotIn("__rrf_master_bypass", user_args)
 
 
+    def test_v1_ti_awr6843_config_setters_blocked_for_tx_blacklisted_group(self):
+        from remoterf_device_core.drivers.ti_awr6843.ti_awr6843_schema import (
+            TiMmWaveSchema as TiAwr6843Schema,
+        )
+
+        rpc = RpcManager()
+        fake_dev = mock.MagicMock()
+        fake_dev.fps = 10.0
+        schema = TiAwr6843Schema()
+        schema.bind(fake_dev)
+        schema.blocked_tags = ("TX",)
+
+        for prop, val in (
+            ("fps", 30.0),
+            ("preset", "fast-motion"),
+            ("mode", "2d"),
+            ("sensitivity", "high"),
+            ("min_range", 0.5),
+            ("max_range", 5.0),
+            ("clutter_removal", True),
+        ):
+            with self.assertRaises(RemoteRFPolicyError) as ctx:
+                rpc._dispatch_native_schema(
+                    function_name=f"ti_awr6843:{prop}:SET",
+                    args={prop: map_arg(val)},
+                    dev=schema,
+                )
+            self.assertEqual(
+                str(ctx.exception),
+                f"set_{prop} is blocked for your user groups on this device (tag TX)",
+            )
+
+        res = rpc._dispatch_native_schema(function_name="ti_awr6843:fps:GET", args={}, dev=schema)
+        self.assertEqual(unmap_arg(res["fps"]), 10.0)
+
+
 class ServerV2DispatchTagEnforcementTests(unittest.TestCase):
     def test_v2_invoke_and_sample_stream_enforce_blocked_tags(self):
         inventory = _FakeInventoryUsrp()
@@ -652,6 +866,122 @@ class ServerV2DispatchTagEnforcementTests(unittest.TestCase):
                 overload_id="default",
             )
             manager.close(master_session.session_id)
+
+
+    def test_v2_property_tree_writes_blocked_for_tx_blacklisted_group(self):
+        class _FakeDoubleProp:
+            def __init__(self):
+                self.value = 1.0e9
+                self.writes = []
+
+            def get(self):
+                return self.value
+
+            def get_desired(self):
+                return self.value
+
+            def set(self, value):
+                self.writes.append(("set", value))
+                self.value = float(value)
+
+            def set_coerced(self, value):
+                self.writes.append(("set_coerced", value))
+                self.value = float(value)
+
+        class _FakeTree:
+            def __init__(self, prop):
+                self._prop = prop
+
+            def access_double(self, path):
+                return self._prop
+
+        prop = _FakeDoubleProp()
+        tree = _FakeTree(prop)
+
+        class _TreeLiveUsrp(_FakeLiveUsrp):
+            def invoke_native(self, method, args, positional_args=None):
+                if method == "get_tree":
+                    return tree
+                return super().invoke_native(method, args, positional_args=positional_args)
+
+        class _TreeInventoryUsrp(_FakeInventoryUsrp):
+            def create_session_schema(self):
+                self.live = _TreeLiveUsrp()
+                return self.live
+
+        inventory = _TreeInventoryUsrp()
+        context = {
+            "schema": inventory,
+            "dtype": "usrp",
+            "ident": "SERIAL",
+            "name": "test-usrp",
+            "blocked_tags": ("TX",),
+        }
+        manager = SessionManager()
+        with mock.patch.dict(sys.modules, {"uhd": _fake_uhd_module()}), \
+                mock.patch("remoteRF_server.server.dynamic_v2.resolve_gid_for_token", return_value=7), \
+                mock.patch("remoteRF_server.server.dynamic_v2.get_local_device_context", return_value=context), \
+                mock.patch("remoteRF_server.server.dynamic_v2.token_matches_device", return_value=True), \
+                mock.patch("remoteRF_server.server.dynamic_v2.is_master_token", return_value=False), \
+                mock.patch("remoteRF_server.server.dynamic_v2.session_manager", manager):
+            session = manager.open("user-token")
+            tree_res, _ = manager.invoke(
+                session.session_id, session.root_handle, "get_tree", {}, overload_id="default"
+            )
+            tree_handle = tree_res["__remoterf_handle__"]
+            prop_res, _ = manager.invoke(
+                session.session_id,
+                tree_handle,
+                "access_double",
+                {},
+                positional_args=["/mboards/0/dboards/A/tx_frontends/0/freq/value"],
+                overload_id="default",
+            )
+            prop_handle = prop_res["__remoterf_handle__"]
+
+            # Reads stay allowed.
+            val, _ = manager.invoke(session.session_id, prop_handle, "get", {}, overload_id="default")
+            self.assertEqual(val, 1.0e9)
+            val2, _ = manager.invoke(session.session_id, prop_handle, "get_desired", {}, overload_id="default")
+            self.assertEqual(val2, 1.0e9)
+
+            # Writes are refused under TX blacklist.
+            for write_fn in ("set", "set_coerced"):
+                with self.assertRaises(RemoteRFPolicyError) as ctx:
+                    manager.invoke(
+                        session.session_id,
+                        prop_handle,
+                        write_fn,
+                        {},
+                        positional_args=[2.45e9],
+                        overload_id="default",
+                    )
+                self.assertEqual(
+                    str(ctx.exception),
+                    f"{write_fn} is blocked for your user groups on this device (tag TX)",
+                )
+            self.assertEqual(prop.writes, [])
+
+            # Unrestricted holder can write.
+            context["blocked_tags"] = ()
+            manager.invoke(
+                session.session_id,
+                prop_handle,
+                "set",
+                {},
+                positional_args=[2.45e9],
+                overload_id="default",
+            )
+            manager.invoke(
+                session.session_id,
+                prop_handle,
+                "set_coerced",
+                {},
+                positional_args=[2.46e9],
+                overload_id="default",
+            )
+            self.assertEqual(prop.writes, [("set", 2.45e9), ("set_coerced", 2.46e9)])
+            manager.close(session.session_id)
 
 
 class HostDynamicV2TagEnforcementTests(unittest.TestCase):
@@ -930,7 +1260,7 @@ class HostDirectGrantBlockedTagsTests(unittest.TestCase):
             ),
         )
         old_vdev = device_manager.VirtualDevice(gid=7, host_id="host-old", device_id="7")
-        with mock.patch.object(device_manager, "get_device_by_id", return_value=old_vdev), \
+        with mock.patch.object(device_manager, "get_device_by_id", return_value=(old_vdev, "salt", "hash")), \
                 mock.patch.object(device_manager, "get_device_blocked_tags", return_value=("TX",)), \
                 mock.patch.object(host_direct, "offer", side_effect=RemoteRFPolicyError(OLD_HOST_TAGS_ERROR)), \
                 mock.patch.object(direct_path, "offer_bound") as offer_bound:
@@ -938,6 +1268,137 @@ class HostDirectGrantBlockedTagsTests(unittest.TestCase):
                 handler.finalize(action, {})
         self.assertEqual(ctx.exception.code, "host_too_old_for_restrictions")
         offer_bound.assert_not_called()
+
+    def test_federated_direct_open_refreshes_stale_device_state_and_refuses_mismatch(self):
+        from remoteRF_server.server import direct_path
+        from remoteRF_server.server.federation.destination import FederationBusinessError
+        from remoteRF_server.server.federation.devices import ServerDirectOpenHandler
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reservations_db = Path(tmp.name) / "reservations.sqlite"
+        action = types.SimpleNamespace(
+            claims={
+                "iss": "00000000-0000-4000-8000-000000000002",
+                "sub": "remote-alice",
+                "contract_id": "contract-1",
+                "contract_version": 1,
+            },
+            request=types.SimpleNamespace(
+                value={"payload": {"reservation_id": 9, "ice": "{}"}}
+            ),
+        )
+
+        vdev = device_manager.VirtualDevice(gid=7, host_id="host-a", device_id="7", kind="adalm_pluto")
+        st = device_manager._DeviceState(
+            dev=vdev,
+            origin="host",
+            online=True,
+            salt="",
+            hsh="",
+            name="host-pluto",
+            ident="serial-7",
+            dtype="adalm_pluto",
+            blocked_tags=(),
+        )
+        with device_manager._state_lock:
+            saved = device_manager._devices.get(7)
+            device_manager._devices[7] = st
+        try:
+            # 1) Stale idle state -> update_devices() applies live TX-blocked holder -> offer gets ("TX",).
+            fake_res = mock.MagicMock()
+            fake_res.federated_live_reservation.return_value = {
+                "device_id": 7,
+                "end_time": 2000,
+                "salt": "live-salt",
+                "hash": "live-hash",
+                "username": "alice",
+            }
+            fake_res.update_devices.side_effect = lambda: device_manager.set_device(
+                7, "live-salt", "live-hash", blocked_tags=("TX",)
+            )
+            handler = ServerDirectOpenHandler(
+                reservations_path=reservations_db,
+                local_deployment_id="00000000-0000-4000-8000-000000000001",
+                display_name="lab",
+                reservation_handler=fake_res,
+                rpc_manager=mock.MagicMock(),
+            )
+            seen_blocked = []
+            with mock.patch.object(device_manager, "_sync_host_devices"), \
+                    mock.patch.object(device_manager, "_start_host_reservation"), \
+                    mock.patch.object(device_manager, "_reset_if_pending"), \
+                    mock.patch.object(device_manager, "_reservation_end_callbacks", []), \
+                    mock.patch.object(
+                        host_direct,
+                        "offer",
+                        side_effect=lambda *a, **kw: seen_blocked.append(kw["blocked_tags"]) or {"ufrag": "u", "pwd": "p", "candidates": []},
+                    ), \
+                    mock.patch.object(direct_path, "offer_bound") as offer_bound:
+                out = handler.finalize(action, {})
+            self.assertEqual(out["status"], "ok")
+            fake_res.update_devices.assert_called_once()
+            self.assertEqual(seen_blocked, [("TX",)])
+            offer_bound.assert_not_called()
+
+            # 2) Back-to-back handoff from TX-blocked prior holder to unrestricted holder -> offer gets ().
+            seen_blocked.clear()
+            fake_res.update_devices.reset_mock()
+            fake_res.federated_live_reservation.return_value = {
+                "device_id": 7,
+                "end_time": 3000,
+                "salt": "next-salt",
+                "hash": "next-hash",
+                "username": "bob",
+            }
+            fake_res.update_devices.side_effect = lambda: device_manager.set_device(
+                7, "next-salt", "next-hash", blocked_tags=()
+            )
+            with mock.patch.object(device_manager, "_sync_host_devices"), \
+                    mock.patch.object(device_manager, "_start_host_reservation"), \
+                    mock.patch.object(device_manager, "_reset_if_pending"), \
+                    mock.patch.object(device_manager, "_reservation_end_callbacks", []), \
+                    mock.patch.object(
+                        host_direct,
+                        "offer",
+                        side_effect=lambda *a, **kw: seen_blocked.append(kw["blocked_tags"]) or {"ufrag": "u", "pwd": "p", "candidates": []},
+                    ), \
+                    mock.patch.object(direct_path, "offer_bound") as offer_bound:
+                out = handler.finalize(action, {})
+            self.assertEqual(out["status"], "ok")
+            fake_res.update_devices.assert_called_once()
+            self.assertEqual(seen_blocked, [()])
+            offer_bound.assert_not_called()
+
+            # 3) If device_manager still does not carry live (salt, hash) after refresh, refuse cleanly.
+            fake_res.update_devices.reset_mock()
+            fake_res.update_devices.side_effect = None
+            fake_res.federated_live_reservation.return_value = {
+                "device_id": 7,
+                "end_time": 4000,
+                "salt": "unapplied-salt",
+                "hash": "unapplied-hash",
+                "username": "carol",
+            }
+            with mock.patch.object(device_manager, "_sync_host_devices"), \
+                    mock.patch.object(host_direct, "offer") as offer, \
+                    mock.patch.object(direct_path, "offer_bound") as offer_bound:
+                with self.assertRaises(FederationBusinessError) as ctx:
+                    handler.finalize(action, {})
+            self.assertEqual(ctx.exception.code, "direct_path_unavailable")
+            fake_res.update_devices.assert_called_once()
+            offer.assert_not_called()
+            offer_bound.assert_not_called()
+
+            # 4) Atomic check rejects mismatched expected_reservation directly.
+            with self.assertRaises(device_manager.ReservationChangedError):
+                device_manager.get_device_blocked_tags(7, expected_reservation=("wrong-s", "wrong-h"))
+        finally:
+            with device_manager._state_lock:
+                if saved is None:
+                    device_manager._devices.pop(7, None)
+                else:
+                    device_manager._devices[7] = saved
 
     def test_tunnel_forward_request_strips_master_bypass_only_for_old_hosts(self):
         tmp = tempfile.TemporaryDirectory()

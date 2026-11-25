@@ -310,10 +310,19 @@ class BuiltinDriverTagTests(unittest.TestCase):
             self.assertEqual(usrp.get_method_tags(rx_method), (), rx_method)
 
         schema_v2 = build_usrp_schema_v2()
+        property_owners = (
+            "uhd.property.bool",
+            "uhd.property.int",
+            "uhd.property.double",
+            "uhd.property.str",
+            "uhd.property.device_addr",
+            "uhd.property.dboard_iface",
+        )
         expected_v2 = (
             {("uhd.usrp.MultiUSRP", name) for name in TX_MULTIUSRP_METHODS}
             | {("uhd.usrp.MultiUSRP", name) for name in TX_INTEGRATION_METHODS}
             | {("uhd.usrp.TXStreamer", "send")}
+            | {(owner, name) for owner in property_owners for name in ("set", "set_coerced")}
         )
         self.assertEqual(set(get_schema_tags(schema_v2)), expected_v2)
         self.assertEqual(get_method_tags(schema_v2, "uhd.usrp.MultiUSRP", "integration_start"), ("TX",))
@@ -349,7 +358,19 @@ class BuiltinDriverTagTests(unittest.TestCase):
             self.assertEqual(mmwave.get_method_tags(safe), (), safe)
 
         awr = TiAwr6843Schema()
-        expected_awr = {"call_apply_config", "call_configure", "call_send_command", "call_start"}
+        expected_awr = {
+            "call_apply_config",
+            "call_configure",
+            "call_send_command",
+            "call_start",
+            "set_clutter_removal",
+            "set_fps",
+            "set_preset",
+            "set_mode",
+            "set_sensitivity",
+            "set_min_range",
+            "set_max_range",
+        }
         actual_awr = {name for name, entry in awr._exposed.items() if "TX" in entry.policy_tags}
         self.assertEqual(actual_awr, expected_awr)
         for safe in ("call_stop", "call_reset", "call_read_frame", "call_capture_point_cloud", "call_query_version", "get_is_running"):
@@ -367,6 +388,41 @@ class BuiltinDriverTagTests(unittest.TestCase):
         self.assertEqual(actual_kmd7, expected_kmd7)
         for safe in ("call_stop", "call_flush_frames", "call_configure", "call_restore_factory_settings", "get_is_running"):
             self.assertEqual(kmd7.get_method_tags(safe), (), safe)
+
+    def test_usrp_property_tree_writes_tagged_tx_and_reads_untagged(self):
+        property_owners = (
+            "uhd.property.bool",
+            "uhd.property.int",
+            "uhd.property.double",
+            "uhd.property.str",
+            "uhd.property.device_addr",
+            "uhd.property.dboard_iface",
+        )
+        for schema in (build_usrp_schema_v2(), UsrpPhaserSchema().get_idl_v2()):
+            self.assertEqual(get_method_tags(schema, "uhd.usrp.MultiUSRP", "get_tree"), ())
+            for tree_fn in (
+                "subtree",
+                "exists",
+                "list",
+                "access_bool",
+                "access_int",
+                "access_double",
+                "access_str",
+                "access_device_addr",
+                "access_dboard_iface",
+            ):
+                self.assertEqual(get_method_tags(schema, "uhd.property_tree", tree_fn), (), tree_fn)
+            for owner in property_owners:
+                for write_fn in ("set", "set_coerced"):
+                    self.assertEqual(get_method_tags(schema, owner, write_fn), ("TX",), f"{owner}.{write_fn}")
+                for read_fn in ("get", "get_desired"):
+                    self.assertEqual(get_method_tags(schema, owner, read_fn), (), f"{owner}.{read_fn}")
+
+    def test_ti_awr6843_config_setters_tagged_tx(self):
+        awr = TiAwr6843Schema()
+        for prop in ("fps", "preset", "mode", "sensitivity", "min_range", "max_range", "clutter_removal"):
+            self.assertEqual(awr.get_method_tags(f"set_{prop}"), ("TX",), f"set_{prop}")
+            self.assertEqual(awr.get_method_tags(f"get_{prop}"), (), f"get_{prop}")
 
     def test_schemas_json_is_unchanged(self):
         built = subprocess.run(

@@ -1553,6 +1553,7 @@ def _property_tree_methods() -> list[dict]:
                         )
                     ],
                     execution="server_handle",
+                    tag="TX",
                 )
             )
     return methods

@@ -1168,10 +1168,23 @@ def register_reservation_end_callback(callback) -> None:
             _reservation_end_callbacks.append(callback)
 
 
-def get_device_blocked_tags(device_id: int) -> Tuple[str, ...]:
-    """Return the current reservation holder's blocked function tags for ``device_id``."""
+def get_device_blocked_tags(
+    device_id: int,
+    *,
+    expected_reservation: Tuple[str, str] | None = None,
+) -> Tuple[str, ...]:
+    """Return the current reservation holder's blocked function tags for ``device_id``.
+
+    When ``expected_reservation`` is given, require ``(st.salt, st.hsh)`` to
+    match under ``_state_lock`` and raise ``ReservationChangedError`` otherwise,
+    so callers cannot read another holder's tags.
+    """
     with _state_lock:
         st = _devices.get(int(device_id))
+        if expected_reservation is not None:
+            if st is None or (st.salt, st.hsh) != tuple(expected_reservation):
+                raise ReservationChangedError()
+            return st.blocked_tags
         return st.blocked_tags if st is not None else ()
 
 
