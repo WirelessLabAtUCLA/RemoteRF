@@ -972,11 +972,35 @@ def test_a_deployment_is_never_named_by_its_id(monkeypatch):
     assert uid[:8] not in _text(lines)
     account = Mock()
     account.get_reservations.return_value = {"destinations": [dest], "reservations": [
-        {"device_id": f"{uid}:5", "deployment_id": uid, "mine": True, "start_time": 0, "end_time": 60}]}
+        {"device_id": f"{uid}:5", "deployment_id": uid, "mine": True, "start_time": 0, "end_time": 4102444800}]}
     account.get_devices.return_value = {"destinations": [], "devices": []}
     monkeypatch.setattr(client_app, "account", account)
     rows, offline = client_app._federated_reservation_rows(mine_only=True)
     assert [r["device_label"] for r in rows] == ["unlisted device"] and offline == [None]
+
+
+def test_ended_federated_reservations_are_dropped_and_you_lines_up(monkeypatch):
+    import time
+    import remoterf.core.app as client_app
+
+    lines = _shown(monkeypatch, client_app)
+    now = int(time.time())
+    account = Mock()
+    account.get_reservations.return_value = {"destinations": [], "reservations": [
+        {"device_id": "d:1", "deployment_id": DEST, "mine": True, "start_time": now - 7200, "end_time": now - 3600},
+        {"device_id": "d:1", "deployment_id": DEST, "mine": True, "start_time": now - 60, "end_time": now + 3600},
+        {"device_id": "d:2", "deployment_id": DEST, "mine": False, "start_time": now + 3600, "end_time": now + 7200}]}
+    account.get_devices.return_value = {"destinations": [], "devices": [
+        {"device_id": "d:1", "display_name": "Robot", "deployment_name": "samueli"},
+        {"device_id": "d:2", "display_name": "Robot_GPS", "deployment_name": "samueli"}]}
+    monkeypatch.setattr(client_app, "account", account)
+    rows, _ = client_app._federated_reservation_rows(mine_only=False)
+    assert [(r["device_label"], r["mine"]) for r in rows] == [("Robot@samueli", True), ("Robot_GPS@samueli", False)]
+    client_app._federated_reservations(mine_only=False)
+    body = [line for line in lines if "@samueli" in line]
+    assert len(body) == 2 and "(you)" in body[0] and "(you)" not in body[1]
+    starts = {line.index(client_app._format_reservation_range(r["start"], r["end"])) for line, r in zip(body, rows)}
+    assert len(starts) == 1
 
 
 @pytest.mark.parametrize("answers, expected", [

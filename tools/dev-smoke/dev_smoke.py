@@ -281,6 +281,9 @@ def direct_rx(ctx):
                 break
             if attempt == 0:
                 direct_path.stop()
+                # A failed punch is memoized for MEMO_SECONDS; without this the retry never signals.
+                from remoterf.deployment.state import root
+                (root() / direct_path.MEMO_FILE).unlink(missing_ok=True)
         check(path is not None, f"no direct path in 15 s: {direct_path.describe()}")
         calls = path.calls
         detail = tone(sdr, N)

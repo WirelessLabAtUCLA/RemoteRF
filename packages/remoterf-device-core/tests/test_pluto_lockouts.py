@@ -773,7 +773,40 @@ def test_base_reset_without_lockouts_hygiene():
     assert obj.device.tx_lo == 915e6
     assert obj.device.tx_hardwaregain_chan0 == -20
     assert obj.device.dds_scales == [.9] * 8
-    assert obj.device.tx_cyclic_buffer is True
+    assert obj.device.tx_cyclic_buffer is False
+
+
+def test_base_reset_without_lockouts_clears_cyclic_even_if_tx_teardown_fails():
+    obj = schema({})
+    obj.device.fail_stop = True
+    with pytest.raises(RuntimeError, match="buffer stop failed"):
+        obj.reset_for_next_holder()
+    assert obj.device.events == ["disable_dds", "tx_destroy_buffer", "rx_destroy_buffer"]
+    assert obj.device.tx_cyclic_buffer is False
+
+
+def test_poe_power_off_failure_reports_fault_until_next_boot(monkeypatch):
+    from remoterf_device_core.drivers.adalm_pluto import poe
+
+    def refuse(**kw):
+        raise OSError("switch timeout")
+
+    monkeypatch.setattr(poe, "set_poe", refuse)
+    monkeypatch.setattr(poe.time, "sleep", lambda s: None)
+    pluto = PoePluto(ip="192.0.2.1", port="ether5")
+    vars(pluto)["_pluto"] = FakeRadio()
+    with pytest.raises(OSError):
+        pluto.power_down()
+    assert pluto.power_state == "fault"
+    assert "ether5" in pluto.fault and "switch timeout" in pluto.fault
+    assert vars(pluto)["_pluto"] is None
+
+    monkeypatch.setattr(poe, "set_poe", lambda **kw: None)
+    monkeypatch.setattr(poe, "_iiod_up", lambda ip: True)
+    board = types.SimpleNamespace(_ctx=types.SimpleNamespace(attrs={}))
+    monkeypatch.setattr(sys.modules["adi"], "Pluto", lambda uri: board, raising=False)
+    pluto.power_up()
+    assert pluto.power_state == "on" and pluto.fault is None
 
 
 def test_base_reset_parks_before_poe_power_down():
