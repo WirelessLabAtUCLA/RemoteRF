@@ -953,6 +953,138 @@ class UnknownDeploymentTests(TunnelTests):
         self.assertIn("NOT connected -- server started before joining", rows[0])
         self.assertIn("    restart", rows)
 
+    def test_status_and_verify_fall_back_when_control_socket_fails(self):
+        from remoteRF_server.server import commands, control
+
+        self.activate()
+        failures = (
+            TimeoutError("timed out"),
+            ValueError("malformed json"),
+            KeyError("rc"),
+            TypeError("null reply"),
+            OSError("broken pipe"),
+        )
+        for exc in failures:
+            with self.subTest(exc=type(exc).__name__), \
+                 mock.patch.object(commands, "_IN_DAEMON", False), \
+                 mock.patch.object(control, "running", return_value=True), \
+                 mock.patch.object(control, "call", side_effect=exc), \
+                 mock.patch.object(g, "fetch_me"), \
+                 mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+                self.assertEqual(g.cmd_status(), 0)
+                panel.assert_called_once()
+                rows = panel.call_args[0][1]
+                # The server runs but did not answer: never tell the user to start another one.
+                self.assertIn("NOT connected -- the running server did not answer in time", rows[0])
+                self.assertNotIn("serverrf -s", "\n".join(rows))
+
+        with mock.patch.object(commands, "_IN_DAEMON", False), \
+             mock.patch.object(control, "running", return_value=True), \
+             mock.patch.object(control, "call", side_effect=TimeoutError("timed out")), \
+             mock.patch.object(g, "verify_contact"), \
+             mock.patch.object(g, "fetch_me"), \
+             mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+            self.assertEqual(g.cmd_verify("ABCD-1234"), 0)
+        panel.assert_called_once()
+
+    def test_run_agent_clears_agent_tunnel_on_exit(self):
+        import threading
+        from remoteRF_server.server import commands, control
+
+        self.activate()
+        tunnel = mock.Mock()
+        tunnel.up.return_value = False
+        seen_during_stop = []
+        tunnel.stop.side_effect = lambda: seen_during_stop.append(g._AGENT_TUNNEL)
+
+        with mock.patch.object(g, "_AGENT_TUNNEL", tunnel):
+            with self.refuse(), mock.patch.object(g, "_warn"), mock.patch.object(g, "TICK_SECONDS", 0):
+                g.run_agent(threading.Event(), tunnel)
+            self.assertEqual(seen_during_stop, [tunnel])
+            self.assertIsNone(g._AGENT_TUNNEL)
+
+            # A re-join in the same server process must ask for a restart, not a firewall fix.
+            self.activate()
+            with mock.patch.object(g, "fetch_me"), \
+                 mock.patch.object(commands, "_IN_DAEMON", True), \
+                 mock.patch.object(control, "bridged", return_value=True), \
+                 mock.patch.object(g, "_global_devices", return_value=([], [])), \
+                 mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+                g.cmd_status()
+            rows = panel.call_args[0][1]
+            self.assertIn("NOT connected -- server started before joining", rows[0])
+            self.assertIn("    serverrf restart", rows)
+
+        # Exiting via the stop event clears _AGENT_TUNNEL after tunnel.stop() as well.
+        self.activate()
+        stop = threading.Event()
+        tunnel2 = mock.Mock()
+        seen_during_stop2 = []
+        tunnel2.stop.side_effect = lambda: seen_during_stop2.append(g._AGENT_TUNNEL)
+        with mock.patch.object(g, "_AGENT_TUNNEL", tunnel2), \
+             mock.patch.object(g, "_tick", side_effect=lambda *a: stop.set()):
+            g.run_agent(stop, tunnel2)
+            self.assertEqual(seen_during_stop2, [tunnel2])
+            self.assertIsNone(g._AGENT_TUNNEL)
+
+    def test_status_prefixes_commands_for_shell_but_not_console(self):
+        from remoteRF_server.server import commands, control
+
+        self.activate()
+        for bridged, expected_restart, expected_groups in (
+            (True, "    serverrf restart", "Global devices: none -- share a group: serverrf groups public <group> on"),
+            (False, "    restart", "Global devices: none -- share a group: groups public <group> on"),
+        ):
+            with self.subTest(bridged=bridged), \
+                 mock.patch.object(g, "fetch_me"), mock.patch.object(g, "_AGENT_TUNNEL", None), \
+                 mock.patch.object(commands, "_IN_DAEMON", True), \
+                 mock.patch.object(control, "bridged", return_value=bridged), \
+                 mock.patch.object(g, "_global_devices", return_value=([], [])), \
+                 mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+                g.cmd_status()
+            rows = panel.call_args[0][1]
+            self.assertIn(expected_restart, rows)
+            self.assertIn(expected_groups, rows)
+
+    def test_status_reports_unassigned_relay_without_firewall_hint(self):
+        from remoteRF_server.server import commands
+
+        for label, setup in (
+            ("no_relay_fields", lambda: self.join(GLOBAL_STATE="active")),
+            ("missing_host_key", lambda: (self.activate(), g.update(GLOBAL_RELAY_HOST_KEY=""))),
+        ):
+            with self.subTest(case=label):
+                setup()
+                tunnel = mock.Mock(up=mock.Mock(return_value=False))
+                with mock.patch.object(g, "fetch_me"), mock.patch.object(g, "_AGENT_TUNNEL", tunnel), \
+                     mock.patch.object(commands, "_IN_DAEMON", True), \
+                     mock.patch.object(g, "_global_devices", return_value=([], [])), \
+                     mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+                    g.cmd_status()
+                rows = panel.call_args[0][1]
+                body = "\n".join(rows)
+                self.assertIn("NOT connected -- no relay assigned by Global yet", rows[0])
+                self.assertNotIn("None:None", body)
+                self.assertNotIn("outbound ssh", body)
+                self.assertNotIn("relay tunnel down", body)
+                self.assertIn("not assigned", body)
+
+    def test_status_distinguishes_refused_from_unreachable(self):
+        self.activate()
+        with self.refuse("deployment_suspended"), \
+             mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+            g.cmd_status()
+        rows = panel.call_args[0][1]
+        self.assertIn("NOT connected -- Global refused the request (deployment_suspended)", rows[0])
+        self.assertNotIn("cannot reach Global", rows[0])
+
+        with mock.patch.object(g, "fetch_me", side_effect=ConnectionError("network down")), \
+             mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+            g.cmd_status()
+        rows = panel.call_args[0][1]
+        self.assertIn("NOT connected -- cannot reach Global", rows[0])
+        self.assertNotIn("Global refused", rows[0])
+
     def test_a_refused_report_forces_a_poll_next_tick(self):
         self.activate()
         last = {"poll": 0.0}

@@ -1318,26 +1318,30 @@ def run_agent(stop=None, tunnel=None) -> None:
     import logging
     import time
 
+    global _AGENT_TUNNEL
     logger = logging.getLogger("remoteRF_server.global")
     last: Dict[str, float] = {}
     tunnel = tunnel or Tunnel()
-    while stop is None or not stop.is_set():
-        try:
-            if not participating() or state() in TERMINAL_STATES:
-                tunnel.stop()
-                return
-            _tick(last, tunnel)
-        except Exception as exc:  # noqa: BLE001 - never take the server down
-            logger.warning(
-                "global agent tick failed: %s (%s)",
-                exc, getattr(exc, "code", type(exc).__name__),
-            )
-        if stop is not None:
-            if stop.wait(TICK_SECONDS):
-                tunnel.stop()
-                return
-        else:
-            time.sleep(TICK_SECONDS)
+    try:
+        while stop is None or not stop.is_set():
+            try:
+                if not participating() or state() in TERMINAL_STATES:
+                    return
+                _tick(last, tunnel)
+            except Exception as exc:  # noqa: BLE001 - never take the server down
+                logger.warning(
+                    "global agent tick failed: %s (%s)",
+                    exc, getattr(exc, "code", type(exc).__name__),
+                )
+            if stop is not None:
+                if stop.wait(TICK_SECONDS):
+                    return
+            else:
+                time.sleep(TICK_SECONDS)
+    finally:
+        tunnel.stop()
+        if _AGENT_TUNNEL is tunnel:  # only clear our own; a newer agent may own the slot
+            _AGENT_TUNNEL = None
 
 
 def start_agent():
@@ -1457,11 +1461,20 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
     from . import commands, control
 
     # Only the server process knows its relay and devices: ask it when it runs.
-    if not commands._IN_DAEMON and control.running():
-        reply = control.call(["global", "status"])
+    server_busy = False
+    if not commands._IN_DAEMON:
+        running = control.running()
+        try:
+            reply = control.call(["global", "status"]) if running else None
+        except (OSError, ValueError, KeyError, TypeError):
+            reply = None
         if reply is not None:
             sys.stdout.write(reply[1])
             return reply[0]
+        server_busy = running  # it runs but did not answer: never tell the user to start another
+
+    in_server = commands._IN_DAEMON
+    prefix = "" if in_server and not control.bridged() else "serverrf "
 
     kv = load()
     if not kv:
@@ -1479,7 +1492,7 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
             [
                 f"{marker()} Not participating.",
                 "",
-                "    serverrf global join",
+                f"    {prefix}global join",
             ],
         )
         print()
@@ -1500,16 +1513,22 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
         kv = load()
 
     current = kv.get("GLOBAL_STATE", "unregistered")
-    in_server = commands._IN_DAEMON
     seen, seen_s = _ago(kv.get("GLOBAL_LAST_SEEN_AT"))
+    relay = tunnel_state() if in_server else ("unknown (server busy)" if server_busy else "server not running")
     problem = fix = None
     if current == "active":
-        if refused or unreachable:
+        if refused:
+            problem = f"Global refused the request ({refused})"
+        elif unreachable:
             problem = "cannot reach Global"
+        elif server_busy:
+            problem, fix = "the running server did not answer in time", "try again in a moment"
         elif not in_server:
             problem, fix = "server not running", "serverrf -s"
         elif _AGENT_TUNNEL is None:
-            problem, fix = "server started before joining", "restart"
+            problem, fix = "server started before joining", f"{prefix}restart"
+        elif relay == "not assigned":
+            problem = "no relay assigned by Global yet"
         elif not _AGENT_TUNNEL.up():
             problem = "relay tunnel down, retrying"
             fix = (f"(outbound ssh to {kv.get('GLOBAL_RELAY_TUNNEL_HOST')}:"
@@ -1520,7 +1539,6 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
     else:
         head = f"{current} -- {_STATE_SUMMARY.get(current, '')}".rstrip(" -")
     rows = [f"{marker()} {head}", ""]
-    relay = tunnel_state() if in_server else "server not running"
     fields = [
         ("name", kv.get("GLOBAL_NAME", "-")),
         ("display", kv.get("GLOBAL_DISPLAY_NAME", "-")),
@@ -1544,13 +1562,13 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
         shared = [d for d in devices if d["shared"]]
         local = [d for d in devices if not d["shared"]]
         rows += ["", f"Global devices (groups: {', '.join(groups)}):" if shared
-                 else "Global devices: none -- share a group: groups public <group> on"]
+                 else f"Global devices: none -- share a group: {prefix}groups public <group> on"]
         rows += [f"  {'live   ' if d['online'] else 'offline'}  {d['id']:>4}  {d['name']} ({d['type']})" for d in shared]
         if local:
             rows.append(f"Local only: {len(local)} more ({sum(d['online'] for d in local)} live)")
 
     if current == "unverified":
-        rows += ["", "    serverrf global verify <code>"]
+        rows += ["", f"    {prefix}global verify <code>"]
     if refused:
         rows += ["", f"(refused by RemoteRF Global ({refused}))"]
     if unreachable:
