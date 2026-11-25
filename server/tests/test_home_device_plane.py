@@ -329,3 +329,27 @@ def test_the_home_relays_dynamic_v2_for_a_partner_token_to_the_owner(home):
     gid, function_name, args = home["rpc"].device_calls[-1]
     assert (gid, function_name) == (home["allowed"], "DynamicV2:Negotiate:WIRE")
     assert "a" not in args and unmap_arg(args["wire"]) == b"\x01"
+
+
+def test_list_reservations_skips_ended_and_invalid_partner_rows(home):
+    plane, account_id = home["plane"], home["account_id"]
+    now_ts = 1_800_000_000
+    plane.clock = lambda: now_ts
+    payload = {
+        "reservations": [
+            {"reservation_id": "1", "local_device_id": "10", "start_time": now_ts - 7200, "end_time": now_ts - 3600, "mine": True},
+            {"reservation_id": "2", "local_device_id": "11", "start_time": now_ts - 3600, "end_time": now_ts, "mine": True},
+            {"reservation_id": "3", "local_device_id": "12", "start_time": now_ts + 3600, "end_time": now_ts + 3600, "mine": True},
+            {"reservation_id": "4", "local_device_id": "13", "start_time": now_ts + 7200, "end_time": now_ts + 3600, "mine": False},
+            {"reservation_id": "5", "local_device_id": "14", "start_time": now_ts - 600, "end_time": now_ts + 1200, "mine": True},
+            {"reservation_id": "6", "local_device_id": "15", "start_time": now_ts + 1800, "end_time": now_ts + 3600, "mine": False},
+        ]
+    }
+    with patch.object(plane, "_fan_out", return_value=[({"deployment_id": DEST}, payload)]):
+        rows = plane.list_reservations(local_account_id=account_id, username=NATIVE)
+    assert set(rows) == {f"{DEST[:8]}:5", f"{DEST[:8]}:6"}
+    assert rows[f"{DEST[:8]}:5"].startswith(f"{NATIVE},")
+    assert rows[f"{DEST[:8]}:6"].startswith("reserved,")
+    with sqlite3.connect(home["root"] / "reservations.db") as conn:
+        aliased = {r[0] for r in conn.execute("SELECT remote_device_id FROM FederatedDeviceAliases")}
+    assert aliased == {"14", "15"}
