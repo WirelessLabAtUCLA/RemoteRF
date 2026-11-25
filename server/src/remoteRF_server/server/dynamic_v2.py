@@ -79,9 +79,19 @@ _MAX_HANDLES_PER_SESSION = 64
 _MAX_CREDITS = 64
 _RX_PREFETCH_BATCH_SAMPS = 64 * 1024
 _MAX_RX_PREFETCH_BATCHES = 16
+SC16_DTYPE = np.dtype([("re", "<i2"), ("im", "<i2")])
+_SC16_WIRE_DTYPE = "sc16"
+_CPU_FORMAT_DTYPES = {
+    "fc32": np.dtype(np.complex64),
+    "fc64": np.dtype(np.complex128),
+    "sc16": SC16_DTYPE,
+    "f32": np.dtype(np.float32),
+    "f64": np.dtype(np.float64),
+}
 _SAMPLE_DTYPES = {
     "<c8": np.dtype("<c8"),
     "<c16": np.dtype("<c16"),
+    _SC16_WIRE_DTYPE: SC16_DTYPE,
     "<i2": np.dtype("<i2"),
     "<f4": np.dtype("<f4"),
     "<f8": np.dtype("<f8"),
@@ -108,13 +118,34 @@ def _call_value(value: Any, name: str, default=None):
 
 
 def _sample_dtype(value: str) -> np.dtype:
-    """Accept only the canonical scalar little-endian wire dtypes."""
+    """Accept only the canonical wire sample dtype tags."""
     dtype = _SAMPLE_DTYPES.get(str(value))
     if dtype is None:
         raise RemoteRFProtocolError(
             f"unsupported or non-canonical sample dtype: {value!r}"
         )
     return dtype
+
+
+def _sample_dtype_tag(dtype: np.dtype) -> str:
+    """Return the canonical wire tag for a validated sample dtype."""
+    if dtype == SC16_DTYPE:
+        return _SC16_WIRE_DTYPE
+    return dtype.str
+
+
+def _native_uhd_buffer(array: np.ndarray) -> np.ndarray:
+    """Return the zero-copy NumPy view passed to UHD's Python RX/TX streamer.
+
+    fc32/fc64/f32/f64 pass through unchanged. For sc16, UHD's Python pybind11
+    streamer binding expects a 4-byte scalar buffer whose trailing axis is the
+    sample count (np.int32) rather than a structured void dtype; viewing
+    SC16_DTYPE as np.int32 shares the backing memory without copying. Needs real
+    USRP hardware to confirm UHD 4.10's sc16 buffer handling on RX and TX.
+    """
+    if array.dtype == SC16_DTYPE:
+        return array.view(np.int32)
+    return array
 
 
 def _sample_timeout(value: float) -> float:
@@ -1049,13 +1080,10 @@ class SessionManager:
         except Exception:
             return
 
-        dtype = {
-            "fc32": np.dtype(np.complex64),
-            "fc64": np.dtype(np.complex128),
-            "f32": np.dtype(np.float32),
-            "f64": np.dtype(np.float64),
-            "s16": np.dtype(np.int16),
-        }.get(entry.cpu_format.lower(), np.dtype(np.complex64))
+        dtype = _CPU_FORMAT_DTYPES.get(
+            entry.cpu_format.lower(),
+            np.dtype(np.complex64),
+        )
         channels = max(1, len(entry.stream_channels))
         batch_samps = max(
             1,
@@ -1067,6 +1095,7 @@ class SessionManager:
 
         def run():
             buffer = np.empty((channels, batch_samps), dtype=dtype)
+            native_buffer = _native_uhd_buffer(buffer)
             while (
                 not stop.is_set()
                 and not entry.stop_event.is_set()
@@ -1079,7 +1108,7 @@ class SessionManager:
                     # streamers accept control calls while another thread recvs,
                     # and issue_stream_cmd stops this worker before it runs.
                     with entry.rx_recv_lock, self.admitted(session, entry, worker=True):
-                        received = int(entry.value.recv(buffer, metadata, 0.1))
+                        received = int(entry.value.recv(native_buffer, metadata, 0.1))
                 except Exception:
                     break
                 if stop.is_set() or entry.stop_event.is_set() or session.closed:
@@ -1139,12 +1168,17 @@ class SessionManager:
             metadata = uhd.types.TXMetadata()
             metadata.start_of_burst = False
             metadata.end_of_burst = True
-            dtype = (
-                np.complex128
-                if entry.cpu_format.lower() == "fc64"
-                else np.complex64
+            dtype = _CPU_FORMAT_DTYPES.get(
+                entry.cpu_format.lower(),
+                np.dtype(np.complex64),
             )
-            entry.value.send(np.empty(0, dtype=dtype), metadata, 0.1)
+            flush_shape = (
+                (len(entry.stream_channels), 0)
+                if len(entry.stream_channels) > 1
+                else 0
+            )
+            flush = np.empty(flush_shape, dtype=dtype)
+            entry.value.send(_native_uhd_buffer(flush), metadata, 0.1)
         except Exception:
             pass
         finally:
@@ -1937,13 +1971,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                         raise RemoteRFProtocolError(
                             "multi-channel samples require a channel-major array"
                         )
-                    expected_dtype = {
-                        "fc32": np.dtype(np.complex64),
-                        "fc64": np.dtype(np.complex128),
-                        "f32": np.dtype(np.float32),
-                        "f64": np.dtype(np.float64),
-                        "s16": np.dtype(np.int16),
-                    }.get(entry.cpu_format.lower())
+                    expected_dtype = _CPU_FORMAT_DTYPES.get(entry.cpu_format.lower())
                     if expected_dtype is not None and dtype != expected_dtype:
                         raise RemoteRFProtocolError(
                             f"sample dtype {dtype} does not match CPU format "
@@ -1993,7 +2021,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                                     target = buffer[..., count:]
                                     received = int(
                                         entry.value.recv(
-                                            target,
+                                            _native_uhd_buffer(target),
                                             current_metadata,
                                             timeout if count == 0 else remaining,
                                         )
@@ -2041,7 +2069,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             sequence=request.sequence,
                             direction=request.direction,
                             kind=grpc_pb2.SAMPLE_FRAME_DATA,
-                            dtype=dtype.str,
+                            dtype=_sample_dtype_tag(dtype),
                             shape=list(sliced.shape),
                             channels=list(request.channels),
                             sample_count=count,
@@ -2074,7 +2102,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                         with entry.lock, session_manager.admitted(session, entry):
                             count = int(
                                 entry.value.send(
-                                    samples,
+                                    _native_uhd_buffer(samples),
                                     metadata,
                                     timeout,
                                 )
