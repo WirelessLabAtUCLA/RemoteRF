@@ -1407,7 +1407,40 @@ _STATE_SUMMARY = {
 }
 
 
+def _ago(iso: Optional[str]) -> tuple:
+    """('3 min ago', seconds) for an ISO timestamp; ('never', None) without one."""
+    from datetime import datetime, timezone
+
+    try:
+        seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds()
+    except (TypeError, ValueError):
+        return "never", None
+    for unit, size in (("d", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= 2 * size:
+            return f"{int(seconds // size)} {unit} ago", seconds
+    return f"{int(seconds)} s ago", seconds
+
+
+def _global_devices() -> tuple:
+    """Names of the groups shared on Global, and every device here marked
+    `shared` or not. Only meaningful inside the server process."""
+    from . import device_manager
+    from .federation import cluster
+
+    try:
+        groups = cluster.groups(cluster.GLOBAL)
+    except Exception:  # noqa: BLE001 - not in the `global` cluster yet
+        groups = []
+    ids = {d for g in groups for d in g["devices"]}
+    devices = device_manager.describe_devices(device_manager.get_all_devices_str(power_state=False))
+    for d in devices:
+        d["shared"] = d["id"] in ids
+    return [g["group_name"] for g in groups], devices
+
+
 def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
+    import time
+
     if json_output:
         from .json_output import print_json
 
@@ -1419,7 +1452,16 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
             "relay": kv.get("GLOBAL_RELAY_HOSTNAME") or None,
         })
         return 0
+
     from ..common.utils.panel import marker, print_panel
+    from . import commands, control
+
+    # Only the server process knows its relay and devices: ask it when it runs.
+    if not commands._IN_DAEMON and control.running():
+        reply = control.call(["global", "status"])
+        if reply is not None:
+            sys.stdout.write(reply[1])
+            return reply[0]
 
     kv = load()
     if not kv:
@@ -1445,10 +1487,12 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
 
     # Ask Global rather than reporting a stale local answer: the operator runs
     # this precisely because they are waiting to hear about their request.
-    unreachable = refused = None
+    unreachable = refused = ping_ms = None
     if refresh and state() not in TERMINAL_STATES:
+        started = time.monotonic()
         try:
             fetch_me()
+            ping_ms = round((time.monotonic() - started) * 1000)
         except GlobalError as exc:
             refused = exc.code
         except Exception as exc:  # noqa: BLE001 - offline is not an error here
@@ -1456,23 +1500,54 @@ def cmd_status(refresh: bool = True, *, json_output: bool = False) -> int:
         kv = load()
 
     current = kv.get("GLOBAL_STATE", "unregistered")
-    rows = [
-        f"{marker()} {current} -- {_STATE_SUMMARY.get(current, '')}".rstrip(" -"),
-        "",
-    ]
+    in_server = commands._IN_DAEMON
+    seen, seen_s = _ago(kv.get("GLOBAL_LAST_SEEN_AT"))
+    problem = fix = None
+    if current == "active":
+        if refused or unreachable:
+            problem = "cannot reach Global"
+        elif not in_server:
+            problem, fix = "server not running", "serverrf -s"
+        elif _AGENT_TUNNEL is None:
+            problem, fix = "server started before joining", "restart"
+        elif not _AGENT_TUNNEL.up():
+            problem = "relay tunnel down, retrying"
+            fix = (f"(outbound ssh to {kv.get('GLOBAL_RELAY_TUNNEL_HOST')}:"
+                   f"{kv.get('GLOBAL_RELAY_TUNNEL_PORT')} must be allowed)")
+        elif seen_s is None or seen_s > 2 * LIVENESS_SECONDS + TICK_SECONDS:
+            problem = "Global has no recent report"
+        head = "connected -- Global users can reach this lab" if problem is None else f"NOT connected -- {problem}"
+    else:
+        head = f"{current} -- {_STATE_SUMMARY.get(current, '')}".rstrip(" -")
+    rows = [f"{marker()} {head}", ""]
+    relay = tunnel_state() if in_server else "server not running"
     fields = [
         ("name", kv.get("GLOBAL_NAME", "-")),
         ("display", kv.get("GLOBAL_DISPLAY_NAME", "-")),
         ("hostname", hostname() or "-"),
         ("email", kv.get("GLOBAL_EMAIL", "-")),
-        ("tunnel", tunnel_state()),
-        ("last report", kv.get("GLOBAL_LAST_REPORT_AT", "-")),
-        ("last seen", kv.get("GLOBAL_LAST_SEEN_AT", "-")),
+        ("global", f"reachable ({ping_ms} ms)" if ping_ms is not None
+         else "refused" if refused else "unreachable" if unreachable else "-"),
+        ("relay", "not started" if relay == "assigned" else relay),
+        ("liveness", seen),
+        ("status report", _ago(kv.get("GLOBAL_LAST_REPORT_AT"))[0]),
     ]
     if kv.get("GLOBAL_REASON"):
         fields.append(("reason", kv["GLOBAL_REASON"]))
     width = max(len(name) for name, _ in fields)
     rows += [f"{name:<{width}}  {value}" for name, value in fields]
+    if fix:
+        rows += ["", f"    {fix}"]
+
+    if in_server and current == "active":
+        groups, devices = _global_devices()
+        shared = [d for d in devices if d["shared"]]
+        local = [d for d in devices if not d["shared"]]
+        rows += ["", f"Global devices (groups: {', '.join(groups)}):" if shared
+                 else "Global devices: none -- share a group: groups public <group> on"]
+        rows += [f"  {'live   ' if d['online'] else 'offline'}  {d['id']:>4}  {d['name']} ({d['type']})" for d in shared]
+        if local:
+            rows.append(f"Local only: {len(local)} more ({sum(d['online'] for d in local)} live)")
 
     if current == "unverified":
         rows += ["", "    serverrf global verify <code>"]
@@ -1539,7 +1614,7 @@ def cmd_leave() -> int:
 
 
 def cmd_verify(code: str = "") -> int:
-    from ..common.utils.panel import marker, print_panel
+    from ..common.utils.panel import marker
 
     if not participating():
         _warn("  This server does not participate in RemoteRF Global.")
@@ -1558,27 +1633,11 @@ def cmd_verify(code: str = "") -> int:
     except Exception as exc:  # noqa: BLE001
         _warn(f"  Could not reach RemoteRF Global: {exc}")
         return 1
-    kv = load()
-    print()
-    print_panel(
-        "Live" if state() == "active" else "Verified",
-        [
-            f"{marker()} {hostname()} is live."
-            if state() == "active"
-            else f"{marker()} {kv.get('GLOBAL_EMAIL')} confirmed.",
-            "",
-            "Your users can now register and connect from any network with "
-            "an enrollment code:"
-            if state() == "active"
-            else "A RemoteRF admin will assign your final name shortly.",
-            "",
-            f"    {hostname()}/<code>"
-            if state() == "active"
-            else "    serverrf global status",
-        ],
-    )
-    print()
-    return 0
+    print(f"\n  {marker()} {load().get('GLOBAL_EMAIL')} confirmed.")
+    if state() == "active":
+        print(f"  Users enrol with {hostname()}/<code> once the status below says connected.")
+    # "Verified" is not "connected": show what is actually up.
+    return cmd_status()
 
 
 _COMMANDS = {"status": cmd_status, "join": cmd_join, "leave": cmd_leave}

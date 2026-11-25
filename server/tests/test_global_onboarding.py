@@ -940,6 +940,19 @@ class UnknownDeploymentTests(TunnelTests):
             g.cmd_status()
         self.assertIn("(refused by RemoteRF Global (deployment_suspended))", panel.call_args[0][1])
 
+    def test_status_says_not_connected_when_the_agent_never_started(self):
+        from remoteRF_server.server import commands
+
+        self.activate()
+        with mock.patch.object(g, "fetch_me"), mock.patch.object(g, "_AGENT_TUNNEL", None), \
+             mock.patch.object(commands, "_IN_DAEMON", True), \
+             mock.patch.object(g, "_global_devices", return_value=([], [])), \
+             mock.patch("remoteRF_server.common.utils.panel.print_panel") as panel:
+            g.cmd_status()
+        rows = panel.call_args[0][1]
+        self.assertIn("NOT connected -- server started before joining", rows[0])
+        self.assertIn("    restart", rows)
+
     def test_a_refused_report_forces_a_poll_next_tick(self):
         self.activate()
         last = {"poll": 0.0}
