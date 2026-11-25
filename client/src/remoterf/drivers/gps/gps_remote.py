@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: gps  driver_version: 0.1.0  schema_hash: sha256:62d475b8c087bd2af633e53f85f1c4da811f6a9b7822580536019c6495cc9515
+# device_type: gps  driver_version: 0.2.0  schema_hash: sha256:5e791256a75a5fbfd395dea1f7708f93f0e044f1e112fa324cb9602d3f7efa96
 
 _PREFIX = "Gps"
-_SCHEMA_HASH = "sha256:62d475b8c087bd2af633e53f85f1c4da811f6a9b7822580536019c6495cc9515"
+_SCHEMA_HASH = "sha256:5e791256a75a5fbfd395dea1f7708f93f0e044f1e112fa324cb9602d3f7efa96"
 _CLIENT_MODULES = {}
 _CLIENT_OBJECTS = {}
 

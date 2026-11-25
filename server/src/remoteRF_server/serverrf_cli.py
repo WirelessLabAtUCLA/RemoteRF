@@ -1594,7 +1594,7 @@ _WIZARD_TYPES: Dict[str, Tuple[str, str]] = {
     "usrp": ("Ettus/NI USRP: B2xx/2901 over USB, N2xx/X3xx/N3xx over Ethernet", "usrp"),
     "usrp_phaser": ("USRP driving an ADI CN0566 Phaser", "phaser"),
     "ti_mmwave": ("TI xWR68xx mmWave radar (CP2105 USB bridge)", "mmwave"),
-    "gps": ("USB GPS receiver, NMEA serial (contrib driver)", "gps"),
+    "gps": ("USB GPS receiver, NMEA serial", "gps"),
     "bluetooth": ("Bluetooth adapter through BlueZ (contrib driver)", "bluetooth"),
 }
 # The argv type names `devices add` has always taken.
@@ -2006,7 +2006,7 @@ def _device_add_wizard(dtype: str = "", *, yes: bool = False, gid_default: Optio
                             typed=lambda v: None if v in types or v in _WIZARD_ALIASES else f"pick 1-{len(types)}")
             extra["usrp_profile"] = _USRP_ALIAS_PROFILES.get(picked)
             dtype = _WIZARD_ALIASES.get(picked, picked)
-        if dtype in ("gps", "bluetooth") and dtype not in installed:
+        if dtype == "bluetooth" and dtype not in installed:
             from remoteRF_server.common.utils import get_drivers_dir
 
             print(f"  Note: the {dtype} driver is not installed: copy contrib/drivers/{dtype}_schema.py into")
