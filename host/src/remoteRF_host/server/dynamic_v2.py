@@ -718,8 +718,7 @@ class SessionManager:
                 except Exception:
                     pass
             live_schema = create()
-            if hasattr(live_schema, "lockout_bypass") and "lockout_bypass" in context:
-                live_schema.lockout_bypass = bool(context["lockout_bypass"])
+            self._inherit_freq_limits(inventory_schema, live_schema, context)
             capabilities = live_schema.build_session_metadata_v2()
             capabilities["remote_resource_limits"] = {
                 "maximum_sessions": _MAX_SESSIONS,
@@ -1028,6 +1027,56 @@ class SessionManager:
         )
         entry.rx_worker.start()
 
+    @staticmethod
+    def _inherit_freq_limits(
+        inventory_schema: Any,
+        live_schema: Any,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        inv_limits = getattr(inventory_schema, "_freq_limits", None)
+        if inv_limits is not None:
+            configure = getattr(live_schema, "configure_lockouts", None)
+            if not callable(configure):
+                raise RemoteRFPolicyError(
+                    "live device schema cannot enforce configured frequency limits"
+                )
+            configure(inv_limits)
+            if getattr(live_schema, "_freq_limits", None) != inv_limits:
+                raise RemoteRFPolicyError(
+                    "live device schema did not retain configured frequency limits"
+                )
+        if hasattr(live_schema, "lockout_bypass"):
+            if context is not None and "lockout_bypass" in context:
+                live_schema.lockout_bypass = bool(context["lockout_bypass"])
+            elif hasattr(inventory_schema, "lockout_bypass"):
+                live_schema.lockout_bypass = bool(inventory_schema.lockout_bypass)
+
+    @staticmethod
+    def _sync_lockout_bypass(session: DeviceSession) -> None:
+        if hasattr(session.schema, "lockout_bypass"):
+            ctx = get_local_device_context(session.gid) or {}
+            if "lockout_bypass" in ctx:
+                session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
+
+    def _reset_rx_prefetch(self, session: DeviceSession) -> None:
+        with session.lifecycle_lock:
+            rx_handles = [
+                h
+                for h in session.handles.values()
+                if h.type_id.endswith("RXStreamer") and not h.closed
+            ]
+        check_rx = getattr(session.schema, "check_rx_channels", None)
+        for rx_entry in rx_handles:
+            was_running = bool(rx_entry.rx_worker and rx_entry.rx_worker.is_alive())
+            self._stop_rx_prefetch(rx_entry)
+            if was_running:
+                if callable(check_rx):
+                    try:
+                        check_rx(rx_entry.stream_channels)
+                    except RemoteRFPolicyError:
+                        continue
+                self._start_rx_prefetch(session, rx_entry)
+
     def _stop_rx_prefetch(self, entry: HandleEntry) -> None:
         entry.rx_prefetch_stop.set()
         worker = entry.rx_worker
@@ -1293,10 +1342,7 @@ class SessionManager:
             ]
             with session.control_lock:
                 try:
-                    if hasattr(session.schema, "lockout_bypass"):
-                        ctx = get_local_device_context(session.gid) or {}
-                        if "lockout_bypass" in ctx:
-                            session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
+                    self._sync_lockout_bypass(session)
                     if method_name == "set_tx_rate":
                         check_rate = getattr(session.schema, "check_tx_rate_change", None)
                         if callable(check_rate):
@@ -1340,6 +1386,10 @@ class SessionManager:
                         uhd_version=session.capabilities.get("uhd_version", ""),
                         method=method_name,
                     ) from exc
+                if method_name in {"set_rx_freq", "set_rx_lo_freq"}:
+                    limits = getattr(session.schema, "_freq_limits", None)
+                    if limits is not None and limits.rx.is_active:
+                        self._reset_rx_prefetch(session)
             type_id = HANDLE_RETURN_METHODS.get(method_name)
             if type_id and result is not None:
                 try:
@@ -1436,6 +1486,19 @@ class SessionManager:
             self._resolve_handle_argument(session, value)
             for value in positional_args
         ]
+        if entry.type_id.startswith("uhd.property.") and method_name in {"set", "set_coerced"}:
+            limits = getattr(session.schema, "_freq_limits", None)
+            if limits is not None and limits.is_active:
+                self._sync_lockout_bypass(session)
+                refuse = getattr(session.schema, "_freq_refuse", None)
+                message = (
+                    "Every UHD property-tree write is refused while frequency limits are active; "
+                    "normal MultiUSRP setters still work."
+                )
+                if callable(refuse):
+                    refuse(message)
+                else:
+                    raise RemoteRFPolicyError(message)
         rx_stream_command = (
             entry.type_id.endswith("RXStreamer")
             and method_name == "issue_stream_cmd"
@@ -1449,6 +1512,11 @@ class SessionManager:
             )
             stream_mode = str(getattr(command, "mode", "")).rsplit(".", 1)[-1].lower()
             self._stop_rx_prefetch(entry)
+            if stream_mode not in {"stop_cont", "stop_continuous"}:
+                self._sync_lockout_bypass(session)
+                check_rx = getattr(session.schema, "check_rx_channels", None)
+                if callable(check_rx):
+                    check_rx(entry.stream_channels)
         with entry.lock:
             try:
                 result = target(*native_positional, **native_args)

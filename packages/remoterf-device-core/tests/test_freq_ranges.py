@@ -633,11 +633,37 @@ class _FakeUSRP:
         return np.zeros((len(channels), num_samps), dtype=np.complex64)
 
 
+class _FakeTimeSpec:
+    def __init__(self, secs=0.0):
+        self.secs = float(secs)
+
+    def get_real_secs(self):
+        return self.secs
+
+
+class _FakeStreamMode:
+    start_cont = "start_cont"
+    stop_cont = "stop_cont"
+    num_done = "num_done"
+    num_more = "num_more"
+
+
+class _FakeStreamCMD:
+    def __init__(self, mode):
+        self.mode = mode
+        self.stream_now = True
+        self.time_spec = None
+        self.num_samps = 0
+
+
 def _fake_uhd_module():
     types_ns = types.SimpleNamespace(
         TuneRequest=_FakeTuneRequest,
         TXMetadata=_FakeTXMetadata,
         RXMetadata=_FakeRXMetadata,
+        TimeSpec=_FakeTimeSpec,
+        StreamMode=_FakeStreamMode,
+        StreamCMD=_FakeStreamCMD,
     )
     return types.SimpleNamespace(
         types=types_ns,
@@ -1031,6 +1057,840 @@ def test_usrp_tune_precheck_all_policies_and_legacy_args():
                 {"__uhd_type__": "TuneRequest", "target_freq": 915e6, "rf_freq_policy": "AUTO", "dsp_freq_policy": "MANUAL", "dsp_freq": -30e6},
                 0,
             )
+
+
+def test_usrp_wrapped_tune_request_bypass_refused():
+    """ranges-2: wrapped TuneRequest payloads must be validated after _construct."""
+    fake_uhd = _fake_uhd_module()
+    dev = _FakeUSRP()
+    dev.tx_rates[0] = 1e6
+    schema = UsrpSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(
+        parse_freq_limits(
+            {
+                "tx_allow": [[902e6, 928e6]],
+                "rx_allow": [[902e6, 928e6]],
+            }
+        )
+    )
+
+    wrapped_oob = {
+        "__remoterf_uhd_helper__": "stream",
+        "stream_args": {"__uhd_type__": "TuneRequest", "target_freq": 2.45e9},
+        "target_freq": 915e6,
+    }
+    nested_oob = {
+        "__remoterf_uhd_helper__": "stream",
+        "stream_args": wrapped_oob,
+        "target_freq": 915e6,
+    }
+    wrapped_float_oob = {
+        "__remoterf_uhd_helper__": "stream",
+        "stream_args": 2.45e9,
+        "target_freq": 915e6,
+    }
+    wrapped_valid = {
+        "__remoterf_uhd_helper__": "stream",
+        "stream_args": {"__uhd_type__": "TuneRequest", "target_freq": 916e6},
+        "target_freq": 2.45e9,
+    }
+
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        for payload in (wrapped_oob, nested_oob, wrapped_float_oob):
+            with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+                schema.call_set_tx_freq(payload, 0)
+            assert dev.tx_freqs[0] == 915e6
+
+            with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+                schema.call_set_rx_freq(payload, 0)
+            assert dev.rx_freqs[0] == 915e6
+
+            with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+                schema.invoke_native("set_tx_freq", {"tune_request": payload, "chan": 0})
+            assert dev.tx_freqs[0] == 915e6
+
+            with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+                schema.invoke_native("set_rx_freq", {"tune_request": payload, "chan": 0})
+            assert dev.rx_freqs[0] == 915e6
+
+        # Valid inner TuneRequest succeeds even with an out-of-range outer decoy.
+        schema.call_set_tx_freq(wrapped_valid, 0)
+        assert dev.tx_freqs[0] == 916e6
+        schema.call_set_rx_freq(wrapped_valid, 0)
+        assert dev.rx_freqs[0] == 916e6
+
+
+def test_usrp_timed_commands_refused_while_limits_active():
+    """ranges-3: set_command_time / clear_command_time refused while limits are active."""
+
+    class _TimedUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.cmd_times = []
+            self.clears = 0
+
+        def set_command_time(self, time_spec, mboard=0):
+            self.cmd_times.append((time_spec, mboard))
+
+        def clear_command_time(self, mboard=0):
+            self.clears += 1
+
+    fake_uhd = _fake_uhd_module()
+    dev = _TimedUSRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+
+    # Without limits, timed commands work.
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        schema.invoke_native("set_command_time", {"time_spec": {"__uhd_type__": "TimeSpec", "secs": 5.0}})
+        schema.invoke_native("clear_command_time", {})
+    assert len(dev.cmd_times) == 1
+    assert dev.clears == 1
+
+    # With TX or RX limits active, both are refused.
+    for limit_cfg in (
+        {"tx_allow": [[902e6, 928e6]], "admin_group_override": True},
+        {"rx_allow": [[902e6, 928e6]], "admin_group_override": True},
+    ):
+        schema.configure_lockouts(parse_freq_limits(limit_cfg))
+        schema.lockout_bypass = False
+        with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+            with pytest.raises(RemoteRFPolicyError, match=r"[Tt]imed command"):
+                schema.invoke_native("set_command_time", {"time_spec": {"__uhd_type__": "TimeSpec", "secs": 10.0}})
+            with pytest.raises(RemoteRFPolicyError, match=r"[Tt]imed command"):
+                schema.invoke_native("clear_command_time", {})
+        assert len(dev.cmd_times) == 1
+        assert dev.clears == 1
+
+    # Admin bypass allows timed commands when enabled.
+    schema.lockout_bypass = True
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        schema.invoke_native("set_command_time", {"time_spec": {"__uhd_type__": "TimeSpec", "secs": 10.0}})
+        schema.invoke_native("clear_command_time", {})
+    assert len(dev.cmd_times) == 2
+    assert dev.clears == 2
+
+
+def test_usrp_shared_tx_lo_and_multi_channel_rate_change():
+    """ranges-4: B210/2901 shared TX LO checks all TX channels and all active channels on rate change."""
+
+    class _B210USRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo = 910e6
+            self.tx_dsp = {0: 0.0, 1: 15e6}
+            self.tx_rates = {0: 1e6, 1: 1e6}
+            self.tx_freqs = {0: 910e6, 1: 925e6}
+
+        def get_tx_num_channels(self):
+            return 2
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo
+
+        def get_tx_freq(self, chan=0):
+            return self.tx_lo + self.tx_dsp[int(chan)]
+
+        def set_tx_freq(self, tune_request, chan=0):
+            target = float(getattr(tune_request, "target_freq", tune_request))
+            self.tx_lo = target
+            self.tx_dsp[int(chan)] = 0.0
+            for ch in (0, 1):
+                self.tx_freqs[ch] = self.tx_lo + self.tx_dsp[ch]
+            return self.tx_freqs[int(chan)]
+
+        def set_tx_lo_freq(self, freq, name, chan=0):
+            self.tx_lo = float(freq)
+            for ch in (0, 1):
+                self.tx_freqs[ch] = self.tx_lo + self.tx_dsp[ch]
+            return self.tx_lo
+
+    fake_uhd = _fake_uhd_module()
+    dev = _B210USRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(parse_freq_limits({"tx_allow": [[902e6, 928e6]]}))
+
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # Scenario 1: chan 1 has DSP +15 MHz (LO 910 -> 925 MHz); tuning chan 0 to 925 MHz
+        # would move shared LO to 925 MHz and push chan 1 to 940 MHz -> refused.
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            schema.call_set_tx_freq(925e6, 0)
+        assert dev.tx_lo == 910e6
+
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            schema.invoke_native("set_tx_freq", {"tune_request": 925e6, "chan": 0})
+        assert dev.tx_lo == 910e6
+
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            schema.invoke_native("set_tx_lo_freq", {"freq": 925e6, "name": "all", "chan": 0})
+        assert dev.tx_lo == 910e6
+
+        # Tuning chan 0 to 912 MHz keeps chan 1 at 927 ± 0.5 MHz -> allowed.
+        schema.call_set_tx_freq(912e6, 0)
+        assert dev.tx_lo == 912e6
+
+        # Scenario 2: chan 1 has DSP 0 and tx_rate=20 MS/s while chan 0 has tx_rate=1 MS/s;
+        # tuning chan 0 to 925 MHz would make chan 1 occupy 915..935 MHz -> refused.
+        dev.tx_lo = 915e6
+        dev.tx_dsp = {0: 0.0, 1: 0.0}
+        dev.tx_rates = {0: 1e6, 1: 20e6}
+        with pytest.raises(RemoteRFPolicyError, match=r"915–935 MHz"):
+            schema.call_set_tx_freq(925e6, 0)
+        assert dev.tx_lo == 915e6
+
+        # Scenario 3: active TX streamer on chan 1 at 927 MHz / 1 MS/s;
+        # set_tx_rate(20e6, chan=0) must check active chan 1 too -> refused.
+        dev.tx_lo = 912e6
+        dev.tx_dsp = {0: 0.0, 1: 15e6}
+        dev.tx_rates = {0: 1e6, 1: 1e6}
+        stream = schema.call_get_tx_stream({"cpu_format": "fc32", "otw_format": "sc16", "channels": [1]})
+        assert stream["handle"].startswith("tx:")
+        with pytest.raises(RemoteRFPolicyError, match=r"917–937 MHz"):
+            schema.call_set_tx_rate(20e6, 0)
+        assert dev.tx_rates[0] == 1e6
+        with pytest.raises(RemoteRFPolicyError, match=r"917–937 MHz"):
+            schema.check_tx_rate_change(20e6, 0, [1])
+
+        # Property-tree RF LO fallback works when get_tx_lo_freq raises (e.g. B210/2901 without /los/all).
+        class _TreeFallbackB210(_B210USRP):
+            def get_tx_lo_freq(self, name="all", chan=0):
+                raise RuntimeError("lookup_error: /los/all not present")
+
+            def get_tx_subdev_spec(self, mboard=0):
+                return "A:A A:B"
+
+            def get_tree(self):
+                lo = self.tx_lo
+
+                class _Prop:
+                    def get(self):
+                        return lo
+
+                class _Tree:
+                    def access_double(self, path):
+                        assert path in {
+                            "/mboards/0/dboards/A/tx_frontends/A/freq/value",
+                            "/mboards/0/dboards/A/tx_frontends/B/freq/value",
+                        }
+                        return _Prop()
+
+                return _Tree()
+
+        tree_dev = _TreeFallbackB210()
+        tree_schema = UsrpSchema()
+        tree_schema.bind(tree_dev)
+        tree_schema.configure_lockouts(parse_freq_limits({"tx_allow": [[902e6, 928e6]]}))
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            tree_schema.call_set_tx_freq(925e6, 0)
+        tree_schema.call_set_tx_freq(912e6, 0)
+        assert tree_dev.tx_lo == 912e6
+
+        # If a 2-channel device provides neither get_tx_lo_freq nor property-tree fallback, fail closed.
+        class _NoLoTwoChanUSRP(_FakeUSRP):
+            def get_tx_num_channels(self):
+                return 2
+
+        no_lo_2ch = _NoLoTwoChanUSRP()
+        no_lo_2ch_schema = UsrpSchema()
+        no_lo_2ch_schema.bind(no_lo_2ch)
+        no_lo_2ch_schema.configure_lockouts(parse_freq_limits({"tx_allow": [[902e6, 928e6]]}))
+        with pytest.raises(RemoteRFPolicyError, match=r"shared-LO"):
+            no_lo_2ch_schema.call_set_tx_freq(915e6, 0)
+
+
+def test_usrp_set_lo_freq_checks_dsp_offset_channel_and_name():
+    """ranges-5: set_tx_lo_freq / set_rx_lo_freq route through tune checks and require name == 'all'."""
+
+    class _DualLoUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo_freqs = {0: 910e6, 1: 910e6}
+            self.rx_lo_freqs = {0: 915e6, 1: 925e6}
+            self.tx_freqs = {0: 925e6, 1: 910e6}  # chan 0 has TX DSP +15 MHz
+            self.rx_freqs = {0: 915e6, 1: 910e6}  # chan 1 has RX DSP +15 MHz (925 - 15)
+            self.tx_rates = {0: 2e6, 1: 2e6}
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo_freqs[int(chan)]
+
+        def get_rx_lo_freq(self, name="all", chan=0):
+            return self.rx_lo_freqs[int(chan)]
+
+        def set_tx_lo_freq(self, freq, name, chan=0):
+            ch = int(chan)
+            dsp = self.tx_freqs[ch] - self.tx_lo_freqs[ch]
+            self.tx_lo_freqs[ch] = float(freq)
+            self.tx_freqs[ch] = float(freq) + dsp
+            return float(freq)
+
+        def set_rx_lo_freq(self, freq, name, chan=0):
+            ch = int(chan)
+            shift = self.rx_freqs[ch] - self.rx_lo_freqs[ch]
+            self.rx_lo_freqs[ch] = float(freq)
+            self.rx_freqs[ch] = float(freq) + shift
+            return float(freq)
+
+    dev = _DualLoUSRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(
+        parse_freq_limits(
+            {
+                "tx_allow": [[902e6, 928e6]],
+                "rx_allow": [[902e6, 928e6]],
+            }
+        )
+    )
+
+    # TX: RF LO 925 MHz + existing DSP +15 MHz = 940 MHz -> refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"939–941 MHz"):
+        schema.invoke_native("set_tx_lo_freq", {"freq": 925e6, "name": "all", "chan": 0})
+    assert dev.tx_lo_freqs[0] == 910e6
+
+    # TX: RF LO 911 MHz + existing DSP +15 MHz = 926 MHz (±1 MHz = 925..927) -> allowed.
+    schema.invoke_native("set_tx_lo_freq", {"freq": 911e6, "name": "all", "chan": 0})
+    assert dev.tx_lo_freqs[0] == 911e6
+
+    # RX: chan 1 has RX DSP +15 MHz (LO 925 -> 910); LO 910 MHz would tune chan 1 to 895 MHz -> refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"895 MHz"):
+        schema.invoke_native("set_rx_lo_freq", {"freq": 910e6, "name": "all", "chan": 1})
+    assert dev.rx_lo_freqs[1] == 925e6
+
+    # RX: chan 1 LO 920 MHz -> 905 MHz -> allowed.
+    schema.invoke_native("set_rx_lo_freq", {"freq": 920e6, "name": "all", "chan": 1})
+    assert dev.rx_lo_freqs[1] == 920e6
+
+    # Non-"all" LO names are refused on both TX and RX.
+    with pytest.raises(RemoteRFPolicyError, match=r"all"):
+        schema.invoke_native("set_tx_lo_freq", {"freq": 911e6, "name": "lo1", "chan": 0})
+    with pytest.raises(RemoteRFPolicyError, match=r"all"):
+        schema.invoke_native("set_rx_lo_freq", {"freq": 915e6, "name": "lo1", "chan": 0})
+
+    # Without LO readback, both set_tx_lo_freq and set_rx_lo_freq fail closed even for in-range freq.
+    no_lo_dev = _FakeUSRP()
+    no_lo_schema = UsrpSchema()
+    no_lo_schema.bind(no_lo_dev)
+    no_lo_schema.configure_lockouts(
+        parse_freq_limits({"tx_allow": [[902e6, 928e6]], "rx_allow": [[902e6, 928e6]]})
+    )
+    with pytest.raises(RemoteRFPolicyError):
+        no_lo_schema.invoke_native("set_tx_lo_freq", {"freq": 915e6, "name": "all", "chan": 0})
+    with pytest.raises(RemoteRFPolicyError):
+        no_lo_schema.invoke_native("set_rx_lo_freq", {"freq": 915e6, "name": "all", "chan": 0})
+
+
+def test_usrp_send_waveform_shared_lo_check_on_b210():
+    """Item 1: send_waveform runs the shared-LO other-channel check on B210-like devices."""
+
+    class _B210WaveformUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo = 910e6
+            self.tx_dsp = {0: 0.0, 1: 15e6}
+            self.tx_rates = {0: 1e6, 1: 1e6}
+            self.tx_freqs = {0: 910e6, 1: 925e6}
+
+        def get_mboard_name(self, mboard=0):
+            return "B210"
+
+        def get_tx_num_channels(self):
+            return 2
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo
+
+        def get_tx_freq(self, chan=0):
+            return self.tx_lo + self.tx_dsp[int(chan)]
+
+    dev = _B210WaveformUSRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(parse_freq_limits({"tx_allow": [[902e6, 928e6]]}))
+    proto = np.zeros(8, dtype=np.complex64)
+
+    # Moving shared LO to 925 MHz would push chan 1 (DSP +15 MHz) to 940 MHz -> refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+        schema.invoke_native(
+            "send_waveform",
+            {"waveform_proto": proto, "duration": 0.1, "freq": 925e6, "rate": 1e6, "channels": [0]},
+        )
+    assert dev.waveforms_sent == 0
+
+    # Same check via positional args.
+    with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+        schema.invoke_native("send_waveform", {}, positional_args=[proto, 0.1, 925e6, 1e6, [0]])
+    assert dev.waveforms_sent == 0
+
+    # Shared rate widening in send_waveform pushes chan 1 (927 ± 2 = 925..929 MHz) past 928 -> refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"925–929 MHz"):
+        schema.invoke_native(
+            "send_waveform",
+            {"waveform_proto": proto, "duration": 0.1, "freq": 912e6, "rate": 4e6, "channels": [0]},
+        )
+    assert dev.waveforms_sent == 0
+
+    # In-range shared LO (912 MHz -> chan 1 at 927 ± 0.5 MHz) succeeds.
+    schema.invoke_native(
+        "send_waveform",
+        {"waveform_proto": proto, "duration": 0.1, "freq": 912e6, "rate": 1e6, "channels": [0]},
+    )
+    assert dev.waveforms_sent == 1
+
+
+def test_usrp_lo_source_and_export_cannot_couple_independent_channels():
+    """An X310 is independent-LO only while LOs stay internal and unexported."""
+
+    class _X310ExportUSRP(_FakeUSRP):
+        def __init__(self, export=False, source="internal"):
+            super().__init__()
+            self.tx_lo = {0: 910e6, 1: 910e6}
+            self.tx_dsp = {0: 0.0, 1: 15e6}
+            self.tx_rates = {0: 1e6, 1: 1e6}
+            self.export, self.source = export, source
+            self.lo_calls = []
+
+        def get_mboard_name(self, mboard=0):
+            return "X310"
+
+        def get_tx_num_channels(self):
+            return 2
+
+        def get_tx_lo_names(self, chan=0):
+            return ["lo1"]
+
+        def get_tx_lo_source(self, name="lo1", chan=0):
+            return self.source if int(chan) == 1 else "internal"
+
+        def get_tx_lo_export_enabled(self, name="lo1", chan=0):
+            return self.export and int(chan) == 0
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo[int(chan)]
+
+        def get_tx_freq(self, chan=0):
+            return self.tx_lo[int(chan)] + self.tx_dsp[int(chan)]
+
+        def set_tx_freq(self, tune_request, chan=0):
+            target = float(getattr(tune_request, "target_freq", tune_request))
+            shared = self.export or self.source != "internal"
+            for ch in ((0, 1) if shared else (int(chan),)):
+                self.tx_lo[ch] = target
+            self.tx_dsp[int(chan)] = 0.0
+            return target
+
+        def set_tx_lo_source(self, src, name="lo1", chan=0):
+            self.lo_calls.append(("source", src, chan))
+
+        def set_tx_lo_export_enabled(self, enabled, name="lo1", chan=0):
+            self.lo_calls.append(("export", enabled, chan))
+
+    fake_uhd = _fake_uhd_module()
+    limits = parse_freq_limits({"tx_allow": [[902e6, 928e6]]})
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # Students cannot re-source or export an LO while limits are active.
+        dev = _X310ExportUSRP()
+        schema = UsrpSchema()
+        schema.bind(dev)
+        schema.configure_lockouts(limits)
+        with pytest.raises(RemoteRFPolicyError, match="LO source and export"):
+            schema.invoke_native("set_tx_lo_export_enabled", {"enabled": True, "name": "lo1", "chan": 0})
+        with pytest.raises(RemoteRFPolicyError, match="LO source and export"):
+            schema.invoke_native("set_tx_lo_source", {"src": "companion", "name": "lo1", "chan": 1})
+        assert dev.lo_calls == []
+
+        # Default routing: channels are independent, so tuning chan 0 to 925 MHz is allowed.
+        schema.call_set_tx_freq(925e6, 0)
+        assert dev.tx_lo[0] == 925e6
+
+        # LO sharing set up before limits applied (export or a companion source) makes the
+        # channels coupled: chan 1 (LO 910 + DSP 15 MHz) would land at 940 MHz -> refused.
+        for kwargs in ({"export": True}, {"source": "companion"}):
+            dev = _X310ExportUSRP(**kwargs)
+            schema = UsrpSchema()
+            schema.bind(dev)
+            schema.configure_lockouts(limits)
+            with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+                schema.call_set_tx_freq(925e6, 0)
+            assert dev.tx_lo == {0: 910e6, 1: 910e6}
+
+
+def test_usrp_x310_independent_lo_and_rate_allows_valid_per_channel_ops():
+    """Item 2: X310/N210-like dual-channel devices have independent LOs and per-channel rates."""
+
+    class _X310USRP(_FakeUSRP):
+        def __init__(self, mboard_name="X310"):
+            super().__init__()
+            self._mboard_name = mboard_name
+            self.tx_freqs = {0: 915e6, 1: 926e6}
+            self.rx_freqs = {0: 915e6, 1: 926e6}
+            self.tx_rates = {0: 1e6, 1: 20e6}
+            self.rx_rates = {0: 1e6, 1: 20e6}
+
+        def get_mboard_name(self, mboard=0):
+            return self._mboard_name
+
+        def get_tx_num_channels(self):
+            return 2
+
+        def get_rx_num_channels(self):
+            return 2
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            if int(chan) == 1:
+                raise RuntimeError("chan 1 LO unreadable")
+            return self.tx_freqs[0]
+
+        def get_rx_lo_freq(self, name="all", chan=0):
+            if int(chan) == 1:
+                raise RuntimeError("chan 1 LO unreadable")
+            return self.rx_freqs[0]
+
+    fake_uhd = _fake_uhd_module()
+    for mboard in ("X310", "X300", "N210r4", "N200"):
+        dev = _X310USRP(mboard_name=mboard)
+        schema = UsrpSchema()
+        schema.bind(dev)
+        schema.configure_lockouts(
+            parse_freq_limits({"tx_allow": [[902e6, 928e6]], "rx_allow": [[902e6, 928e6]]})
+        )
+        with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+            # Chan 1 is idle at 20 MS/s with unreadable LO, yet valid chan 0 tunes and send_waveform succeed.
+            schema.call_set_tx_freq(925e6, 0)
+            assert dev.tx_freqs[0] == 925e6
+            schema.invoke_native("set_tx_freq", {"tune_request": 915e6, "chan": 0})
+            assert dev.tx_freqs[0] == 915e6
+            schema.invoke_native(
+                "send_waveform",
+                {
+                    "waveform_proto": np.zeros(8, dtype=np.complex64),
+                    "duration": 0.1,
+                    "freq": 925e6,
+                    "rate": 1e6,
+                    "channels": [0],
+                },
+            )
+            assert dev.waveforms_sent == 1
+            schema.call_set_rx_freq(925e6, 0)
+            assert dev.rx_freqs[0] == 925e6
+
+            # Per-channel rate changes: chan 0 (915 MHz) and chan 1 (926 MHz / 1 MS/s) both streaming.
+            dev.tx_freqs = {0: 915e6, 1: 926e6}
+            dev.tx_rates = {0: 1e6, 1: 1e6}
+            schema.call_get_tx_stream({"cpu_format": "fc32", "otw_format": "sc16", "channels": [0, 1]})
+            schema.call_set_tx_rate(5e6, 0)  # 912.5..917.5 MHz on chan 0 only -> allowed
+            assert dev.tx_rates[0] == 5e6
+            schema.check_tx_rate_change(5e6, 0, [0, 1])
+
+            # Rate change on chan 1 itself (923.5..928.5 MHz) -> refused.
+            with pytest.raises(RemoteRFPolicyError, match=r"923\.5–928\.5 MHz"):
+                schema.call_set_tx_rate(5e6, 1)
+            assert dev.tx_rates[1] == 1e6
+
+            # ALL_CHANS rate change affects chan 1 too -> refused.
+            with pytest.raises(RemoteRFPolicyError, match=r"923\.5–928\.5 MHz"):
+                schema.call_set_tx_rate(5e6, (1 << 64) - 1)
+            with pytest.raises(RemoteRFPolicyError, match=r"923\.5–928\.5 MHz"):
+                schema.check_tx_rate_change(5e6, None, [0, 1])
+
+            # Idle chan 0 rate change while only chan 1 is active -> allowed.
+            schema.check_tx_rate_change(40e6, 0, [1])
+
+
+def test_usrp_mboard_coupling_ad9361_n310_and_unknown_fail_closed():
+    """Item 2: motherboard coupling helper covers AD9361, N300/N310 pairs, daughterboards, and fail-closed unknown."""
+    from remoterf_device_core.drivers.usrp.usrp_schema import _classify_mboard_coupling
+
+    for name in ("B200", "B205mini", "B210", "NI USRP-2900", "NI USRP-2901", "E310", "E312", "E313", "E320"):
+        assert _classify_mboard_coupling(name) == ("all", True), name
+    for name in ("N300", "N310", "n310", "USRP N300"):
+        assert _classify_mboard_coupling(name) == ("pair", False), name
+    for name in ("X300", "X310", "N200", "N210", "N210r4", "USRP2", "NI-2944R", "X410", "N320"):
+        assert _classify_mboard_coupling(name) == ("none", False), name
+    for name in (None, "", "   ", "MysterySDR"):
+        assert _classify_mboard_coupling(name) == ("all", True), name
+
+    # 4-channel N310: 0/1 share an LO, 2/3 share an LO, rates are per-channel.
+    class _N310USRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo = {0: 910e6, 1: 910e6, 2: 910e6, 3: 910e6}
+            self.tx_dsp = {0: 0.0, 1: 15e6, 2: 0.0, 3: 0.0}
+            self.tx_rates = {0: 1e6, 1: 1e6, 2: 1e6, 3: 1e6}
+            self.rx_lo = {0: 910e6, 1: 910e6, 2: 910e6, 3: 910e6}
+            self.rx_shift = {0: 0.0, 1: 15e6, 2: 0.0, 3: 0.0}
+
+        def get_mboard_name(self, mboard=0):
+            return "n310"
+
+        def get_tx_num_channels(self):
+            return 4
+
+        def get_rx_num_channels(self):
+            return 4
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo[int(chan)]
+
+        def get_tx_freq(self, chan=0):
+            ch = int(chan)
+            return self.tx_lo[ch] + self.tx_dsp[ch]
+
+        def set_tx_freq(self, tune_request, chan=0):
+            ch = int(chan)
+            target = float(getattr(tune_request, "target_freq", tune_request))
+            self.tx_lo[ch] = target
+            self.tx_lo[ch ^ 1] = target
+            self.tx_dsp[ch] = 0.0
+            return target
+
+        def get_rx_lo_freq(self, name="all", chan=0):
+            return self.rx_lo[int(chan)]
+
+        def get_rx_freq(self, chan=0):
+            ch = int(chan)
+            return self.rx_lo[ch] + self.rx_shift[ch]
+
+        def set_rx_freq(self, tune_request, chan=0):
+            ch = int(chan)
+            target = float(getattr(tune_request, "target_freq", tune_request))
+            self.rx_lo[ch] = target
+            self.rx_lo[ch ^ 1] = target
+            self.rx_shift[ch] = 0.0
+            return target
+
+    fake_uhd = _fake_uhd_module()
+    n310 = _N310USRP()
+    n310_schema = UsrpSchema()
+    n310_schema.bind(n310)
+    n310_schema.configure_lockouts(
+        parse_freq_limits({"tx_allow": [[902e6, 928e6]], "rx_allow": [[902e6, 928e6]]})
+    )
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # Chan 1 has +15 MHz DSP: tuning chan 0 to 925 MHz is refused, but tuning chan 2 to 925 MHz is allowed.
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            n310_schema.call_set_tx_freq(925e6, 0)
+        n310_schema.call_set_tx_freq(925e6, 2)
+        assert n310.tx_lo[2] == 925e6
+
+        # Same for RX pairs on N310: chan 1 has +15 MHz shift -> chan 0 refused, chan 2 allowed.
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            n310_schema.call_set_rx_freq(925e6, 0)
+        n310_schema.call_set_rx_freq(925e6, 2)
+        assert n310.rx_lo[2] == 925e6
+
+        # Pair 2/3 coupling: chan 3 +15 MHz DSP blocks chan 2, not chan 0 (once chan 1 DSP is 0).
+        n310.tx_lo = {0: 910e6, 1: 910e6, 2: 910e6, 3: 910e6}
+        n310.tx_dsp = {0: 0.0, 1: 0.0, 2: 0.0, 3: 15e6}
+        with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+            n310_schema.call_set_tx_freq(925e6, 2)
+        n310_schema.call_set_tx_freq(925e6, 0)
+
+        # Rates on N310 are per-channel: widening chan 0 at 915 MHz does not fail on chan 1 at 926 MHz.
+        n310.tx_lo = {0: 915e6, 1: 915e6, 2: 915e6, 3: 915e6}
+        n310.tx_dsp = {0: 0.0, 1: 11e6, 2: 0.0, 3: 0.0}
+        n310_schema.check_tx_rate_change(5e6, 0, [0, 1])
+        with pytest.raises(RemoteRFPolicyError, match=r"923\.5–928\.5 MHz"):
+            n310_schema.check_tx_rate_change(5e6, 1, [0, 1])
+
+    # AD9361 (B210) also enforces shared-LO coupling on RX.
+    class _B210RxUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.rx_lo = 910e6
+            self.rx_shift = {0: 0.0, 1: 15e6}
+
+        def get_mboard_name(self, mboard=0):
+            return "NI USRP-2901"
+
+        def get_rx_num_channels(self):
+            return 2
+
+        def get_rx_lo_freq(self, name="all", chan=0):
+            return self.rx_lo
+
+        def get_rx_freq(self, chan=0):
+            return self.rx_lo + self.rx_shift[int(chan)]
+
+        def set_rx_freq(self, tune_request, chan=0):
+            target = float(getattr(tune_request, "target_freq", tune_request))
+            self.rx_lo = target
+            self.rx_shift[int(chan)] = 0.0
+            return target
+
+    b210_rx = _B210RxUSRP()
+    b210_rx_schema = UsrpSchema()
+    b210_rx_schema.bind(b210_rx)
+    b210_rx_schema.configure_lockouts(parse_freq_limits({"rx_allow": [[902e6, 928e6]]}))
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        with pytest.raises(RemoteRFPolicyError, match=r"940 MHz"):
+            b210_rx_schema.call_set_rx_freq(925e6, 0)
+        assert b210_rx.rx_lo == 910e6
+        b210_rx_schema.call_set_rx_freq(912e6, 0)
+        assert b210_rx.rx_lo == 912e6
+
+    # Unreadable get_mboard_name() fails closed (treats LO and rate as shared).
+    class _BrokenMboardUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_freqs = {0: 915e6, 1: 926e6}
+            self.tx_rates = {0: 1e6, 1: 1e6}
+
+        def get_mboard_name(self, mboard=0):
+            raise RuntimeError("EEPROM unreadable")
+
+        def get_tx_num_channels(self):
+            return 2
+
+    broken = _BrokenMboardUSRP()
+    broken_schema = UsrpSchema()
+    broken_schema.bind(broken)
+    broken_schema.configure_lockouts(parse_freq_limits({"tx_allow": [[902e6, 928e6]]}))
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        with pytest.raises(RemoteRFPolicyError, match=r"shared-LO"):
+            broken_schema.call_set_tx_freq(915e6, 0)
+        with pytest.raises(RemoteRFPolicyError, match=r"923\.5–928\.5 MHz"):
+            broken_schema.check_tx_rate_change(5e6, 0, [0, 1])
+
+
+def test_usrp_named_lo_stages_checked_or_refused():
+    """Item 4: accept device-reported LO names when their stage frequency can be checked; refuse others."""
+
+    class _UbxX310USRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo_stages = {0: {"all": 910e6, "lo1": 910e6, "lo2": 2.1e9}}
+            self.rx_lo_stages = {0: {"all": 915e6, "lo1": 915e6, "lo2": 2.1e9}}
+            self.tx_freqs = {0: 920e6}  # TX DSP +10 MHz
+            self.rx_freqs = {0: 910e6}  # RX shift -5 MHz
+            self.tx_rates = {0: 2e6}
+            self.unreadable_stage = False
+
+        def get_mboard_name(self, mboard=0):
+            return "X310"
+
+        def get_tx_num_channels(self):
+            return 2
+
+        def get_rx_num_channels(self):
+            return 2
+
+        def get_tx_lo_names(self, chan=0):
+            return ["lo1", "lo2"]
+
+        def get_rx_lo_names(self, chan=0):
+            return ["lo1", "lo2"]
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            if self.unreadable_stage and name == "lo1":
+                raise RuntimeError("lo1 unreadable")
+            return self.tx_lo_stages[int(chan)][name]
+
+        def get_rx_lo_freq(self, name="all", chan=0):
+            if self.unreadable_stage and name == "lo1":
+                raise RuntimeError("lo1 unreadable")
+            return self.rx_lo_stages[int(chan)][name]
+
+        def set_tx_lo_freq(self, freq, name, chan=0):
+            ch = int(chan)
+            dsp = self.tx_freqs[ch] - self.tx_lo_stages[ch]["all"]
+            self.tx_lo_stages[ch][name] = float(freq)
+            if name in {"all", "lo1"}:
+                self.tx_lo_stages[ch]["all"] = float(freq)
+                self.tx_lo_stages[ch]["lo1"] = float(freq)
+                self.tx_freqs[ch] = float(freq) + dsp
+            return float(freq)
+
+        def set_rx_lo_freq(self, freq, name, chan=0):
+            ch = int(chan)
+            shift = self.rx_freqs[ch] - self.rx_lo_stages[ch]["all"]
+            self.rx_lo_stages[ch][name] = float(freq)
+            if name in {"all", "lo1"}:
+                self.rx_lo_stages[ch]["all"] = float(freq)
+                self.rx_lo_stages[ch]["lo1"] = float(freq)
+                self.rx_freqs[ch] = float(freq) + shift
+            return float(freq)
+
+    dev = _UbxX310USRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(
+        parse_freq_limits({"tx_allow": [[902e6, 928e6]], "rx_allow": [[902e6, 928e6]]})
+    )
+
+    # Reported direct stage 'lo1' allowed when resulting RF + DSP ± rate/2 is in range.
+    schema.invoke_native("set_tx_lo_freq", {"freq": 915e6, "name": "lo1", "chan": 0})
+    assert dev.tx_lo_stages[0]["lo1"] == 915e6
+    assert dev.tx_freqs[0] == 925e6
+
+    # 'lo1' refused when RF + DSP (+10 MHz) exceeds tx_allow.
+    with pytest.raises(RemoteRFPolicyError, match=r"929–931 MHz"):
+        schema.invoke_native("set_tx_lo_freq", {"freq": 920e6, "name": "lo1", "chan": 0})
+    assert dev.tx_lo_stages[0]["lo1"] == 915e6
+
+    # Reported RX stage 'lo1' allowed when in range, refused when RX shift (-5 MHz) exits rx_allow.
+    schema.invoke_native("set_rx_lo_freq", {"freq": 916e6, "name": "lo1", "chan": 0})
+    assert dev.rx_lo_stages[0]["lo1"] == 916e6
+    with pytest.raises(RemoteRFPolicyError, match=r"900 MHz"):
+        schema.invoke_native("set_rx_lo_freq", {"freq": 905e6, "name": "lo1", "chan": 0})
+    assert dev.rx_lo_stages[0]["lo1"] == 916e6
+
+    # Intermediate mixing stage 'lo2' (2.1 GHz != RF freq) cannot be checked -> refused.
+    with pytest.raises(RemoteRFPolicyError):
+        schema.invoke_native("set_tx_lo_freq", {"freq": 915e6, "name": "lo2", "chan": 0})
+    with pytest.raises(RemoteRFPolicyError):
+        schema.invoke_native("set_rx_lo_freq", {"freq": 915e6, "name": "lo2", "chan": 0})
+
+    # Unreported LO name refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"lo3"):
+        schema.invoke_native("set_tx_lo_freq", {"freq": 915e6, "name": "lo3", "chan": 0})
+    with pytest.raises(RemoteRFPolicyError, match=r"lo3"):
+        schema.invoke_native("set_rx_lo_freq", {"freq": 915e6, "name": "lo3", "chan": 0})
+
+    # Stage whose current frequency cannot be read fails closed.
+    dev.unreadable_stage = True
+    with pytest.raises(RemoteRFPolicyError):
+        schema.invoke_native("set_tx_lo_freq", {"freq": 915e6, "name": "lo1", "chan": 0})
+    with pytest.raises(RemoteRFPolicyError):
+        schema.invoke_native("set_rx_lo_freq", {"freq": 915e6, "name": "lo1", "chan": 0})
+
+    # On a shared-LO device reporting 'lo1', named LO still runs the shared-LO other-channel check.
+    class _B210NamedLoUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo = 910e6
+            self.tx_dsp = {0: 0.0, 1: 15e6}
+            self.tx_rates = {0: 1e6, 1: 1e6}
+
+        def get_mboard_name(self, mboard=0):
+            return "B210"
+
+        def get_tx_num_channels(self):
+            return 2
+
+        def get_tx_lo_names(self, chan=0):
+            return ["lo1"]
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo
+
+        def get_tx_freq(self, chan=0):
+            return self.tx_lo + self.tx_dsp[int(chan)]
+
+        def set_tx_lo_freq(self, freq, name, chan=0):
+            self.tx_lo = float(freq)
+            return self.tx_lo
+
+    b210 = _B210NamedLoUSRP()
+    b210_schema = UsrpSchema()
+    b210_schema.bind(b210)
+    b210_schema.configure_lockouts(parse_freq_limits({"tx_allow": [[902e6, 928e6]]}))
+    with pytest.raises(RemoteRFPolicyError, match=r"902–928 MHz"):
+        b210_schema.invoke_native("set_tx_lo_freq", {"freq": 925e6, "name": "lo1", "chan": 0})
+    assert b210.tx_lo == 910e6
+    b210_schema.invoke_native("set_tx_lo_freq", {"freq": 912e6, "name": "lo1", "chan": 0})
+    assert b210.tx_lo == 912e6
 
 
 # ── schemas.json unchanged check ──────────────────────────────────────

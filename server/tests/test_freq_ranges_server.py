@@ -84,9 +84,66 @@ class _FakeTXStreamer:
         return int(buffer.shape[-1])
 
 
+class _FakeTimeSpec:
+    def __init__(self, secs=0.0):
+        self.secs = float(secs)
+
+    def get_real_secs(self):
+        return self.secs
+
+
+class _FakeStreamMode:
+    start_cont = "start_cont"
+    stop_cont = "stop_cont"
+    num_done = "num_done"
+    num_more = "num_more"
+
+
+class _FakeStreamCMD:
+    def __init__(self, mode):
+        self.mode = mode
+        self.stream_now = True
+        self.time_spec = None
+        self.num_samps = 0
+
+
+class _FakeDoubleProperty:
+    def __init__(self, value=915e6):
+        self.value = float(value)
+        self.writes = []
+
+    def get(self):
+        return self.value
+
+    def get_desired(self):
+        return self.value
+
+    def set(self, value):
+        self.value = float(value)
+        self.writes.append(("set", float(value)))
+
+    def set_coerced(self, value):
+        self.value = float(value)
+        self.writes.append(("set_coerced", float(value)))
+
+
+class _FakePropertyTree:
+    def __init__(self):
+        self.props = {}
+
+    def access_double(self, path):
+        return self.props.setdefault(path, _FakeDoubleProperty())
+
+
 class _FakeRXStreamer:
+    def __init__(self):
+        self.commands = []
+
     def get_max_num_samps(self):
         return 256
+
+    def issue_stream_cmd(self, cmd):
+        self.commands.append(cmd)
 
     def recv(self, buffer, metadata, timeout):
         metadata.error_code = "none"
@@ -97,10 +154,40 @@ class _FakeNativeUSRP:
     def __init__(self):
         self.tx_freqs = {0: 915e6, 1: 915e6}
         self.rx_freqs = {0: 915e6, 1: 915e6}
+        self.tx_lo_freqs = {0: 915e6, 1: 915e6}
+        self.rx_lo_freqs = {0: 915e6, 1: 915e6}
         self.tx_rates = {0: 4e6, 1: 4e6}
         self.rx_rates = {0: 4e6, 1: 4e6}
         self.tx_streamer = _FakeTXStreamer()
         self.rx_streamer = _FakeRXStreamer()
+        self.tree = _FakePropertyTree()
+        self.root_stream_cmds = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def get_tree(self):
+        return self.tree
+
+    def issue_stream_cmd(self, cmd, chan=(1 << 64) - 1):
+        self.root_stream_cmds.append((cmd, chan))
+
+    def get_tx_lo_freq(self, name="all", chan=0):
+        return self.tx_lo_freqs[int(chan)]
+
+    def set_tx_lo_freq(self, freq, name, chan=0):
+        self.tx_lo_freqs[int(chan)] = float(freq)
+        self.tx_freqs[int(chan)] = float(freq)
+        return float(freq)
+
+    def get_rx_lo_freq(self, name="all", chan=0):
+        return self.rx_lo_freqs[int(chan)]
+
+    def set_rx_lo_freq(self, freq, name, chan=0):
+        self.rx_lo_freqs[int(chan)] = float(freq)
+        self.rx_freqs[int(chan)] = float(freq)
+        return float(freq)
 
     @property
     def tx_freq(self):
@@ -180,6 +267,9 @@ def _fake_uhd():
             TuneRequest=_FakeTuneRequest,
             TXMetadata=_FakeTXMetadata,
             RXMetadata=_FakeRXMetadata,
+            TimeSpec=_FakeTimeSpec,
+            StreamMode=_FakeStreamMode,
+            StreamCMD=_FakeStreamCMD,
             DeviceAddr=lambda raw="": raw,
         ),
         usrp=types.SimpleNamespace(StreamArgs=_FakeStreamArgs),
@@ -552,10 +642,14 @@ class ServerDynamicV2FreqRangeTests(unittest.TestCase):
         self.assertEqual(tx_entry.stream_channels, [1])
         self.assertEqual(tx_entry.cpu_format, "fc32")
 
-        # Widening chan 1 TX rate to 20 MS/s (917..937 MHz) must be refused (not skipped by [0] fallback).
+        # Widening chan 1 TX rate to 20 MS/s (917..937 MHz) must be refused (not skipped by [0] fallback),
+        # including when chan=0 is requested (shared TX rate / active channel re-check, ranges-4).
         bad_rate = self._invoke(sid, root, "set_tx_rate", {"rate": 20e6, "chan": 1})
         self.assertEqual(bad_rate.error.code, "RemoteRFPolicyError")
         self.assertEqual(self.native.tx_rates[1], 1e6)
+        bad_rate_other = self._invoke(sid, root, "set_tx_rate", {"rate": 20e6, "chan": 0})
+        self.assertEqual(bad_rate_other.error.code, "RemoteRFPolicyError")
+        self.assertEqual(self.native.tx_rates[0], 1e6)
 
         # Even if hardware rate widens out of band, TX SampleStream refuses empty channels (mismatch)
         # and refuses [1] with RemoteRFPolicyError.
@@ -767,6 +861,224 @@ class ServerDynamicV2FreqRangeTests(unittest.TestCase):
             )
         )
         self.assertEqual(rx_unknown[-1].error.code, "RemoteRFPolicyError")
+
+    def test_v2_property_tree_writes_refused_while_limits_active(self):
+        """ranges-1: uhd.property.*.set and set_coerced refused while limits are active."""
+        opened = self._open()
+        sid, root = opened.session_id, opened.device_handle
+
+        tree_resp = self._invoke(sid, root, "get_tree", {})
+        self.assertEqual(tree_resp.error.code, "")
+        tree_handle = decode_value(tree_resp.result)["__remoterf_handle__"]
+
+        path = "/mboards/0/dboards/A/tx_frontends/A/freq/value"
+        prop_resp = self._invoke(sid, tree_handle, "access_double", {"__args__": [path]})
+        self.assertEqual(prop_resp.error.code, "")
+        prop_handle = decode_value(prop_resp.result)["__remoterf_handle__"]
+
+        # Read-only get still succeeds.
+        get_resp = self._invoke(sid, prop_handle, "get", {})
+        self.assertEqual(get_resp.error.code, "")
+        self.assertEqual(decode_value(get_resp.result), 915e6)
+
+        # set and set_coerced refused with typed RemoteRFPolicyError; property untouched.
+        for method in ("set", "set_coerced"):
+            bad = self._invoke(sid, prop_handle, method, {"__args__": [2.45e9]})
+            self.assertEqual(bad.error.code, "RemoteRFPolicyError")
+            self.assertIn("every", bad.error.message.lower())
+            self.assertIn("property-tree write", bad.error.message.lower())
+            self.assertIn("MultiUSRP", bad.error.message)
+        self.assertEqual(self.native.tree.props[path].writes, [])
+
+        # Non-frequency property paths are also refused with the same message, while normal MultiUSRP setters work.
+        gain_path = "/mboards/0/dboards/A/tx_frontends/A/gains/PGA0/value"
+        gain_prop = decode_value(
+            self._invoke(sid, tree_handle, "access_double", {"__args__": [gain_path]}).result
+        )["__remoterf_handle__"]
+        bad_gain = self._invoke(sid, gain_prop, "set", {"__args__": [10.0]})
+        self.assertEqual(bad_gain.error.code, "RemoteRFPolicyError")
+        self.assertIn("every", bad_gain.error.message.lower())
+        self.assertIn("MultiUSRP", bad_gain.error.message)
+        ok_setter = self._invoke(sid, root, "set_tx_freq", {"tune_request": 916e6, "chan": 0})
+        self.assertEqual(ok_setter.error.code, "")
+
+        # Admin bypass allows property write when admin_group_override is enabled.
+        self.bypass = True
+        ok = self._invoke(sid, prop_handle, "set", {"__args__": [2.45e9]})
+        self.assertEqual(ok.error.code, "")
+        self.assertEqual(self.native.tree.props[path].writes, [("set", 2.45e9)])
+
+    def test_v2_rx_retune_preserves_prefetch_without_freq_limits(self):
+        """Item 3: labs without RX frequency limits skip _reset_rx_prefetch on retune."""
+        for init in (
+            {"serial": "SRV01"},
+            {"serial": "SRV01", "tx_allow": [[902e6, 928e6]]},
+        ):
+            session_manager.close_all()
+            inv = UsrpSchema()
+            inv.bind_inventory(init)
+            self.inventory = inv
+            opened = self._open()
+            sid, root = opened.session_id, opened.device_handle
+
+            rx_resp = self._invoke(
+                sid,
+                root,
+                "get_rx_stream",
+                {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+            )
+            self.assertEqual(rx_resp.error.code, "")
+            rx_handle = decode_value(rx_resp.result)["__remoterf_handle__"]
+            rx_entry = session_manager.get(sid).handles[rx_handle]
+
+            queued = np.full((1, 4), 42 + 0j, dtype=np.complex64)
+            rx_entry.rx_prefetch.put((queued, {"error_code": "none"}))
+            rx_entry.rx_pending = (queued, {"error_code": "none"}, 0)
+
+            with patch.object(session_manager, "_reset_rx_prefetch", wraps=session_manager._reset_rx_prefetch) as reset_spy:
+                ok_tune = self._invoke(sid, root, "set_rx_freq", {"tune_request": 916e6, "chan": 0})
+                self.assertEqual(ok_tune.error.code, "")
+                ok_lo = self._invoke(sid, root, "set_rx_lo_freq", {"freq": 917e6, "name": "all", "chan": 0})
+                self.assertEqual(ok_lo.error.code, "")
+                reset_spy.assert_not_called()
+            self.assertFalse(rx_entry.rx_prefetch.empty())
+            self.assertIsNotNone(rx_entry.rx_pending)
+
+    def test_v2_rx_issue_stream_cmd_checked_and_prefetch_cleared_on_retune(self):
+        """ranges-6: RX issue_stream_cmd enforces rx_allow/rx_deny and retune flushes rx_prefetch."""
+        opened = self._open()
+        sid, root = opened.session_id, opened.device_handle
+
+        # RX LO starts outside rx_allow [902, 928].
+        self.native.rx_freqs[0] = 2.45e9
+        self.native.rx_lo_freqs[0] = 2.45e9
+        rx_resp = self._invoke(
+            sid,
+            root,
+            "get_rx_stream",
+            {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+        )
+        self.assertEqual(rx_resp.error.code, "")
+        rx_info = decode_value(rx_resp.result)
+        rx_handle = rx_info["__remoterf_handle__"]
+
+        # Starting RX stream while out of band is refused on both RXStreamer and MultiUSRP.
+        start_cmd = {"__uhd_type__": "StreamCMD", "mode": "start_cont", "stream_now": True}
+        bad_start = self._invoke(sid, rx_handle, "issue_stream_cmd", {"__args__": [start_cmd]})
+        self.assertEqual(bad_start.error.code, "RemoteRFPolicyError")
+        self.assertEqual(self.native.rx_streamer.commands, [])
+        session = session_manager.get(sid)
+        rx_entry = session.handles[rx_handle]
+        self.assertIsNone(rx_entry.rx_worker)
+
+        bad_root = self._invoke(sid, root, "issue_stream_cmd", {"rate": start_cmd, "chan": 0})
+        self.assertEqual(bad_root.error.code, "RemoteRFPolicyError")
+        self.assertEqual(self.native.root_stream_cmds, [])
+
+        # stop_cont remains allowed even while RX LO is out of band.
+        stop_cmd = {"__uhd_type__": "StreamCMD", "mode": "stop_cont", "stream_now": True}
+        ok_stop = self._invoke(sid, rx_handle, "issue_stream_cmd", {"__args__": [stop_cmd]})
+        self.assertEqual(ok_stop.error.code, "")
+
+        # Stale pre-retune samples in rx_prefetch / rx_pending are flushed by set_rx_freq and set_rx_lo_freq.
+        stale = np.full((1, 4), 99 + 0j, dtype=np.complex64)
+        rx_entry.rx_prefetch.put((stale, {"error_code": "none"}))
+        rx_entry.rx_pending = (stale, {"error_code": "none"}, 0)
+        ok_tune = self._invoke(sid, root, "set_rx_freq", {"tune_request": 915e6, "chan": 0})
+        self.assertEqual(ok_tune.error.code, "")
+        self.assertTrue(rx_entry.rx_prefetch.empty())
+        self.assertIsNone(rx_entry.rx_pending)
+
+        self.native.rx_lo_freqs[0] = 915e6
+        self.native.rx_freqs[0] = 915e6
+        rx_entry.rx_prefetch.put((stale, {"error_code": "none"}))
+        rx_entry.rx_pending = (stale, {"error_code": "none"}, 0)
+        ok_lo = self._invoke(sid, root, "set_rx_lo_freq", {"freq": 916e6, "name": "all", "chan": 0})
+        self.assertEqual(ok_lo.error.code, "")
+        self.assertTrue(rx_entry.rx_prefetch.empty())
+        self.assertIsNone(rx_entry.rx_pending)
+
+    def test_v2_live_schema_inherits_inventory_limits_or_fails_closed(self):
+        """ranges-7: Dynamic v2 live schema inherits inventory _freq_limits (open & restore_native) or fails closed."""
+        from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
+        class _StaleCustomUsrpSchema(UsrpSchema):
+            """Mirrors a locally edited pre-PR UsrpPhaserSchema whose create_session_schema skips configure_lockouts."""
+
+            def create_session_schema(self):
+                clone = type(self)()
+                clone.bind_inventory(self._inventory)
+                clone.bind(clone.open_native_device())
+                return clone
+
+        stale_inv = _StaleCustomUsrpSchema()
+        stale_inv.bind_inventory({"serial": "SRV01", "tx_allow": [[902e6, 928e6]]})
+        self.inventory = stale_inv
+        opened = self._open()
+        sid, root = opened.session_id, opened.device_handle
+        session = session_manager.get(sid)
+        self.assertEqual(session.schema._freq_limits, stale_inv._freq_limits)
+        bad_tx = self._invoke(sid, root, "set_tx_freq", {"tune_request": 2.45e9, "chan": 0})
+        self.assertEqual(bad_tx.error.code, "RemoteRFPolicyError")
+
+        # restore_native also propagates limits onto the newly created live schema.
+        fake_gate = types.SimpleNamespace(journal=object())
+        with patch("remoteRF_server.server.dynamic_v2.hardware_access.gate", return_value=fake_gate):
+            binding = session_manager.integration_binding(
+                sid, work_dir="/tmp", resources_released=lambda: True
+            )
+            binding.release_native()
+            binding.restore_native()
+        self.assertEqual(session.schema._freq_limits, stale_inv._freq_limits)
+        session_manager.close_all()
+
+        class _BrokenCustomUsrpSchema(UsrpSchema):
+            """Cannot retain configured frequency limits -> must fail closed."""
+
+            def configure_lockouts(self, cfg):
+                self._freq_limits = None
+
+            def create_session_schema(self):
+                clone = type(self)()
+                clone.bind_inventory(self._inventory)
+                clone.bind(clone.open_native_device())
+                return clone
+
+        broken_inv = _BrokenCustomUsrpSchema()
+        broken_inv.bind_inventory({"serial": "SRV01", "tx_allow": [[902e6, 928e6]]})
+        # Simulate inventory holding active limits (as set by bind_inventory) while live clone cannot retain them.
+        self.assertIsNotNone(broken_inv._freq_limits)
+        self.inventory = broken_inv
+        schema_hash = broken_inv.get_idl_v2()["schema_hash"]
+        resp = self.control.OpenSession(
+            grpc_pb2.OpenSessionRequest(
+                token="tok-srv",
+                requested_schema_hash=schema_hash,
+                control_protocol_version="2.0",
+                streaming_protocol_version="1.0",
+            ),
+            None,
+        )
+        self.assertEqual(resp.error.code, "RemoteRFPolicyError")
+        # Drain async cleanup of the failed session before opening a new session on the same gid.
+        session_manager.close_all()
+        self.assertTrue(self.native.closed)
+
+        # restore_native also fails closed when restored live schema drops limits.
+        self.native.closed = False
+        self.inventory = stale_inv
+        opened2 = self._open()
+        session2 = session_manager.get(opened2.session_id)
+        with patch("remoteRF_server.server.dynamic_v2.hardware_access.gate", return_value=fake_gate):
+            binding2 = session_manager.integration_binding(
+                opened2.session_id, work_dir="/tmp", resources_released=lambda: True
+            )
+            binding2.release_native()
+            self.native.closed = False
+            self.inventory = broken_inv
+            with self.assertRaises(RemoteRFPolicyError):
+                binding2.restore_native()
+            self.assertTrue(self.native.closed)
 
 
 if __name__ == "__main__":
