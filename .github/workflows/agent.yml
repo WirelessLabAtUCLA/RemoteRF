@@ -59,6 +59,10 @@ jobs:
             const actor = context.actor;
             let { issue, comment } = context.payload;
             let mode = 'agent';
+            const refuse = async msg => {
+              core.setFailed(msg);
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `Not started: ${msg}` });
+            };
             if (context.eventName === 'workflow_dispatch') {
               const n = context.payload.inputs.issue;
               if (!/^\d+$/.test(n)) return core.setFailed(`bad issue number ${n}`);
@@ -84,7 +88,7 @@ jobs:
               if (comment) {
                 const text = comment.body.replace(/^```diff[ \t]*\n[\s\S]*?^```[ \t]*$/gm, ''); // a Requested-by inside a diff block does not count
                 const r = [...text.matchAll(/^Requested-by:\s*@?([\w-]+)/gm)].pop();
-                if (!r) return core.setFailed('bot comment without Requested-by');
+                if (!r) return refuse('bot comment without Requested-by');
                 by = r[1];
               } else if (mode === 'agent') {
                 by = ''; // the bot labeled its own issue: the requester check below covers it
@@ -92,12 +96,9 @@ jobs:
             }
             if (by) {
               const p = await perm(by);
-              if (p !== 'admin') return core.setFailed(`${by} has ${p}; the agent is admin-only`);
+              const msg = `${by} has ${p}; the agent is admin-only`;
+              if (p !== 'admin') return actor === 'rrf-issues[bot]' ? refuse(msg) : core.setFailed(msg); // the Slack card waits on a reply
             }
-            const refuse = async msg => {
-              core.setFailed(msg);
-              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `Not started: ${msg}` });
-            };
             const users = new Set();
             let requester = issue.user.login;
             const m = /^Requested-by:\s*@?([\w-]+)/m.exec(issue.body || '');

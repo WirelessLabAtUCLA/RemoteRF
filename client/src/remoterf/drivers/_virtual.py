@@ -44,6 +44,7 @@ def _pluto_defaults() -> dict[str, Any]:
         "dds_phases": [0, 0, 0, 0],
         "dds_enabled": [False, False, False, False],
         "rates": (1, 1),
+        "temperature": 40.0,
     }
 
 
@@ -68,6 +69,8 @@ class _VirtualDeviceState:
         if name == "rx":
             size = max(0, int(self.values.get("rx_buffer_size", 1024)))
             return np.zeros(size, dtype=np.complex64)
+        if name == "temp" and "temperature" in self.values:
+            name = "temperature"  # Pluto's alias
         return self.values.get(name)
 
     def set(self, name: str, value: Any) -> None:

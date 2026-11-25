@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: adalm_pluto_mimo  driver_version: 0.0.2  schema_hash: sha256:cff95f07bbfeeff5ac1f02e0c6564f262ec9c69bbbb31efc104b4a14959d772a
+# device_type: adalm_pluto_mimo  driver_version: 0.0.3  schema_hash: sha256:2a492432fecdab19672f50edfb054a69927091d1c78024a1a7dcf20cc0867784
 
 _PREFIX = "Adalm_pluto_mimo"
-_SCHEMA_HASH = "sha256:cff95f07bbfeeff5ac1f02e0c6564f262ec9c69bbbb31efc104b4a14959d772a"
+_SCHEMA_HASH = "sha256:2a492432fecdab19672f50edfb054a69927091d1c78024a1a7dcf20cc0867784"
 _CLIENT_MODULES = {}
 _CLIENT_OBJECTS = {}
 
@@ -321,6 +321,16 @@ class PlutoMIMO:
     @sample_rate.setter
     def sample_rate(self, value):
         _try_set("sample_rate", value, self.token)
+
+    @property
+    def temp(self):
+        'Alias for temperature: AD9361 die temperature in degrees C.'
+        return _try_get("temp", self.token)
+
+    @property
+    def temperature(self):
+        'AD9361 die temperature in degrees C.'
+        return _try_get("temperature", self.token)
 
     @property
     def tx_channel_names(self):
