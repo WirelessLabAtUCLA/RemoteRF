@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import serial
 
 from remoterf_device_core.drivers.rfbeam_kmd7.kmd7 import (
     BAUD_RATES,
@@ -462,6 +463,46 @@ class TestKMD7DriverProtocol(unittest.TestCase):
             radar.set_threshold_offset(10)
         self.assertIn("Invalid RPST version", str(ctx.exception))
 
+    def test_connect_closes_serial_on_non_kmd7_exception(self):
+        class FailingBaudSerial(MockKMD7Serial):
+            def __init__(self, *args, **kwargs):
+                self._fail_baud = 3000000
+                super().__init__(*args, **kwargs)
+
+            @property
+            def baudrate(self) -> int:
+                return self._baudrate
+
+            @baudrate.setter
+            def baudrate(self, value: int) -> None:
+                if value == self._fail_baud:
+                    raise serial.SerialException("Unsupported baud rate 3000000")
+                self._baudrate = value
+
+        ser = FailingBaudSerial()
+        radar = KMD7Radar(port="/dev/mockFT230X", baudrate=115200, timeout=0.5)
+
+        def _reopen(baudrate: int = 115200):
+            ser.is_open = True
+            ser.baudrate = baudrate
+            return ser
+
+        with patch.object(radar, "_open_serial", side_effect=_reopen):
+            radar.connect()
+            with self.assertRaises(serial.SerialException):
+                radar.set_baudrate(3000000)
+
+        self.assertFalse(ser.is_open)
+        self.assertIsNone(radar.serial)
+        self.assertEqual(ser.sensor_baudrate, 3000000)
+
+        # Next connect should recover from sensor stuck at 3 Mbps now that serial was closed
+        ser._fail_baud = None
+        with patch.object(radar, "_open_serial", side_effect=_reopen):
+            radar.connect(target_baudrate=115200)
+        self.assertTrue(ser.is_open)
+        self.assertEqual(ser.sensor_baudrate, 115200)
+
 
 class TestRFBeamKMD7Schema(unittest.TestCase):
     """Schema & IDL dispatch tests against live remoterf_device_core.idl."""
@@ -676,6 +717,350 @@ class TestRFBeamKMD7Schema(unittest.TestCase):
         self.assertFalse(self.schema.dispatch("get_is_running", {}))
         self.assertEqual(self.schema.dispatch("get_threshold_offset", {}), 12)
         self.assertEqual(self.schema.dispatch("get_mode", {}), "indoor")
+
+    def test_streaming_capture_enables_missing_flags_with_use_handshake_false(self):
+        # Default start() sets PDAT|TDAT|DONE (0x2C); full frame with use_handshake=False must add RADC|RFFT
+        self.schema.dispatch("call_start", {})
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_PDAT | FLAG_TDAT | FLAG_DONE)
+
+        full = self.schema.dispatch("call_capture_full_frame", {"timeout": 2.0, "use_handshake": False})
+        self.assertIsNotNone(full["adc"])
+        self.assertTrue(full["adc"]["valid"])
+        self.assertIsNotNone(full["fft"])
+        self.assertTrue(full["fft"]["valid"])
+        self.assertEqual(full["num_raw_points"], 2)
+        self.assertEqual(full["num_tracked_targets"], 1)
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_ALL)
+
+        # Start from stopped with RADC-only stream (0x21), then request targets/points/point_cloud
+        self.schema.dispatch("call_stop", {})
+        adc = self.schema.dispatch("call_capture_raw_adc", {"timeout": 2.0, "use_handshake": False})
+        self.assertTrue(adc["valid"])
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_RADC | FLAG_DONE)
+
+        targets = self.schema.dispatch("call_capture_targets", {"timeout": 1.0})
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["id"], 7)
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}) & FLAG_TDAT, FLAG_TDAT)
+
+        # Stream has RADC|TDAT|DONE (missing PDAT); capture_points(raw+tracked) must also enable PDAT
+        pts = self.schema.dispatch("call_capture_points", {"timeout": 1.0, "include_raw": True, "include_tracked": True})
+        self.assertEqual(pts.shape, (3, 6))
+        self.assertEqual(
+            self.schema.dispatch("get_stream_mask", {}) & (FLAG_PDAT | FLAG_TDAT),
+            FLAG_PDAT | FLAG_TDAT,
+        )
+
+        # Start with RFFT-only stream (0x22), then request point_cloud
+        self.schema.dispatch("call_stop", {})
+        fft = self.schema.dispatch("call_capture_raw_fft", {"timeout": 2.0, "use_handshake": False})
+        self.assertTrue(fft["valid"])
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_RFFT | FLAG_DONE)
+
+        cloud = self.schema.dispatch("call_capture_point_cloud", {"timeout": 1.0})
+        self.assertEqual(cloud["num_raw_points"], 2)
+        self.assertEqual(cloud["num_tracked_targets"], 1)
+        self.assertEqual(
+            self.schema.dispatch("get_stream_mask", {}) & (FLAG_PDAT | FLAG_TDAT),
+            FLAG_PDAT | FLAG_TDAT,
+        )
+
+    def test_reset_for_next_holder_preserves_make_device_overrides(self):
+        ser = MockKMD7Serial()
+
+        def _reopen(baudrate: int = 115200):
+            ser.is_open = True
+            ser.baudrate = baudrate
+            return ser
+
+        with patch.object(KMD7Radar, "_open_serial", side_effect=_reopen):
+            dev = RFBeamKMD7Schema.make_device(
+                port="/dev/mockFT230X",
+                baudrate=921600,
+                mode="indoor",
+                frequency_channel=2,
+                max_range=300,
+                max_speed=200,
+                threshold_offset=35,
+                auto_start=False,
+            )
+            self.assertIsNotNone(dev)
+            schema = RFBeamKMD7Schema()
+            schema.bind(dev)
+
+            self.assertEqual(schema.dispatch("get_frequency_channel", {}), 2)
+            self.assertEqual(schema.dispatch("get_max_range", {}), 300.0)
+            self.assertEqual(schema.dispatch("get_max_speed", {}), 200.0)
+            self.assertEqual(schema.dispatch("get_threshold_offset", {}), 35)
+
+            # Holder modifies settings and baudrate
+            schema.dispatch("set_baudrate", {"value": 3000000})
+            schema.dispatch("call_configure", {
+                "mode": "traffic",
+                "frequency_channel": 0,
+                "max_range": 100,
+                "max_speed": 50,
+                "threshold_offset": 5,
+                "min_zone_angle": -10,
+                "max_zone_angle": 10,
+            })
+            schema.dispatch("call_start", {})
+
+            schema.reset_for_next_holder()
+
+            self.assertFalse(schema.dispatch("get_is_running", {}))
+            self.assertEqual(schema.dispatch("get_baudrate", {}), 921600)
+            self.assertEqual(schema.dispatch("get_mode", {}), "indoor")
+            self.assertEqual(schema.dispatch("get_frequency_channel", {}), 2)
+            self.assertEqual(schema.dispatch("get_max_range", {}), 300.0)
+            self.assertEqual(schema.dispatch("get_max_speed", {}), 200.0)
+            self.assertEqual(schema.dispatch("get_threshold_offset", {}), 35)
+            self.assertEqual(schema.dispatch("get_tracking_filter", {}), 1)
+            self.assertEqual(schema.dispatch("get_min_speed_filter", {}), 0)
+            self.assertEqual(schema.dispatch("get_min_zone_angle", {}), -30)
+            self.assertEqual(schema.dispatch("get_max_zone_angle", {}), 30)
+            dev.close()
+
+    def test_reset_for_next_holder_propagates_errors_closes_serial_and_zeros_bytes(self):
+        # Clean reset must zero total_bytes_read as well as frame counters
+        self.schema.dispatch("call_start", {})
+        self.schema.dispatch("call_capture_point_cloud", {"timeout": 1.0})
+        self.assertGreater(self.schema.dispatch("get_stream_stats", {})["total_bytes_read"], 0)
+
+        self.schema.reset_for_next_holder()
+        stats = self.schema.dispatch("get_stream_stats", {})
+        self.assertEqual(stats["total_bytes_read"], 0)
+        self.assertEqual(stats["total_frames"], 0)
+
+        # Failed reset must raise, close serial, clear cached params, and zero counters
+        self.schema.dispatch("set_threshold_offset", {"value": 50})
+        self.schema.dispatch("set_frequency_channel", {"value": 2})
+        self.mock_ser.forced_error = 4
+
+        with self.assertRaises(KMD7Error):
+            self.schema.reset_for_next_holder()
+
+        self.assertFalse(self.mock_ser.is_open)
+        self.assertIsNone(self.dev.radar.serial)
+        self.assertIsNone(self.dev._params)
+        self.assertEqual(self.schema.dispatch("get_stream_stats", {})["total_bytes_read"], 0)
+
+        # Subsequent reset reconnects cleanly and restores defaults
+        with patch.object(self.dev.radar, "_open_serial", side_effect=self._reopen_mock):
+            self.schema.reset_for_next_holder()
+        self.assertTrue(self.mock_ser.is_open)
+        self.assertEqual(self.schema.dispatch("get_threshold_offset", {}), 12)
+        self.assertEqual(self.schema.dispatch("get_frequency_channel", {}), 1)
+
+    def test_failed_reset_recovers_baseline_and_next_holder_commands_succeed(self):
+        ser = MockKMD7Serial()
+
+        def _reopen(baudrate: int = 115200):
+            ser.is_open = True
+            ser.baudrate = baudrate
+            return ser
+
+        with patch.object(KMD7Radar, "_open_serial", side_effect=_reopen):
+            dev = RFBeamKMD7Schema.make_device(
+                port="/dev/mockFT230X",
+                baudrate=921600,
+                mode="indoor",
+                frequency_channel=2,
+                max_range=300,
+                max_speed=200,
+                threshold_offset=35,
+                auto_start=False,
+            )
+            self.assertIsNotNone(dev)
+            schema = RFBeamKMD7Schema()
+            schema.bind(dev)
+
+            # Holder mutates baudrate, mode, parameters, and starts streaming
+            schema.dispatch("set_baudrate", {"value": 3000000})
+            schema.dispatch("call_configure", {
+                "mode": "traffic",
+                "frequency_channel": 0,
+                "max_range": 100,
+                "max_speed": 50,
+                "threshold_offset": 5,
+            })
+            schema.dispatch("call_start", {})
+
+            # Transient error during reset: recovery reconnects and restores baseline,
+            # while still re-raising the original error for caller logging.
+            ser.forced_error = 4
+            with self.assertRaises(KMD7Error):
+                schema.reset_for_next_holder()
+
+            self.assertTrue(ser.is_open)
+            self.assertFalse(schema.dispatch("get_is_running", {}))
+            self.assertEqual(schema.dispatch("get_baudrate", {}), 921600)
+            self.assertEqual(schema.dispatch("get_mode", {}), "indoor")
+            self.assertEqual(schema.dispatch("get_frequency_channel", {}), 2)
+            self.assertEqual(schema.dispatch("get_max_range", {}), 300.0)
+            self.assertEqual(schema.dispatch("get_max_speed", {}), 200.0)
+            self.assertEqual(schema.dispatch("get_threshold_offset", {}), 35)
+            self.assertEqual(schema.dispatch("get_stream_stats", {})["total_bytes_read"], 0)
+
+            # Next holder's setter and getter succeed without needing start() or capture
+            schema.dispatch("set_threshold_offset", {"value": 22})
+            self.assertEqual(schema.dispatch("get_threshold_offset", {}), 22)
+            params = schema.dispatch("get_radar_parameters", {})
+            self.assertEqual(params["threshold_offset_db"], 22)
+            dev.close()
+
+    def test_failed_reset_with_failed_reconnect_then_lazy_reconnect_on_commands(self):
+        with patch.object(self.dev.radar, "_open_serial", side_effect=self._reopen_mock):
+            self.schema.dispatch("set_baudrate", {"value": 2000000})
+        self.schema.dispatch("set_threshold_offset", {"value": 50})
+        self.schema.dispatch("set_frequency_channel", {"value": 2})
+
+        # Both the initial reset and the failure-path reconnect fail; original error re-raises
+        self.mock_ser.forced_error = 4
+        with patch.object(
+            self.dev.radar,
+            "_open_serial",
+            side_effect=serial.SerialException("Port temporarily unavailable"),
+        ):
+            with self.assertRaises(KMD7Error):
+                self.schema.reset_for_next_holder()
+
+        self.assertFalse(self.mock_ser.is_open)
+        self.assertIsNone(self.dev.radar.serial)
+        self.assertIsNone(self.dev._params)
+        self.assertEqual(self.dev.baudrate, 115200)
+
+        # Once port is available again, a getter reconnects lazily and succeeds
+        with patch.object(self.dev.radar, "_open_serial", side_effect=self._reopen_mock):
+            self.assertEqual(self.schema.dispatch("get_threshold_offset", {}), 50)
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(self.schema.dispatch("get_baudrate", {}), 115200)
+
+            # Verify lazy reconnect on setters, get/set_radar_parameters, detection zone, RFSE
+            self.dev.radar.disconnect()
+            self.schema.dispatch("set_frequency_channel", {"value": 0})
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(self.schema.dispatch("get_frequency_channel", {}), 0)
+
+            self.dev.radar.disconnect()
+            params = self.schema.dispatch("get_radar_parameters", {})
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(params["frequency_channel"], 0)
+
+            self.dev.radar.disconnect()
+            updated = self.schema.dispatch(
+                "call_set_radar_parameters",
+                {"params": {"threshold_offset_db": 18}},
+            )
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(updated["threshold_offset_db"], 18)
+
+            self.dev.radar.disconnect()
+            self.schema.dispatch("set_baudrate", {"value": 921600})
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(self.schema.dispatch("get_baudrate", {}), 921600)
+
+            self.dev.radar.disconnect()
+            zone = self.schema.dispatch(
+                "call_set_detection_zone",
+                {"min_dist_pct": 10, "max_dist_pct": 80},
+            )
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(zone["min_zone_dist_pct"], 10)
+            self.assertEqual(zone["max_zone_dist_pct"], 80)
+
+            self.dev.radar.disconnect()
+            self.assertTrue(self.schema.dispatch("call_restore_factory_settings", {}))
+            self.assertTrue(self.mock_ser.is_open)
+            self.assertEqual(self.schema.dispatch("get_threshold_offset", {}), 12)
+
+    def test_set_radar_parameters_round_trip_and_alias_conflict_rejection(self):
+        params = self.schema.dispatch("get_radar_parameters", {})
+        self.assertIn("mode", params)
+        params["threshold_offset_db"] = 20
+        updated = self.schema.dispatch("call_set_radar_parameters", {"params": params})
+        self.assertEqual(updated["threshold_offset_db"], 20)
+
+        # Device is currently at indoor defaults: range_setting=0 (100 m), speed_setting=0 (50 km/h).
+        # Conflicting aliases where both differ from the current value AND from each other raise ValueError.
+        params_conflict = self.schema.dispatch("get_radar_parameters", {})
+        params_conflict["range_setting_code"] = 1
+        params_conflict["max_range_meters"] = 300
+        with self.assertRaises(ValueError):
+            self.schema.dispatch("call_set_radar_parameters", {"params": params_conflict})
+
+        with self.assertRaises(ValueError):
+            self.schema.dispatch("call_set_radar_parameters", {"params": {"range_setting": 2, "max_range": 200}})
+
+        with self.assertRaises(ValueError):
+            self.schema.dispatch(
+                "call_set_radar_parameters",
+                {"params": {"speed_setting_code": 2, "max_speed_kmh": 100.0}},
+            )
+
+        # Matching aliases for the same canonical field are accepted
+        consistent = self.schema.dispatch(
+            "call_set_radar_parameters",
+            {"params": {"range_setting": 2, "max_range": 300, "speed_setting_code": 2, "max_speed_kmh": 200}},
+        )
+        self.assertEqual(consistent["range_setting_code"], 2)
+        self.assertEqual(consistent["max_range_meters"], 300.0)
+        self.assertEqual(consistent["speed_setting_code"], 2)
+        self.assertEqual(consistent["max_speed_kmh"], 200.0)
+
+    def test_set_radar_parameters_round_trip_range_and_speed(self):
+        # Round-trip editing only max_range_meters while range_setting_code stays at current value
+        params = self.schema.dispatch("get_radar_parameters", {})
+        self.assertEqual(params["range_setting_code"], 0)
+        self.assertEqual(params["max_range_meters"], 100.0)
+        params["max_range_meters"] = 300
+        updated = self.schema.dispatch("call_set_radar_parameters", {"params": params})
+        self.assertEqual(updated["range_setting_code"], 2)
+        self.assertEqual(updated["max_range_meters"], 300.0)
+
+        # Round-trip editing only range_setting_code while max_range_meters stays at current value
+        params = self.schema.dispatch("get_radar_parameters", {})
+        params["range_setting_code"] = 1
+        updated = self.schema.dispatch("call_set_radar_parameters", {"params": params})
+        self.assertEqual(updated["range_setting_code"], 1)
+        self.assertEqual(updated["max_range_meters"], 200.0)
+
+        # Round-trip editing only max_speed_kmh while speed_setting_code stays at current value
+        params = self.schema.dispatch("get_radar_parameters", {})
+        self.assertEqual(params["speed_setting_code"], 0)
+        self.assertEqual(params["max_speed_kmh"], 50.0)
+        params["max_speed_kmh"] = 200
+        updated = self.schema.dispatch("call_set_radar_parameters", {"params": params})
+        self.assertEqual(updated["speed_setting_code"], 2)
+        self.assertEqual(updated["max_speed_kmh"], 200.0)
+
+        # Round-trip editing only speed_setting_code while max_speed_kmh stays at current value
+        params = self.schema.dispatch("get_radar_parameters", {})
+        params["speed_setting_code"] = 1
+        updated = self.schema.dispatch("call_set_radar_parameters", {"params": params})
+        self.assertEqual(updated["speed_setting_code"], 1)
+        self.assertEqual(updated["max_speed_kmh"], 100.0)
+
+    def test_make_device_closes_serial_on_post_connect_error(self):
+        ser = MockKMD7Serial()
+
+        def _reopen(baudrate: int = 115200):
+            ser.is_open = True
+            ser.baudrate = baudrate
+            return ser
+
+        with patch.object(KMD7Radar, "_open_serial", side_effect=_reopen):
+            dev = RFBeamKMD7Schema.make_device(
+                port="/dev/mockFT230X",
+                baudrate=2000000,
+                mode="indoor",
+                max_range=150,
+            )
+
+        self.assertIsNone(dev)
+        self.assertFalse(ser.is_open)
+        self.assertEqual(ser.sensor_baudrate, 115200)
+        self.assertIn("GBYE", [c[0] for c in ser.commands_log])
 
 
 if __name__ == "__main__":

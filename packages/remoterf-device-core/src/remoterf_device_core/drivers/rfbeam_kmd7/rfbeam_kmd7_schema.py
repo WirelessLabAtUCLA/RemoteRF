@@ -118,6 +118,7 @@ class RFBeamKMD7Device:
         self._mode = str(mode).lower()
         self._init_baudrate = self.baudrate
         self._init_mode = self._mode
+        self._init_overrides: Dict[str, Any] = {}
         self._is_running = False
 
         # Performance & telemetry statistics
@@ -143,8 +144,47 @@ class RFBeamKMD7Device:
         finally:
             self.radar.disconnect()
 
+    def _ensure_connected(self, target_baudrate: Optional[int] = None) -> bool:
+        """Reconnect lazily when the serial port is closed; return True if reconnected."""
+        if not self.radar.serial or not getattr(self.radar.serial, "is_open", False):
+            baud = self.baudrate if target_baudrate is None else int(target_baudrate)
+            self.radar.connect(target_baudrate=baud)
+            self.baudrate = self.radar.baudrate
+            return True
+        return False
+
+    def _restore_baseline(self) -> None:
+        """Ensure connection and restore radar to lab baseline (mode, baudrate, overrides)."""
+        self._ensure_connected(target_baudrate=self._init_baudrate)
+
+        self.stop()
+        self.radar.restore_factory_settings()
+        self._mode = "traffic"
+
+        if self._init_mode in ("indoor", "traffic"):
+            self.radar.configure_mode(self._init_mode)
+            self._mode = self._init_mode
+
+        overrides = getattr(self, "_init_overrides", None) or {}
+        if "frequency_channel" in overrides:
+            self.radar.set_frequency_channel(overrides["frequency_channel"])
+        if "max_range" in overrides:
+            self.radar.set_max_range(_range_meters_to_code(overrides["max_range"]))
+        if "max_speed" in overrides:
+            self.radar.set_speed_range(_speed_kmh_to_code(overrides["max_speed"]))
+        if "threshold_offset" in overrides:
+            self.radar.set_threshold_offset(overrides["threshold_offset"])
+
+        if self.radar.baudrate != self._init_baudrate:
+            self.radar.set_baudrate(self._init_baudrate)
+            self.baudrate = self.radar.baudrate
+
+        self.flush()
+        self._params = self.radar.get_parameters()
+
     def _get_cached_params(self) -> RadarParameters:
-        if self._params is None:
+        reconnected = self._ensure_connected()
+        if reconnected or self._params is None:
             self._params = self.radar.get_parameters()
         return self._params
 
@@ -159,7 +199,8 @@ class RFBeamKMD7Device:
     @baudrate_active.setter
     def baudrate_active(self, val: int) -> None:
         new_baud = int(val)
-        self.radar.set_baudrate(new_baud)
+        if not self._ensure_connected(target_baudrate=new_baud):
+            self.radar.set_baudrate(new_baud)
         self.baudrate = self.radar.baudrate
 
     @property
@@ -173,6 +214,9 @@ class RFBeamKMD7Device:
     @mode.setter
     def mode(self, val: str) -> None:
         mode_str = str(val).lower()
+        if mode_str not in ("indoor", "traffic"):
+            raise ValueError(f"Unknown mode: {mode_str}. Choose 'indoor' or 'traffic'.")
+        self._ensure_connected()
         self.radar.configure_mode(mode_str)
         self._mode = mode_str
         self._params = self.radar.get_parameters()
@@ -183,6 +227,7 @@ class RFBeamKMD7Device:
 
     @frequency_channel.setter
     def frequency_channel(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_frequency_channel(int(val))
         self._params = self.radar.get_parameters()
 
@@ -193,6 +238,7 @@ class RFBeamKMD7Device:
     @max_range.setter
     def max_range(self, val: float) -> None:
         code = _range_meters_to_code(val)
+        self._ensure_connected()
         self.radar.set_max_range(code)
         self._params = self.radar.get_parameters()
 
@@ -203,6 +249,7 @@ class RFBeamKMD7Device:
     @max_speed.setter
     def max_speed(self, val: float) -> None:
         code = _speed_kmh_to_code(val)
+        self._ensure_connected()
         self.radar.set_speed_range(code)
         self._params = self.radar.get_parameters()
 
@@ -212,6 +259,7 @@ class RFBeamKMD7Device:
 
     @threshold_offset.setter
     def threshold_offset(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_threshold_offset(int(val))
         self._params = self.radar.get_parameters()
 
@@ -221,6 +269,7 @@ class RFBeamKMD7Device:
 
     @tracking_filter.setter
     def tracking_filter(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_tracking_filter(int(val))
         self._params = self.radar.get_parameters()
 
@@ -230,6 +279,7 @@ class RFBeamKMD7Device:
 
     @min_zone_distance.setter
     def min_zone_distance(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_min_zone_distance(int(val))
         self._params = self.radar.get_parameters()
 
@@ -239,6 +289,7 @@ class RFBeamKMD7Device:
 
     @max_zone_distance.setter
     def max_zone_distance(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_max_zone_distance(int(val))
         self._params = self.radar.get_parameters()
 
@@ -248,6 +299,7 @@ class RFBeamKMD7Device:
 
     @min_zone_angle.setter
     def min_zone_angle(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_min_zone_angle(int(val))
         self._params = self.radar.get_parameters()
 
@@ -257,6 +309,7 @@ class RFBeamKMD7Device:
 
     @max_zone_angle.setter
     def max_zone_angle(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_max_zone_angle(int(val))
         self._params = self.radar.get_parameters()
 
@@ -266,6 +319,7 @@ class RFBeamKMD7Device:
 
     @min_speed_filter.setter
     def min_speed_filter(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_min_speed_filter(int(val))
         self._params = self.radar.get_parameters()
 
@@ -275,6 +329,7 @@ class RFBeamKMD7Device:
 
     @max_speed_filter.setter
     def max_speed_filter(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_max_speed_filter(int(val))
         self._params = self.radar.get_parameters()
 
@@ -284,6 +339,7 @@ class RFBeamKMD7Device:
 
     @direction_filter.setter
     def direction_filter(self, val: int) -> None:
+        self._ensure_connected()
         self.radar.set_direction_filter(int(val))
         self._params = self.radar.get_parameters()
 
@@ -340,6 +396,7 @@ class RFBeamKMD7Device:
 
     def get_radar_parameters(self) -> Dict[str, Any]:
         """Returns complete parsed radar parameters (GRPS -> RPST)."""
+        self._ensure_connected()
         self._params = self.radar.get_parameters()
         return self._params_to_dict(self._params, self._mode)
 
@@ -348,6 +405,7 @@ class RFBeamKMD7Device:
         if not isinstance(params, dict):
             raise TypeError("params must be a dictionary")
 
+        self._ensure_connected()
         cur = self.radar.get_parameters()
         data: Dict[str, Any] = {
             "firmware": cur.firmware,
@@ -396,11 +454,29 @@ class RFBeamKMD7Device:
             "direction_filter_code": ("direction_filter", int),
         }
 
+        grouped: Dict[str, List[tuple[str, Any]]] = {}
         for key, value in params.items():
+            if key == "mode":
+                continue
             if key not in alias_map:
                 raise ValueError(f"Unknown radar parameter key: {key!r}")
             target_field, converter = alias_map[key]
-            data[target_field] = converter(value)
+            converted = converter(value)
+            grouped.setdefault(target_field, []).append((key, converted))
+
+        for target_field, entries in grouped.items():
+            cur_val = data[target_field]
+            changed = [(k, v) for k, v in entries if v != cur_val]
+            if not changed:
+                continue
+            first_key, first_val = changed[0]
+            for other_key, other_val in changed[1:]:
+                if other_val != first_val:
+                    raise ValueError(
+                        f"Conflicting values for {target_field!r}: "
+                        f"{first_key!r}={first_val!r} vs {other_key!r}={other_val!r}"
+                    )
+            data[target_field] = first_val
 
         new_params = RadarParameters(**data)
         self.radar.set_parameters(new_params)
@@ -415,6 +491,7 @@ class RFBeamKMD7Device:
         max_angle_deg: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Configure detection zone distance (0..100%) and azimuth angle (-30..+30°)."""
+        self._ensure_connected()
         cur = self.radar.get_parameters()
         new_min_d = cur.min_zone_dist_pct if min_dist_pct is None else int(min_dist_pct)
         new_max_d = cur.max_zone_dist_pct if max_dist_pct is None else int(max_dist_pct)
@@ -477,8 +554,7 @@ class RFBeamKMD7Device:
         if mask == 0:
             return self.stop()
 
-        if not self.radar.serial or not self.radar.serial.is_open:
-            self.radar.connect(target_baudrate=self.baudrate)
+        self._ensure_connected()
 
         if not self.radar.is_streaming or self.radar.active_stream_mask != mask:
             self.radar.start_streaming(
@@ -532,8 +608,7 @@ class RFBeamKMD7Device:
         """Unified frame acquisition for both streaming (RDOT) and handshake (GNFD) modes."""
         t = _validate_timeout(timeout)
 
-        if not self.radar.serial or not self.radar.serial.is_open:
-            self.radar.connect(target_baudrate=self.baudrate)
+        self._ensure_connected()
 
         if use_handshake:
             was_streaming = self.radar.is_streaming
@@ -566,7 +641,7 @@ class RFBeamKMD7Device:
                 raw_adc=raw_adc or bool(required_flag & FLAG_RADC),
                 raw_fft=raw_fft or bool(required_flag & FLAG_RFFT),
             )
-        elif required_flag and not (self.radar.active_stream_mask & required_flag):
+        elif required_flag and (self.radar.active_stream_mask & required_flag) != required_flag:
             new_mask = self.radar.active_stream_mask | required_flag | FLAG_DONE
             self.start(bitmask=new_mask)
 
@@ -694,7 +769,11 @@ class RFBeamKMD7Device:
 
     def capture_point_cloud(self, timeout: float = 1.0) -> Dict[str, Any]:
         """Capture one frame and return structured point cloud with NumPy arrays."""
-        frame = self._acquire_frame(timeout=timeout, use_handshake=False)
+        frame = self._acquire_frame(
+            timeout=timeout,
+            required_flag=FLAG_PDAT | FLAG_TDAT,
+            use_handshake=False,
+        )
         return self._format_point_cloud(frame)
 
     def capture_points(
@@ -704,7 +783,12 @@ class RFBeamKMD7Device:
         include_tracked: bool = True,
     ) -> np.ndarray:
         """Capture points as a 2D float32 NumPy array of shape (N, 6)."""
-        frame = self._acquire_frame(timeout=timeout, use_handshake=False)
+        required_flag = (FLAG_PDAT if include_raw else 0) | (FLAG_TDAT if include_tracked else 0)
+        frame = self._acquire_frame(
+            timeout=timeout,
+            required_flag=required_flag,
+            use_handshake=False,
+        )
         if not frame:
             return np.empty((0, 6), dtype=np.float32)
 
@@ -724,7 +808,11 @@ class RFBeamKMD7Device:
 
     def capture_targets(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
         """Capture active tracked targets as a list of dictionaries."""
-        frame = self._acquire_frame(timeout=timeout, use_handshake=False)
+        frame = self._acquire_frame(
+            timeout=timeout,
+            required_flag=FLAG_TDAT,
+            use_handshake=False,
+        )
         if not frame or not frame.tracked_targets:
             return []
 
@@ -894,19 +982,28 @@ class RFBeamKMD7Schema(DeviceSchema):
             print("[rfbeam_kmd7] Ensure the sensor is connected via USB and FTDI drivers are loaded.")
             return None
 
+        dev: Optional[RFBeamKMD7Device] = None
         try:
             print(f"[rfbeam_kmd7] Initializing RFbeam K-MD7 radar on {port} (Mode: '{mode}')...")
             dev = RFBeamKMD7Device(port=port, baudrate=baudrate, mode=mode)
             dev.connect()
 
             if frequency_channel is not None:
-                dev.frequency_channel = int(frequency_channel)
+                val = int(frequency_channel)
+                dev.frequency_channel = val
+                dev._init_overrides["frequency_channel"] = val
             if max_range is not None:
-                dev.max_range = float(max_range)
+                val = float(max_range)
+                dev.max_range = val
+                dev._init_overrides["max_range"] = val
             if max_speed is not None:
-                dev.max_speed = float(max_speed)
+                val = float(max_speed)
+                dev.max_speed = val
+                dev._init_overrides["max_speed"] = val
             if threshold_offset is not None:
-                dev.threshold_offset = int(threshold_offset)
+                val = int(threshold_offset)
+                dev.threshold_offset = val
+                dev._init_overrides["threshold_offset"] = val
 
             if auto_start:
                 dev.start()
@@ -916,6 +1013,11 @@ class RFBeamKMD7Schema(DeviceSchema):
 
         except Exception as exc:
             print(f"[rfbeam_kmd7] Failed to initialize radar device: {exc}")
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
             return None
 
     # -------------------------------------------------------------------------
@@ -1222,6 +1324,7 @@ class RFBeamKMD7Schema(DeviceSchema):
 
     @idl_expose(kind="call", doc="Restore factory default settings (RFSE).")
     def call_restore_factory_settings(self) -> bool:
+        self.device._ensure_connected()
         self.device.radar.restore_factory_settings()
         self.device._mode = "traffic"
         self.device._params = self.device.radar.get_parameters()
@@ -1266,27 +1369,29 @@ class RFBeamKMD7Schema(DeviceSchema):
 
         dev = self.device
         try:
-            if not dev.radar.serial or not getattr(dev.radar.serial, "is_open", False):
-                dev.radar.connect(target_baudrate=dev._init_baudrate)
-                dev.baudrate = dev.radar.baudrate
-
-            dev.stop()
-            dev.radar.restore_factory_settings()
-
-            if dev._init_mode in ("indoor", "traffic"):
-                dev.radar.configure_mode(dev._init_mode)
-                dev._mode = dev._init_mode
-
-            if dev.radar.baudrate != dev._init_baudrate:
-                dev.radar.set_baudrate(dev._init_baudrate)
-                dev.baudrate = dev.radar.baudrate
-
-            dev.flush()
-            dev._params = dev.radar.get_parameters()
-        except Exception as exc:
-            print(f"[rfbeam_kmd7] Warning during reset_for_next_holder: {exc}")
+            dev._restore_baseline()
+        except Exception:
+            dev._params = None
+            dev._is_running = False
+            try:
+                dev.radar.disconnect()
+            except Exception:
+                pass
+            try:
+                dev._restore_baseline()
+            except Exception:
+                dev._params = None
+                dev._is_running = False
+                dev.baudrate = dev._init_baudrate
+                dev.radar.baudrate = dev._init_baudrate
+                try:
+                    dev.radar.disconnect()
+                except Exception:
+                    pass
+            raise
         finally:
             dev._total_frames = 0
             dev._dropped_frames = 0
             dev._last_frame_time = 0.0
             dev._fps_ema = 0.0
+            dev.radar.total_bytes_read = 0

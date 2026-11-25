@@ -458,6 +458,9 @@ class KMD7Radar:
                     f"Failed to connect on {self.port_name}: {first_err} "
                     f"(recovery failed: {recovery_err})"
                 ) from first_err
+        except Exception:
+            self._close_serial()
+            raise
 
         self.is_streaming = False
         self.active_stream_mask = 0
