@@ -347,6 +347,10 @@ _told: set = set()  # x@lab strings whose refusal ("why") was already printed
 _auto_tried: set = set()  # x@lab handles auto-reservation already tried for in this process
 
 
+class _UnknownHandleError(RuntimeError):
+    pass
+
+
 def _unreachable(dep):
     return RuntimeError(
         f"can't reach {dep}: log in with remoterf --login {dep} or use a token from {dep}"
@@ -358,9 +362,7 @@ def device_route(token: str, *, refresh: bool = False) -> DeviceRoute:
     if route is not None:
         return route
     with _routes_lock:
-        if refresh:
-            _routes.pop(token, None)
-        route = _routes.get(token)
+        route = None if refresh else _routes.get(token)
         if route is None:
             route = _routes[token] = _resolve(token)
     return route
@@ -377,7 +379,12 @@ def renewed_route(token, route, refusal):
     # Every lab refusal of a token says "invalid token": v1, IDL and v2 alike.
     if "invalid token" not in str(refusal or "") or "@" not in token or route.kind == "global":
         return None
-    fresh = device_route(token, refresh=True)
+    try:
+        fresh = device_route(token, refresh=True)
+    except _UnknownHandleError:
+        if route.res_id is None:
+            return None
+        raise
     if route.res_id is not None and fresh.res_id is None:
         # A refusal keeps the driver's reservation: the next re-resolve compares against it.
         with _routes_lock:
@@ -485,10 +492,9 @@ def _lab(t, x, dep, connection):
     if "Token" not in results:
         return DeviceRoute(x, kind, connection)
     error = unmap_arg(results["error"]) if "error" in results else None
-    why = unmap_arg(results["why"]) if "why" in results else None
-    if error == "unknown_handle" or (isinstance(why, str) and why.startswith("no device ")):
-        raise RuntimeError(f"No device {x} at {dep}")
-    if error == "ambiguous_handle" or (isinstance(why, str) and why.startswith("more than one device")):
+    if error == "unknown_handle":
+        raise _UnknownHandleError(f"No device {x} at {dep}")
+    if error == "ambiguous_handle":
         raise RuntimeError(f"More than one device matches {x} at {dep}")
     # Only a handle's first lookup in a process books: a refresh when a reservation ends
     # (renewed_route) must not book the next slot, which the driver refuses anyway.

@@ -141,6 +141,10 @@ def _clear_failures(key: str) -> None:
 
 # ACC:availability: at most one call per interval per account.
 AVAILABILITY_WINDOW_SEC = 6 * 3600
+# Retired reservation tokens stay recognizable to ACC:device_token for a week so
+# expired or cancelled raw <token>@<lab> tokens reach the device plane instead of
+# looking like unknown handles.
+RETIRED_TOKEN_RETENTION_SEC = 7 * 86400
 try:
     _AVAIL_INTERVAL = float(os.getenv("REMOTERF_AVAILABILITY_INTERVAL_SEC", "10"))
 except ValueError:
@@ -354,6 +358,24 @@ class ReservationHandler:
             created_at TIMESTAMP NOT NULL,
             last_used_at TIMESTAMP NOT NULL
         )
+        ''')
+
+        # Recently expired or cancelled reservation tokens: kept briefly so
+        # ACC:device_token lets the device plane reject them as expired/invalid
+        # instead of reporting them as unknown device handles.
+        self.cursor.executescript('''
+        CREATE TABLE IF NOT EXISTS RetiredTokens (
+            salt TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            retired_at INTEGER NOT NULL,
+            PRIMARY KEY (salt, hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_retired_tokens_retired_at ON RetiredTokens(retired_at);
+        CREATE TRIGGER IF NOT EXISTS retired_tokens_del AFTER DELETE ON Reservations
+        WHEN OLD.salt != '' AND OLD.hash != '' BEGIN
+            INSERT OR REPLACE INTO RetiredTokens (salt, hash, retired_at)
+            VALUES (OLD.salt, OLD.hash, CAST(strftime('%s', 'now') AS INTEGER));
+        END;
         ''')
         
         self.cursor.close()
@@ -954,6 +976,7 @@ class ReservationHandler:
                 self.cursor.execute('DROP TABLE IF EXISTS Accounts')
                 self.cursor.execute('DROP TABLE IF EXISTS Reservations')
                 self.cursor.execute('DROP TABLE IF EXISTS ClientSessions')
+                self.cursor.execute('DROP TABLE IF EXISTS RetiredTokens')
                 perms.rm_db()
                 sys.exit()
     
@@ -1613,7 +1636,13 @@ class ReservationHandler:
                     return True
             except Exception:
                 pass
-        rows = self.cursor.execute("SELECT salt, hash FROM Reservations").fetchall()
+        cutoff = int(time.time()) - RETIRED_TOKEN_RETENTION_SEC
+        rows = self.cursor.execute(
+            "SELECT salt, hash FROM Reservations "
+            "UNION ALL "
+            "SELECT salt, hash FROM RetiredTokens WHERE retired_at >= ?",
+            (cutoff,),
+        ).fetchall()
         for salt, hsh in rows:
             if not (salt and hsh):
                 continue
@@ -1636,14 +1665,12 @@ class ReservationHandler:
             if ambiguous:
                 return {
                     "Token": map_arg(handle),
-                    "why": map_arg(f"more than one device matches {handle}"),
                     "error": map_arg("ambiguous_handle"),
                 }
             if self._is_passthrough_token(handle):
                 return {"Token": map_arg(handle)}
             return {
                 "Token": map_arg(handle),
-                "why": map_arg(f"no device {handle} here"),
                 "error": map_arg("unknown_handle"),
             }
         why = {"Token": map_arg(handle), "why": map_arg(f"no active reservation of yours on {handle} right now")}
@@ -2063,6 +2090,10 @@ class ReservationHandler:
         # Clean expired reservations for devices we actually know locally
         for k in list(devices.keys()):
             self._clean_expired_reservations(str(k).strip())
+        self.cursor.execute(
+            "DELETE FROM RetiredTokens WHERE retired_at < ?",
+            (int(time.time()) - RETIRED_TOKEN_RETENTION_SEC,),
+        )
 
         self.cursor.execute("SELECT * FROM Reservations")
         reservations = self.cursor.fetchall()

@@ -16,7 +16,7 @@ from unittest import mock
 import yaml
 
 from remoteRF_server.common.grpc import grpc_host_pb2, grpc_pb2
-from remoteRF_server.common.utils import hash_token, map_arg, unmap_arg
+from remoteRF_server.common.utils import generate_token, hash_token, map_arg, unmap_arg
 from remoteRF_server.server import device_manager as dm
 
 GID = 4300
@@ -365,7 +365,7 @@ class DeviceTokenExchangeTests(_Devices):
         self._reserve("alice")
         self.assertEqual(
             self._exchange("Pluto B"),
-            {"Token": "Pluto B", "why": "no device Pluto B here", "error": "unknown_handle"},
+            {"Token": "Pluto B", "error": "unknown_handle"},
         )
         dm._devices[GID + 1] = _state(name="RTL-SDR 00")
         for typed in ("RTLSDR_00", "rtlsdr00", "RTL SDR 00"):
@@ -377,12 +377,41 @@ class DeviceTokenExchangeTests(_Devices):
         dm._devices[GID + 2] = _state(name="RTLSDR 00")
         self.assertEqual(
             self._exchange("rtlsdr00"),
-            {"Token": "rtlsdr00", "why": "more than one device matches rtlsdr00", "error": "ambiguous_handle"},
+            {"Token": "rtlsdr00", "error": "ambiguous_handle"},
         )
         self.assertEqual(
             self._exchange("rtl_sdr_00"),
             {"Token": "rtl_sdr_00", "why": "no active reservation of yours on rtl_sdr_00 right now"},
         )
+
+    def test_unknown_and_ambiguous_handles_omit_why_for_older_clients(self):
+        self._reserve("alice")
+        unknown = self._exchange("Pluto B")
+        self.assertEqual(unknown, {"Token": "Pluto B", "error": "unknown_handle"})
+        self.assertNotIn("why", unknown)
+        dm._devices[GID + 1] = _state(name="RTL-SDR 00")
+        dm._devices[GID + 2] = _state(name="RTLSDR 00")
+        ambiguous = self._exchange("rtlsdr00")
+        self.assertEqual(ambiguous, {"Token": "rtlsdr00", "error": "ambiguous_handle"})
+        self.assertNotIn("why", ambiguous)
+
+    def test_expired_and_cancelled_raw_tokens_pass_through_until_purged(self):
+        exp_salt, exp_hash, exp_token = generate_token()
+        self._reserve("alice", salt=exp_salt, hsh=exp_hash, end="2026-01-01 00:01:00")
+        self.h.update_devices()
+        self.assertEqual(self._exchange(exp_token), {"Token": exp_token})
+
+        can_salt, can_hash, can_token = generate_token()
+        res_id = self._reserve("alice", salt=can_salt, hsh=can_hash)
+        self.h.remove_reservation(res_id=res_id)
+        self.h.update_devices()
+        self.assertEqual(self._exchange(can_token), {"Token": can_token})
+
+        with sqlite3.connect(self.h.filepath) as conn:
+            conn.execute("UPDATE RetiredTokens SET retired_at = 0 WHERE salt = ?", (exp_salt,))
+        self.h.update_devices()
+        self.assertEqual(self._exchange(exp_token), {"Token": exp_token, "error": "unknown_handle"})
+        self.assertEqual(self._exchange(can_token), {"Token": can_token})
 
     def test_a_super_token_passes_through_to_the_device_plane(self):
         self._reserve("alice")  # held: only the _force form takes it over

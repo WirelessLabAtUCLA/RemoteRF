@@ -227,8 +227,9 @@ def test_the_lab_decides_handle_or_token(monkeypatch, routes, capsys, reply, wir
 
 
 @pytest.mark.parametrize("reply, expected", [
+    ({"Token": "Nope", "error": "unknown_handle"}, "No device Nope at ucla"),
     ({"Token": "Nope", "why": "no device Nope here", "error": "unknown_handle"}, "No device Nope at ucla"),
-    ({"Token": "Nope", "why": "no device Nope here"}, "No device Nope at ucla"),
+    ({"Token": "Nope", "error": "ambiguous_handle"}, "More than one device matches Nope at ucla"),
     ({"Token": "Nope", "why": "more than one device matches Nope", "error": "ambiguous_handle"},
      "More than one device matches Nope at ucla"),
 ])
@@ -488,6 +489,61 @@ def test_v2_renews_a_dead_bridge_token_once(monkeypatch, routes):
     with pytest.raises(RemoteRFReservationError):
         DynamicV2Transport(control_stub=Control(), sample_stub=object()).open_session("PlutoA@ucla", "h")
     assert sent == ["bridge-1", "bridge-2"]
+
+
+def test_raw_token_mid_session_expiry_preserves_device_plane_error(monkeypatch, routes):
+    from remoterf.core.v2_errors import RemoteRFReservationError
+
+    _login(monkeypatch)
+    tok = "Ab3xY9kLm0Q"
+    answers = iter([
+        {"Token": tok},
+        {"Token": tok, "error": "unknown_handle"},
+        {"Token": tok, "error": "unknown_handle"},
+    ])
+    routes.replies["ACC:device_token"] = lambda args: next(answers)
+
+    class Control:
+        def OpenSession(self, request, timeout=None):
+            return grpc_pb2.OpenSessionResponse(error=grpc_pb2.ErrorEnvelope(
+                code="RemoteRFReservationError", message="invalid token or inactive reservation"))
+
+    # Initial resolution caches route with res_id=None; mid-session unknown_handle
+    # during renewal must not replace RemoteRFReservationError with RuntimeError.
+    assert grpc_client.device_route(f"{tok}@ucla") == grpc_client.DeviceRoute(tok, "active", res_id=None)
+    with pytest.raises(RemoteRFReservationError, match="invalid token"):
+        DynamicV2Transport(control_stub=Control(), sample_stub=object()).open_session(f"{tok}@ucla", "h")
+
+    # Same for v1 calls: device plane's invalid-token refusal stays intact.
+    routes.replies[GET] = {"a": "no device available / invalid token"}
+    with pytest.raises(RuntimeError, match="invalid token"):
+        _call(f"{tok}@ucla")
+
+
+@pytest.mark.parametrize("transient, expected_err", [
+    ({"Token": "PlutoA", "error": "unknown_handle"}, "No device PlutoA at ucla"),
+    ({"Token": "PlutoA", "error": "ambiguous_handle"}, "More than one device matches PlutoA at ucla"),
+])
+def test_transient_handle_miss_during_renewal_keeps_reservation_guard(monkeypatch, routes, transient, expected_err):
+    _login(monkeypatch)
+    answers = iter([
+        {"Token": "bridge-1", "res_id": 7},
+        transient,
+        {"Token": "bridge-2", "res_id": 8},
+    ])
+    routes.replies["ACC:device_token"] = lambda args: next(answers)
+    live = {"bridge-1"}
+    routes.replies[GET] = lambda args: {"tx_lo": 5} if args["a"] in live else {"a": "no device available / invalid token"}
+
+    assert unmap_arg(_call().results["tx_lo"]) == 5
+    live.clear()
+    with pytest.raises(RuntimeError, match=f"^{expected_err}$"):
+        _call()
+    assert grpc_client._routes["PlutoA@ucla"].res_id == 7
+
+    live.add("bridge-2")
+    with pytest.raises(RuntimeError, match="reservation changed; create the driver again"):
+        _call()
 
 
 # ── Global users ─────────────────────────────────────────────────────
