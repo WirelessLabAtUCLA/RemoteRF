@@ -173,7 +173,7 @@ def test_the_resdev_picker_lists_offline_deployments_before_the_footer(monkeypat
 
 
 def test_reservation_rows_name_the_device_and_offline_deployments(monkeypatch):
-    start = datetime.datetime(2026, 10, 14, 9).timestamp()
+    start = datetime.datetime(2099, 10, 14, 9).timestamp()
     res = lambda device: {"device_id": f"{DEST}:{device}", "deployment_id": DEST, "mine": True,
                           "start_time": start, "end_time": start + 1800}
     account = Mock(is_https_home=True)
@@ -181,8 +181,8 @@ def test_reservation_rows_name_the_device_and_offline_deployments(monkeypatch):
     account.get_devices.return_value = {"destinations": [], "devices": [_dev("Bluetooth Dongle")]}
     client_app, lines = _app(monkeypatch, account)
     client_app._federated_reservations(mine_only=True)
-    assert _row(lines, "Bluetooth_Dongle@ucla", "2026-10-14", "from", "09:00", "AM", "to", "09:30", "AM")
-    assert _row(lines, "unlisted", "device@ucla", "2026-10-14", "from", "09:00", "AM", "to", "09:30", "AM")
+    assert _row(lines, "Bluetooth_Dongle@ucla", "2099-10-14", "from", "09:00", "AM", "to", "09:30", "AM")
+    assert _row(lines, "unlisted", "device@ucla", "2099-10-14", "from", "09:00", "AM", "to", "09:30", "AM")
     assert lines[-3].strip("│ ") == "" and lines[-2].strip("│ ") == "@mit (offline)"
     lines.clear()
     account.get_reservations.return_value["reservations"] = []
@@ -192,7 +192,7 @@ def test_reservation_rows_name_the_device_and_offline_deployments(monkeypatch):
 
 def test_reservation_rows_name_the_device_not_the_owner_label(monkeypatch):
     # The lab's display_name on a reservation is "you"/"reserved", not a device.
-    start = datetime.datetime(2026, 11, 7, 10).timestamp()
+    start = datetime.datetime(2099, 11, 7, 10).timestamp()
     res = lambda device, owner, mine: {"device_id": f"{DEST}:{device}", "deployment_id": DEST, "display_name": owner,
                                        "mine": mine, "start_time": start, "end_time": start + 3600}
     account = Mock(is_https_home=True)
@@ -201,7 +201,7 @@ def test_reservation_rows_name_the_device_not_the_owner_label(monkeypatch):
     account.get_devices.return_value = {"destinations": [], "devices": [
         _dev("Pluto SDR", handle="Pluto_A"), _dev("Bluetooth Dongle")]}
     client_app, lines = _app(monkeypatch, account)
-    when = ("2026-11-07", "from", "10:00", "AM", "to", "11:00", "AM")
+    when = ("2099-11-07", "from", "10:00", "AM", "to", "11:00", "AM")
     client_app._federated_reservations(mine_only=False)
     assert _row(lines, "Pluto_A@ucla", "(you)", *when)
     assert _row(lines, "Bluetooth_Dongle@ucla", *when)

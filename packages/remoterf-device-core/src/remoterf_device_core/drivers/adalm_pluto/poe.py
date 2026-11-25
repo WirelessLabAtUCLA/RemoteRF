@@ -202,7 +202,12 @@ class PoePluto:
         with self._lock:
             # Drop the handle while the Pluto can still answer its buffer teardown.
             vars(self)["_pluto"] = None
-            self._poe(False)
+            try:
+                self._poe(False)
+            except Exception as e:
+                # The port may still be powered: report a fault, not standby.
+                vars(self)["fault"] = f"PoE power-off failed on {self._port}: {e}"
+                raise
 
     def power_cycle(self):
         with self._lock:
