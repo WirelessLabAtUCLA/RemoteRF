@@ -9,6 +9,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -453,6 +455,27 @@ class SafeRestartCLITests(unittest.TestCase):
         self.assertIn("Safe to restart now", out_ok)
         call.assert_not_called()
 
+    def test_cli_backs_off_after_a_busy_daemon_even_when_the_clock_moves(self):
+        _seed_reservations_db(self.db_path, [])
+        clock = FakeClock(datetime(2026, 11, 24, 23, 0, 0))
+        start, ticks = clock.current, [0.0]
+
+        def mono():
+            ticks[0] += 0.001  # a real monotonic clock always moves a little between reads
+            return (clock.current - start).total_seconds() + ticks[0]
+
+        replies = [(safe_restart.BUSY_EXIT_CODE, "busy\n"), (safe_restart.BUSY_EXIT_CODE, "busy\n"), (0, "")]
+        with mock.patch.object(control, "running", return_value=True), \
+                mock.patch.object(control, "call", side_effect=lambda *a, **k: replies.pop(0)) as call, \
+                mock.patch.object(safe_restart, "_make_monotonic", lambda *_a, **_k: mono), \
+                mock.patch.object(safe_restart, "_now", clock.now), \
+                mock.patch.object(safe_restart, "_sleep", clock.sleep):
+            rc, out, err = self.run_shell(["restart", "--safe", "--within", "10"])
+
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual(clock.sleeps, [30.0, 30.0])
+
     def test_cli_restart_safe_non_interactive_waits_then_restarts_like_plain_restart(self):
         _seed_reservations_db(
             self.db_path,
@@ -472,7 +495,10 @@ class SafeRestartCLITests(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(err, "")
         self.assertEqual(clock.sleeps, [30.0, 30.0])
-        call.assert_called_once_with(["restart"], timeout=30.0)
+        call.assert_called_once_with(
+            ["restart", "--safe", "--within", "15", "--max-wait", "0"],
+            timeout=30.0,
+        )
         self.assertIn("waiting: 1 reservation (Pluto 00 until 23:01); next idle window 23:01", out)
 
         # Plain restart (no --safe) still dispatches immediately even while a reservation is active.
@@ -513,7 +539,10 @@ class SafeRestartCLITests(unittest.TestCase):
 
         self.assertEqual((rc, err), (0, ""))
         self.assertEqual(clock.sleeps, [30.0])
-        call.assert_called_once_with(["restart"], timeout=30.0)
+        call.assert_called_once_with(
+            ["restart", "--safe", "--within", "15", "--max-wait", "0"],
+            timeout=30.0,
+        )
         self.assertIn("Pluto 00 until 23:30", out)
 
     def test_cli_restart_safe_timeout_does_not_restart(self):
@@ -578,7 +607,10 @@ class SafeRestartCLITests(unittest.TestCase):
             rc, out, err = self.run_shell(["reload", "devices", "--safe"])
         self.assertEqual(rc, 0, err)
         self.assertEqual(clock.sleeps, [30.0, 30.0])
-        call.assert_called_once_with(["reload", "devices"], timeout=120.0)
+        call.assert_called_once_with(
+            ["reload", "devices", "--safe", "--within", "15", "--max-wait", "0"],
+            timeout=120.0,
+        )
         self.assertIn("USRP 00 until 23:01", out)
 
     def test_unreadable_database_fails_closed(self):
@@ -590,6 +622,181 @@ class SafeRestartCLITests(unittest.TestCase):
         self.assertEqual(rc, 1)
         call.assert_not_called()
         self.assertIn("ERROR:", err)
+
+    def test_missing_database_while_server_running_fails_closed(self):
+        self.assertFalse(self.db_path.exists())
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(control, "running", return_value=True):
+            rc = safe_restart.wait_until_safe(
+                action="restart",
+                db_path=self.db_path,
+                out=out,
+                err=err,
+            )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ERROR:", err.getvalue())
+        self.assertIn("reservations.db", err.getvalue())
+        self.assertIn("server not restarted", err.getvalue())
+
+        with mock.patch.object(control, "running", return_value=True), \
+                mock.patch.object(control, "call") as call:
+            rc_cli, _, err_cli = self.run_shell(["restart", "--safe"])
+        self.assertEqual(rc_cli, 1)
+        call.assert_not_called()
+        self.assertIn("ERROR:", err_cli)
+        self.assertIn("server not restarted", err_cli)
+
+        with mock.patch.object(control, "running", return_value=True), \
+                mock.patch.object(control, "call") as call:
+            rc_rel, _, err_rel = self.run_shell(["reload", "devices", "--safe"])
+        self.assertEqual(rc_rel, 1)
+        call.assert_not_called()
+        self.assertIn("ERROR:", err_rel)
+        self.assertIn("devices not reloaded", err_rel)
+
+        # When the server is not running, direct wait_until_safe still treats a missing db as empty.
+        out_off, err_off = io.StringIO(), io.StringIO()
+        with mock.patch.object(control, "running", return_value=False):
+            rc_off = safe_restart.wait_until_safe(
+                action="restart",
+                db_path=self.db_path,
+                out=out_off,
+                err=err_off,
+            )
+        self.assertEqual(rc_off, 0)
+        self.assertEqual(err_off.getvalue(), "")
+
+    def test_cli_restart_safe_when_server_stopped_does_not_wait(self):
+        from remoteRF_server.server import console
+
+        _seed_reservations_db(
+            self.db_path,
+            [(1, "alice", 0, "2026-11-24 23:00:00", "2026-11-25 00:00:00")],
+        )
+        clock = FakeClock(datetime(2026, 11, 24, 23, 0, 0))
+
+        # With tmux available: starts detached immediately without waiting.
+        with mock.patch.object(control, "running", return_value=False), \
+                mock.patch.object(console, "available", return_value=True), \
+                mock.patch.object(console, "start_detached", return_value=True) as start_detached, \
+                mock.patch.object(safe_restart, "_now", clock.now), \
+                mock.patch.object(safe_restart, "_sleep", clock.sleep):
+            rc, out, err = self.run_shell(["restart", "--safe"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(clock.sleeps, [])
+        self.assertIn("Server started.", out)
+        start_detached.assert_called_once()
+
+        # Without tmux: fails immediately with not-running error and no wait.
+        clock.sleeps.clear()
+        with mock.patch.object(control, "running", return_value=False), \
+                mock.patch.object(console, "available", return_value=False), \
+                mock.patch.object(safe_restart, "_now", clock.now), \
+                mock.patch.object(safe_restart, "_sleep", clock.sleep):
+            rc2, out2, err2 = self.run_shell(["restart", "--safe"])
+        self.assertEqual(rc2, 1)
+        self.assertEqual(clock.sleeps, [])
+        self.assertIn("not running", out2 + err2)
+        self.assertNotIn("Idle window reached", out2)
+
+    def test_cli_safe_rechecks_in_daemon_and_loops_back_when_booked_in_gap(self):
+        env = mock.patch.dict(
+            os.environ,
+            {
+                "GRPC_PORT": os.environ.get("GRPC_PORT", "61005"),
+                "CERT_PORT": os.environ.get("CERT_PORT", "61006"),
+                "REMOTERF_BIND_HOST": os.environ.get("REMOTERF_BIND_HOST", "127.0.0.1"),
+            },
+        )
+        with env:
+            from remoteRF_server.server import grpc_server
+
+            _seed_reservations_db(self.db_path, [])
+            clock = FakeClock(datetime(2026, 11, 24, 23, 0, 0))
+            seen_calls: list[tuple[list[str], float]] = []
+
+            def fake_call(argv, *, timeout=30.0, **kwargs):
+                seen_calls.append((list(argv), timeout))
+                if len(seen_calls) == 1:
+                    # Student books an immediate reservation after CLI check, before daemon acts.
+                    _seed_reservations_db(
+                        self.db_path,
+                        [(1, "alice", 0, "2026-11-24 23:00:00", "2026-11-24 23:01:00")],
+                    )
+                buf = io.StringIO()
+                prev = getattr(control._bridge, "current", None)
+                control._bridge.current = object()
+                try:
+                    with contextlib.redirect_stdout(buf):
+                        rc = grpc_server.control_handler(argv)
+                finally:
+                    control._bridge.current = prev
+                return rc, buf.getvalue()
+
+            with mock.patch.object(control, "running", return_value=True), \
+                    mock.patch.object(control, "call", side_effect=fake_call), \
+                    mock.patch.object(grpc_server.reservation_handler, "filepath", self.db_path), \
+                    mock.patch.object(grpc_server, "_request_exit") as req_exit, \
+                    mock.patch.object(safe_restart, "live_device_names", return_value={0: "Pluto 00"}), \
+                    mock.patch.object(safe_restart, "_now", clock.now), \
+                    mock.patch.object(safe_restart, "_sleep", clock.sleep):
+                rc, out, err = self.run_shell(["restart", "--safe", "--within", "10"])
+
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(
+                seen_calls,
+                [
+                    (["restart", "--safe", "--within", "10", "--max-wait", "0"], 30.0),
+                    (["restart", "--safe", "--within", "10", "--max-wait", "0"], 30.0),
+                ],
+            )
+            req_exit.assert_called_once_with("restart")
+            self.assertEqual(clock.sleeps, [30.0, 30.0])
+            self.assertIn("waiting: 1 reservation (Pluto 00 until 23:01)", out)
+
+            # Same protection for reload devices --safe with --max-wait 0: refuses without reloading.
+            _seed_reservations_db(self.db_path, [])
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM Reservations")
+                conn.commit()
+            zero_clock = FakeClock(datetime(2026, 11, 24, 23, 0, 0))
+            reload_calls: list[tuple[list[str], float]] = []
+
+            def fake_reload_call(argv, *, timeout=30.0, **kwargs):
+                reload_calls.append((list(argv), timeout))
+                _seed_reservations_db(
+                    self.db_path,
+                    [(2, "bob", 0, "2026-11-24 23:04:00", "2026-11-24 23:20:00")],
+                )
+                buf = io.StringIO()
+                prev = getattr(control._bridge, "current", None)
+                control._bridge.current = object()
+                try:
+                    with contextlib.redirect_stdout(buf):
+                        rc = grpc_server.control_handler(argv)
+                finally:
+                    control._bridge.current = prev
+                return rc, buf.getvalue()
+
+            with mock.patch.object(control, "running", return_value=True), \
+                    mock.patch.object(control, "call", side_effect=fake_reload_call), \
+                    mock.patch.object(grpc_server.reservation_handler, "filepath", self.db_path), \
+                    mock.patch("remoteRF_server.server.device_manager.reload_devices") as reload_dev, \
+                    mock.patch.object(safe_restart, "live_device_names", return_value={0: "Pluto 00"}), \
+                    mock.patch.object(safe_restart, "_now", zero_clock.now), \
+                    mock.patch.object(safe_restart, "_sleep", zero_clock.sleep):
+                rc_rel, _, err_rel = self.run_shell(
+                    ["reload", "devices", "--safe", "--within", "5", "--max-wait", "0"]
+                )
+
+            self.assertEqual(rc_rel, 1)
+            reload_dev.assert_not_called()
+            self.assertEqual(
+                reload_calls,
+                [(["reload", "devices", "--safe", "--within", "5", "--max-wait", "0"], 120.0)],
+            )
+            self.assertIn("Timed out after 0 min", err_rel)
+            self.assertIn("devices not reloaded", err_rel)
 
     def test_help_text_explains_safe_restart_for_upgrades(self):
         from prompt_toolkit.application import create_app_session
@@ -717,6 +924,197 @@ class SafeRestartConsoleTests(unittest.TestCase):
         self.assertEqual(run_cmd(["restart", "--safe", "--check"]), "")
         self.assertEqual(run_cmd(["restart", "--help"]), "")
         self.assertEqual(run_cmd(["restart", "--within", "10"]), "")
+
+    def test_console_safe_wait_aborts_immediately_on_external_stop_without_overwriting_exit_action(self):
+        _seed_reservations_db(
+            self.db_path,
+            [(1, "alice", 0, "2026-11-24 23:00:00", "2026-11-25 00:00:00")],
+        )
+        prev_runtime = self.grpc_server._runtime
+        prev_exit = self.grpc_server._exit_action
+        prev_session = self.grpc_server.session
+        self.addCleanup(setattr, self.grpc_server, "_runtime", prev_runtime)
+        self.addCleanup(setattr, self.grpc_server, "_exit_action", prev_exit)
+        self.addCleanup(setattr, self.grpc_server, "session", prev_session)
+
+        # Part 1: real stop_event.wait wakeup (no _sleep patch) aborts immediately on _request_exit("quit").
+        stop_event = threading.Event()
+        self.grpc_server._runtime = SimpleNamespace(stop_event=stop_event)
+        self.grpc_server._exit_action = None
+        self.grpc_server.session = SimpleNamespace(app=SimpleNamespace(is_running=False, loop=None))
+
+        result: dict[str, object] = {}
+        entered = threading.Event()
+
+        def run_console_wait():
+            entered.set()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                result["keep_running"] = self.grpc_server.server_input("restart --safe")
+
+        with mock.patch.object(self.grpc_server.reservation_handler, "filepath", self.db_path), \
+                mock.patch.object(safe_restart, "live_device_names", return_value={0: "Pluto 00"}), \
+                mock.patch.object(safe_restart, "_now", lambda: datetime(2026, 11, 24, 23, 0, 0)):
+            worker = threading.Thread(target=run_console_wait, daemon=True)
+            started = time.monotonic()
+            worker.start()
+            entered.wait(timeout=2.0)
+            time.sleep(0.05)
+            self.grpc_server._request_exit("quit")
+            worker.join(timeout=2.0)
+            elapsed = time.monotonic() - started
+
+        self.assertFalse(worker.is_alive(), "console restart --safe did not wake up when stop_event was set")
+        self.assertLess(elapsed, 2.0)
+        self.assertIs(result.get("keep_running"), False)
+        self.assertEqual(self.grpc_server._exit_action, "quit")
+
+        # Part 2: reload devices --safe also aborts on external stop without reloading devices.
+        stop_event2 = threading.Event()
+        self.grpc_server._runtime = SimpleNamespace(stop_event=stop_event2)
+        self.grpc_server._exit_action = None
+        clock = FakeClock(datetime(2026, 11, 24, 23, 0, 0))
+        clock.on_sleep.append(lambda _now: self.grpc_server._request_exit("quit"))
+
+        with mock.patch.object(self.grpc_server.reservation_handler, "filepath", self.db_path), \
+                mock.patch.object(safe_restart, "live_device_names", return_value={0: "Pluto 00"}), \
+                mock.patch.object(safe_restart, "_now", clock.now), \
+                mock.patch.object(safe_restart, "_sleep", clock.sleep), \
+                mock.patch("remoteRF_server.server.device_manager.reload_devices") as reload_dev, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            keep_running = self.grpc_server.server_input("reload devices --safe")
+
+        self.assertFalse(keep_running)
+        self.assertEqual(self.grpc_server._exit_action, "quit")
+        reload_dev.assert_not_called()
+
+    def test_remote_admin_watchdog_suspends_idle_timeout_during_safe_wait(self):
+        from remoteRF_server.server import remote_admin as ra
+        from remoteRF_server.server import remote_admin_ssh as ssh
+
+        cfg = Path(self.tmp.name) / "ra_cfg"
+        env = {
+            "XDG_CONFIG_HOME": str(cfg),
+            "XDG_DATA_HOME": str(cfg / "data"),
+            "REMOTERF_CONFIG_DIR": str(cfg / "remoterf"),
+        }
+
+        class TickEvent:
+            def __init__(self, hooks):
+                self._hooks = list(hooks)
+                self._idx = 0
+
+            def wait(self, _timeout=None):
+                if self._idx >= len(self._hooks):
+                    return True
+                hook = self._hooks[self._idx]
+                self._idx += 1
+                if hook is not None:
+                    hook()
+                return False
+
+        with mock.patch.dict(os.environ, env):
+            base = 1000.0
+            now = [base]
+
+            def make_session():
+                with mock.patch.object(ssh.time, "monotonic", lambda: base):
+                    return ssh._Session(1, "jdoe", "SHA256:dev", "lan", "laptop")
+
+            # 1. Open `restart --safe` suspends 15-minute idle kill, then refreshes idle clock on command_end.
+            sid = "sess-safe-1"
+            sess = make_session()
+            ra.audit(
+                "command",
+                admin="jdoe",
+                session_id=sid,
+                detail={"command": "restart", "argv": ["restart", "--safe"], "tier": "write"},
+            )
+            ended_ticks: list[str | None] = []
+
+            def tick1():
+                now[0] = base + ssh.IDLE_SECONDS + 300.0  # 20 min idle while waiting
+
+            def tick2():
+                ended_ticks.append(sess.ended)
+                ra.audit(
+                    "command_end",
+                    admin="jdoe",
+                    session_id=sid,
+                    detail={"command": "restart", "argv": ["restart", "--safe"], "tier": "write", "ms": 1200000},
+                    rc=1,
+                )
+                now[0] = base + ssh.IDLE_SECONDS + 301.0
+
+            def tick3():
+                ended_ticks.append(sess.ended)
+                now[0] = base + ssh.IDLE_SECONDS + 301.0 + ssh.IDLE_SECONDS + 5.0  # >15 min AFTER command_end
+
+            with mock.patch.object(ssh.time, "monotonic", lambda: now[0]), \
+                    mock.patch.object(ssh, "_still_allowed", return_value=None), \
+                    mock.patch.object(ssh, "_notice"), \
+                    mock.patch.object(ssh, "_stop") as stop_proc:
+                ssh._watchdog(sid, sess, mock.Mock(), mock.Mock(), mock.Mock(), TickEvent([tick1, tick2, tick3]))
+
+            self.assertEqual(ended_ticks, [None, None])
+            self.assertEqual(sess.ended, "idle for 15 minutes")
+            stop_proc.assert_called_once()
+
+            # 2. Open `reload devices --safe` also suspends 15-minute idle kill.
+            sid_rel = "sess-safe-rel"
+            sess_rel = make_session()
+            ra.audit(
+                "command",
+                admin="jdoe",
+                session_id=sid_rel,
+                detail={"command": "reload devices", "argv": ["reload", "devices", "--safe", "--within", "5"], "tier": "write"},
+            )
+            now[0] = base + ssh.IDLE_SECONDS + 600.0
+            with mock.patch.object(ssh.time, "monotonic", lambda: now[0]), \
+                    mock.patch.object(ssh, "_still_allowed", return_value=None), \
+                    mock.patch.object(ssh, "_notice"), \
+                    mock.patch.object(ssh, "_stop") as stop_proc:
+                ssh._watchdog(sid_rel, sess_rel, mock.Mock(), mock.Mock(), mock.Mock(), TickEvent([None]))
+            self.assertIsNone(sess_rel.ended)
+            stop_proc.assert_not_called()
+
+            # 3. Non-waiting commands (e.g. `restart --check`) still enforce the 15-minute idle kill.
+            sid_chk = "sess-check"
+            sess_chk = make_session()
+            ra.audit(
+                "command",
+                admin="jdoe",
+                session_id=sid_chk,
+                detail={"command": "restart", "argv": ["restart", "--check"], "tier": "write"},
+            )
+            now[0] = base + ssh.IDLE_SECONDS + 60.0
+            with mock.patch.object(ssh.time, "monotonic", lambda: now[0]), \
+                    mock.patch.object(ssh, "_still_allowed", return_value=None), \
+                    mock.patch.object(ssh, "_notice"), \
+                    mock.patch.object(ssh, "_stop") as stop_proc:
+                ssh._watchdog(sid_chk, sess_chk, mock.Mock(), mock.Mock(), mock.Mock(), TickEvent([None]))
+            self.assertEqual(sess_chk.ended, "idle for 15 minutes")
+            stop_proc.assert_called_once()
+
+            # 4. MAX_SECONDS and _still_allowed() remain active during an open safe wait.
+            sess_max = make_session()
+            now[0] = base + ssh.MAX_SECONDS + 1.0
+            with mock.patch.object(ssh.time, "monotonic", lambda: now[0]), \
+                    mock.patch.object(ssh, "_still_allowed", return_value=None), \
+                    mock.patch.object(ssh, "_notice"), \
+                    mock.patch.object(ssh, "_stop") as stop_proc:
+                ssh._watchdog(sid_rel, sess_max, mock.Mock(), mock.Mock(), mock.Mock(), TickEvent([None]))
+            self.assertEqual(sess_max.ended, "8-hour limit")
+            stop_proc.assert_called_once()
+
+            sess_kick = make_session()
+            now[0] = base + ssh.IDLE_SECONDS + 60.0
+            with mock.patch.object(ssh.time, "monotonic", lambda: now[0]), \
+                    mock.patch.object(ssh, "_still_allowed", return_value="ended from the console"), \
+                    mock.patch.object(ssh, "_notice"), \
+                    mock.patch.object(ssh, "_stop") as stop_proc:
+                ssh._watchdog(sid_rel, sess_kick, mock.Mock(), mock.Mock(), mock.Mock(), TickEvent([None]))
+            self.assertEqual(sess_kick.ended, "ended from the console")
+            stop_proc.assert_called_once()
 
 
 if __name__ == "__main__":

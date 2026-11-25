@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ DEFAULT_WITHIN_MINUTES = 15
 DEFAULT_MAX_WAIT_MINUTES = 360
 POLL_INTERVAL_SECONDS = 30.0
 STATUS_INTERVAL_SECONDS = 60.0
+BUSY_EXIT_CODE = 75
 
 SAFE_GUIDANCE = (
     "For upgrades or maintenance, use `restart --safe` (or `reload devices --safe`) "
@@ -507,6 +509,20 @@ def check_safe(
     return 0 if not blocking else 1
 
 
+def _make_monotonic(
+    now_fn: Callable[[], datetime],
+    monotonic: Callable[[], float] | None = None,
+) -> Callable[[], float]:
+    if monotonic is not None:
+        return monotonic
+    if _monotonic is not _system_monotonic:
+        return _monotonic
+    if now_fn is _system_now:
+        return _monotonic
+    start_wall = parse_reservation_datetime(now_fn())
+    return lambda: (parse_reservation_datetime(now_fn()) - start_wall).total_seconds()
+
+
 def wait_until_safe(
     *,
     action: str = "restart",
@@ -518,47 +534,68 @@ def wait_until_safe(
     now: Callable[[], datetime] | None = None,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
+    deadline_mono: float | None = None,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     status_interval: float = STATUS_INTERVAL_SECONDS,
     out: TextIO | None = None,
     err: TextIO | None = None,
+    busy_rc: int = 1,
+    stop_event: threading.Event | None = None,
+    require_db: bool = False,
 ) -> int:
     """Wait until no reservation is live or starting within `within_minutes`.
 
-    Returns 0 when safe to proceed, 1 on timeout or database error, or 130 on Ctrl-C.
+    Returns 0 when safe to proceed, `busy_rc` (default 1) on timeout, 1 on
+    database error or server shutdown, or 130 on Ctrl-C.
     """
     stdout = sys.stdout if out is None else out
     stderr = sys.stderr if err is None else err
     now_fn = _now if now is None else now
-    sleep_fn = _sleep if sleep is None else sleep
-    within = timedelta(minutes=within_minutes)
-    start_wall = parse_reservation_datetime(now_fn())
-    if monotonic is not None:
-        mono_fn = monotonic
-    elif _monotonic is not _system_monotonic:
-        mono_fn = _monotonic
-    elif now_fn is _system_now:
-        mono_fn = _monotonic
+    if sleep is not None:
+        sleep_fn = sleep
+    elif _sleep is not _system_sleep:
+        sleep_fn = _sleep
+    elif stop_event is not None:
+        sleep_fn = stop_event.wait
     else:
-        mono_fn = lambda: (parse_reservation_datetime(now_fn()) - start_wall).total_seconds()
-    started_mono = mono_fn()
-    deadline_mono = started_mono + max_wait_minutes * 60.0
+        sleep_fn = _sleep
+    within = timedelta(minutes=within_minutes)
+    mono_fn = _make_monotonic(now_fn, monotonic)
+    if deadline_mono is None:
+        deadline_mono = mono_fn() + max_wait_minutes * 60.0
     last_status_mono: float | None = None
     tolerance = min(0.5, poll_interval / 4.0) if poll_interval > 0 else 0.0
     waited = False
 
     try:
         while True:
+            if stop_event is not None and stop_event.is_set():
+                print(f"Aborted; {_aborted_action_noun(action)}.", file=stderr, flush=True)
+                return 1
             current = parse_reservation_datetime(now_fn())
             current_mono = mono_fn()
             try:
-                rows = list(reservations()) if reservations is not None else read_reservations(db_path)
+                if reservations is not None:
+                    rows = list(reservations())
+                else:
+                    path = Path(db_path) if db_path is not None else default_db_path()
+                    if not path.exists():
+                        from . import control
+
+                        if require_db or control.running():
+                            raise RuntimeError(
+                                f"reservation database not found at {path} while server is running"
+                            )
+                    rows = read_reservations(path)
             except RuntimeError as exc:
                 print(
                     f"ERROR: {exc}; {_aborted_action_noun(action)}.",
                     file=stderr,
                     flush=True,
                 )
+                return 1
+            if stop_event is not None and stop_event.is_set():
+                print(f"Aborted; {_aborted_action_noun(action)}.", file=stderr, flush=True)
                 return 1
             blocking = blocking_reservations(current, rows, within)
             if not blocking:
@@ -581,7 +618,7 @@ def wait_until_safe(
                     file=stderr,
                     flush=True,
                 )
-                return 1
+                return busy_rc
             if last_status_mono is None or (current_mono - last_status_mono) >= (status_interval - tolerance):
                 print(
                     format_waiting_line(current, blocking, rows, within, names),
@@ -607,9 +644,13 @@ def gate_command(
     now: Callable[[], datetime] | None = None,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
+    deadline_mono: float | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
     before_wait: Callable[[], int | None] | None = None,
+    busy_rc: int = 1,
+    stop_event: threading.Event | None = None,
+    require_db: bool = False,
 ) -> int | None:
     """Handle --safe / --within / --max-wait / --check / -h for restart or reload devices.
 
@@ -653,8 +694,12 @@ def gate_command(
             now=now,
             sleep=sleep,
             monotonic=monotonic,
+            deadline_mono=deadline_mono,
             out=stdout,
             err=stderr,
+            busy_rc=busy_rc,
+            stop_event=stop_event,
+            require_db=require_db,
         )
         return None if rc == 0 else rc
     return None

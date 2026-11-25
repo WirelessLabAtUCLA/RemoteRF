@@ -1379,19 +1379,20 @@ def _console_argv(inpu: str) -> list[str]:
 
 def server_input(inpu: str) -> bool:
     """One console line. False when the server should stop."""
+    global _exit_action
     from .commands import RestartRequested, StopRequested, dispatch
 
     argv = _console_argv(inpu)
     if not argv:
-        return True
-    global _exit_action
+        return _exit_action is None
     try:
         dispatch(argv, in_daemon=True)
     except StopRequested:
         _exit_action = "quit"
         return False
     except RestartRequested:
-        _exit_action = "restart"
+        if _exit_action is None:
+            _exit_action = "restart"
         return False
     except Exception:
         # A broken command must never take the server down with it.
@@ -1399,7 +1400,7 @@ def server_input(inpu: str) -> bool:
 
         traceback.print_exc()
         printf("That command failed; the server is still running.", Sty.WARNING)
-    return True
+    return _exit_action is None
 
 
 def control_handler(argv: list[str]) -> int:
@@ -1588,13 +1589,18 @@ def cmd_diag(argv):
 
 
 def cmd_reload_devices(argv):
-    from . import device_manager, safe_restart
+    from . import control, device_manager, safe_restart
 
+    bridged = control.bridged()
     rc = safe_restart.gate_command(
         argv,
         action="reload devices",
         db_path=reservation_handler.filepath,
         device_names=lambda: safe_restart.live_device_names(db_path=reservation_handler.filepath),
+        busy_rc=safe_restart.BUSY_EXIT_CODE if bridged else 1,
+        err=sys.stdout if bridged else None,
+        stop_event=_runtime.stop_event if _runtime is not None else None,
+        require_db=True,
     )
     if rc is not None:
         return rc
@@ -1609,14 +1615,19 @@ def cmd_stop(argv):
 
 
 def cmd_restart(argv):
-    from . import safe_restart
+    from . import control, safe_restart
     from .commands import RestartRequested
 
+    bridged = control.bridged()
     rc = safe_restart.gate_command(
         argv,
         action="restart",
         db_path=reservation_handler.filepath,
         device_names=lambda: safe_restart.live_device_names(db_path=reservation_handler.filepath),
+        busy_rc=safe_restart.BUSY_EXIT_CODE if bridged else 1,
+        err=sys.stdout if bridged else None,
+        stop_event=_runtime.stop_event if _runtime is not None else None,
+        require_db=True,
     )
     if rc is not None:
         return rc
