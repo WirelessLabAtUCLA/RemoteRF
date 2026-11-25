@@ -895,7 +895,11 @@ After running `serverrf --serve`, you’ll enter the **RemoteRF Server Shell**. 
 * `help` / `h` / `?` — Show help
 * `clear` / `cls` — Clear the screen
 * `status` / `server status` — Show server status (start time / uptime / bind + cert ports)
+* `restart [--safe [--within MINUTES] [--max-wait MINUTES] | --check [--within MINUTES]]` — Restart the server
+* `reload devices [--safe [--within MINUTES] [--max-wait MINUTES] | --check [--within MINUTES]]` — Reload local devices
 * `quit` / `exit` / `q` — Exit the server shell
+
+For upgrades or maintenance, use `serverrf restart --safe` (or `serverrf reload devices --safe`) to wait until no reservation is live or starting within `--within` minutes (default 15, up to `--max-wait` minutes, default 360) before acting, or pass `--check` to inspect blocking reservations and the next idle window without restarting. A plain `restart` acts immediately and disrupts users mid-session—in-flight calls, Dynamic v2 sessions, and direct paths drop, and local devices reopen or PoE Plutos power-cycle—while reservations survive in the database. The same flags work at the server console prompt and in non-interactive shells without prompting.
 
 ---
 
