@@ -70,6 +70,12 @@ else:
 )
 class USRPClientServerHardwareTests(unittest.TestCase):
     def test_two_channel_rx_through_localhost_client_server(self):
+        self._two_channel_rx("fc32")
+
+    def test_two_channel_sc16_rx_and_tx_through_localhost_client_server(self):
+        self._two_channel_rx("sc16", tx_zeros=True)
+
+    def _two_channel_rx(self, cpu_format, tx_zeros=False):
         from remoteRF_server.drivers.usrp.usrp_schema import UsrpSchema
 
         inventory = UsrpSchema()
@@ -176,7 +182,7 @@ class USRPClientServerHardwareTests(unittest.TestCase):
                     device.set_rx_gain(10.0, channel_index)
                     device.set_rx_bandwidth(1e6, channel_index)
 
-                stream_args = uhd.usrp.StreamArgs("fc32", "sc16")
+                stream_args = uhd.usrp.StreamArgs(cpu_format, "sc16")
                 stream_args.channels = [0, 1]
                 with device.get_rx_stream(stream_args) as streamer:
                     stream_cmd = uhd.types.StreamCMD(
@@ -189,7 +195,7 @@ class USRPClientServerHardwareTests(unittest.TestCase):
 
                     samples = np.empty(
                         (2, 4096),
-                        dtype=np.complex64,
+                        dtype=np.complex64 if cpu_format == "fc32" else np.dtype([("re", "<i2"), ("im", "<i2")]),
                     )
                     metadata = uhd.types.RXMetadata()
                     count = streamer.recv(samples, metadata, 2.0)
@@ -197,9 +203,24 @@ class USRPClientServerHardwareTests(unittest.TestCase):
                 self.assertGreater(count, 0, msg=metadata.error_code_repr)
                 self.assertLessEqual(count, samples.shape[-1])
                 self.assertEqual(metadata.error_code.value, "none")
-                self.assertTrue(
-                    np.isfinite(samples[:, :count]).all()
-                )
+                if cpu_format == "fc32":
+                    self.assertTrue(np.isfinite(samples[:, :count]).all())
+                else:  # real int16 I/Q came back, not an all-zero or garbage buffer
+                    iq = np.stack([samples["re"][:, :count], samples["im"][:, :count]])
+                    self.assertTrue(np.abs(iq.astype(np.int32)).max() > 0)
+                if tx_zeros:  # a short burst of zeros at 0 dB gain: exercises send() without radiating a signal
+                    device.set_tx_rate(1e6, 0)
+                    device.set_tx_freq(915e6, 0)
+                    device.set_tx_gain(0.0, 0)
+                    tx_args = uhd.usrp.StreamArgs(cpu_format, "sc16")
+                    tx_args.channels = [0]
+                    with device.get_tx_stream(tx_args) as tx:
+                        burst = np.zeros(4096, dtype=samples.dtype)
+                        md = uhd.types.TXMetadata()
+                        md.start_of_burst = True
+                        md.end_of_burst = True
+                        sent = tx.send(burst, md, 2.0)
+                    self.assertEqual(sent, burst.shape[-1])
             finally:
                 try:
                     if device is not None and baseline is not None:
