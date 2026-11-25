@@ -205,6 +205,40 @@ class HackRFSchemaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             schema.dispatch("set_amplifier_on", {"value": "sometimes"})
 
+    def test_reset_for_next_holder_stops_tx_and_turns_off_bias_tee_and_amp(self):
+        schema, native = _bound_schema()
+        schema.dispatch("set_bias_tee_on", {"value": True})
+        schema.dispatch("set_amplifier_on", {"value": True})
+        schema.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema.dispatch("call_start_tx", {})
+
+        schema.reset_for_next_holder()
+
+        self.assertFalse(native.tx_started)
+        self.assertFalse(native._remoterf_tx_active)
+        self.assertEqual(len(native.buffer), 0)
+        self.assertFalse(native.bias_tee_on)
+        self.assertFalse(native._amplifier_on)
+
+    def test_reset_for_next_holder_turns_off_amp_when_bias_tee_fails(self):
+        schema, native = _bound_schema()
+        schema.dispatch("set_amplifier_on", {"value": True})
+
+        with patch.object(schema, "set_bias_tee_on", side_effect=OSError("usb")):
+            with self.assertRaises(OSError):
+                schema.reset_for_next_holder()
+
+        self.assertFalse(native._amplifier_on)
+
+    def test_read_samples_refused_while_tx_active(self):
+        schema, native = _bound_schema()
+        native._remoterf_tx_active = True
+
+        with patch.object(native, "read_samples") as read_samples:
+            with self.assertRaisesRegex(RuntimeError, "stop HackRF TX before reading"):
+                schema.dispatch("call_read_samples", {"num_samples": 16})
+        read_samples.assert_not_called()
+
     def test_enumeration_identity_and_serial_connector(self):
         schema, _native = _bound_schema()
 
