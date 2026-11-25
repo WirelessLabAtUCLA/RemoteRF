@@ -1480,7 +1480,7 @@ class SessionManager:
                 if stream_args is None and positional_args:
                     stream_args = positional_args[0]
                 if type_id.endswith(("RXStreamer", "TXStreamer")):
-                    from ..drivers.usrp.usrp_schema import _extract_stream_channels
+                    from remoterf_device_core.drivers.usrp.usrp_schema import _extract_stream_channels
                     source = (
                         native_args.get(
                             "stream_args",
