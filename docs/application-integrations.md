@@ -234,6 +234,17 @@ softmodem environment adds `OAI_SHM_DIR=<work_dir>/shm` and
 | `load_l1_plugin` | `stage`, `c_code` | Compiles with `REMOTERF_OAI_CC` (default `/usr/bin/gcc`) `-O3 -shared -fPIC` as a supervised job; returns `ok`, `returncode` and the last 8 KiB of output. On success writes the control file. |
 | `unload_l1_plugin` | none | Writes the unload control record. |
 | `run_xapp` | `code`, `duration_s` (1–600) | Runs the code with the server's `python -I`, env `OAI_SHM_DIR` and `XAPP_OUTPUT=<work_dir>/artifacts/xapp-<n>.json`; SIGALRM ends it at `duration_s`. Returns `returncode`, output and `{"artifact": {"name", "format": "json"}}` when the file exists. |
+| `read_csi` | `stream` (`ul_pusch`, `ul_srs` or `dl_ssb`) | Newest consistent entry of `<OAI_SHM_DIR>/<stream>.ring`, published as `csi-<stream>-<n>.c8`: `{"ok": true, "artifact": {"name", "dtype": "<c8", "shape": [d0, d1, d2]}, "metadata", "dropped": 0}`. |
+| `capture_csi_burst` | `stream`, `count` (1–256), optional `timeout_s` (≤ 600) | Waits for `count` entries newer than the call, as one artifact of shape `[count, d0, d1, d2]`. `dropped` counts sequence numbers lost to gaps, overwrites or entries still being written. |
+
+The CSI actions run in the server process: no job, no `user_code`. `metadata`
+holds per-entry lists `seq`, `frame`, `slot`, `snr_db`, `rnti`, `ta` and
+`timestamps_s` (server read time). `dl_ssb` covers only the SSB band, not
+CSI-RS. A missing ring (stock OAI) returns `{"ok": false, "error":
+"ring_missing"}`; a wrong magic, version or size `ring_invalid`; a result that
+would exceed the artifact bounds (256 entries, 256 MiB) `artifact_limit`; no
+data before the wait ends `timeout`. These leave the cell running. Waits end
+5 s before `action_timeout_s`.
 
 The three code actions fail unless `user_code` enables `org.remoterf.oai`. Like
 any failed action, a refusal or a job past its wait fails the operation and its
@@ -250,6 +261,22 @@ replaced atomically (`os.replace`) on every change. `{"seq": n, "stage": s,
 a `seq` newer than the last one applied. Each load uses a new `.so` path. Stock
 OAI ignores the file; the patch and stage names must be verified against the
 pinned OAI build.
+
+**CSI ring format (what a patched OAI must write).** One file per stream,
+`$OAI_SHM_DIR/ul_pusch.ring`, `ul_srs.ring` and `dl_ssb.ring`, sized once and
+mmapped; all fields little-endian:
+
+| Part | Layout |
+|---|---|
+| Header (64 B) | `magic` 8 B `RRFCSI\0\0`, u32 `version` (1), u32 `entry_bytes`, u32 `n_entries`, u32 reserved, u64 `write_seq` (last complete entry; 0 = none), zero padding |
+| Entry `s` at `64 + (s % n_entries) * entry_bytes` | u64 `lock` (seqlock), u64 `seq`, u32 `frame`, u32 `slot`, u32 `rnti`, f32 `snr_db`, i32 `ta`, u32 `dims[3]`, then `dims[0]*dims[1]*dims[2]` interleaved int16 I/Q pairs; `48 + 4 * product <= entry_bytes` |
+
+For each entry the writer increments `lock` (odd), copies the fields and I/Q,
+increments `lock` again (even), then stores `write_seq = seq`, with release
+ordering and no system call per slot. `seq` starts at 1 and increases by one.
+The reader retries an entry whose `lock` is odd or changed during the copy, and
+treats an entry whose `seq` differs as overwritten. Each operation gets its own
+`OAI_SHM_DIR`, so a later run or a second cell never reads this ring.
 
 ## Operator configuration
 
