@@ -2012,6 +2012,31 @@ class ReservationHandler:
             return None
         return None
 
+    def _blocked_tags_for_holder_locked(self, username: str, device_id: int) -> tuple[str, ...]:
+        """Effective blocked function tags for ``username`` on ``device_id``.
+
+        Admins, Power Users, and members of the built-in ``admin`` group are
+        never blocked. For Normal Users, a tag is blocked only when every user
+        group granting access to ``device_id`` blacklists it.
+        """
+        try:
+            role_rows = perms.get_perms(username) or ()
+            if any(row and row[0] in ("Admin", "Power User") for row in role_rows):
+                return ()
+            uid = self.get_uid(username)
+            if uid < 0:
+                return ()
+            relayed = RELAYED.set(False)
+            try:
+                _allowed, blocked = user_group_handler.get_users_blocked_tags(
+                    uid=uid, device_id=int(device_id)
+                )
+            finally:
+                RELAYED.reset(relayed)
+            return tuple(blocked)
+        except Exception:
+            return ()
+
     @db_connection
     def update_devices(self):
         devices = get_all_devices()  # whatever your local inventory is
@@ -2064,7 +2089,12 @@ class ReservationHandler:
                         RELAYED.reset(relayed)
                     if bypass:
                         print(f"lockout bypass on: {dev_id} (gid {int(dev_id)})")
-                    set_device(dev_id, *held, bypass=bypass)
+                    blocked_tags = (
+                        ()
+                        if bypass
+                        else self._blocked_tags_for_holder_locked(reservation[1], int(dev_id))
+                    )
+                    set_device(dev_id, *held, bypass=bypass, blocked_tags=blocked_tags)
 
                 reservations_now += 1
 

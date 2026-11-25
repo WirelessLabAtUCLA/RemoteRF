@@ -130,8 +130,8 @@ def _table() -> list[Command]:
         Command(("reservations purge",), "Remove ALL reservations", _daemon("cmd_reservations_purge"), "Reservations", where=D),
         # ---- groups ----
         Command(("groups list",), "List user groups", _shell("cmd_groups_list"), "Groups"),
-        Command(("groups create",), "Create a group: groups create <name> --devices <ids> [--max-reservations 3 --max-time 1800 --horizon 604800 --lifetime 0 --lan-only --public --share <clusters>] --yes [--json]; no name is interactive", _shell("cmd_groups_create"), "Groups"),
-        Command(("groups edit",), "Edit a group: groups edit <id|name> [--name N --devices 0,1 --max-reservations N --max-time SEC --lifetime SEC --horizon SEC --lan-only|--no-lan-only --share a,b|none] --yes [--json]; no arguments is interactive", _shell("cmd_groups_edit"), "Groups"),
+        Command(("groups create",), "Create a group: groups create <name> --devices <ids> [--blacklist-tags TX,FOO --max-reservations 3 --max-time 1800 --horizon 604800 --lifetime 0 --lan-only --public --share <clusters>] --yes [--json]; no name is interactive", _shell("cmd_groups_create"), "Groups"),
+        Command(("groups edit",), "Edit a group: groups edit <id|name> [--name N --devices 0,1 --blacklist-tags TX,FOO|--clear-blacklist-tags --max-reservations N --max-time SEC --lifetime SEC --horizon SEC --lan-only|--no-lan-only --share a,b|none] --yes [--json]; no arguments is interactive", _shell("cmd_groups_edit"), "Groups"),
         Command(("groups remove",), "Delete a group: groups remove <id|name> --yes [--json]; no arguments is interactive", _shell("cmd_groups_remove"), "Groups"),
         Command(("groups public",), "Share a group with anyone on RemoteRF Global, or stop: groups public <group> on|off", _federation("public"), "Groups"),
         Command(("groups share",), "Where a group is shared, or change it: groups share <group> [<cluster> on|off]", _federation("share"), "Groups"),

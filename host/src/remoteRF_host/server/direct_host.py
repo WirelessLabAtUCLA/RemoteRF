@@ -164,6 +164,7 @@ class DirectHost:
         with self._lock:
             ended = self._ended.get(int(gid), float("-inf"))
             revoked = set(self._revoked)
+        blocked_tags = claims.get("blocked_tags")
         if (
             header.get("typ") != "remoterf-host-grant"
             or type(claims.get("iss")) is not str
@@ -181,6 +182,13 @@ class DirectHost:
             or isinstance(iat, bool)
             or iat <= ended
             or claims["jti"] in revoked
+            or (
+                blocked_tags is not None
+                and (
+                    not isinstance(blocked_tags, list)
+                    or any(type(item) is not str or not item.strip() for item in blocked_tags)
+                )
+            )
         ):
             raise PermissionError("grant is not for this device now")
         return claims
@@ -193,6 +201,11 @@ class DirectHost:
             previous = self._grants.get(int(gid))
             bound = previous.get("_reservation_tag", tag) if previous and previous["rid"] == claims["rid"] else tag
             claims["_reservation_tag"] = claims.get("reservation_tag", bound)
+            prev_tags = previous.get("_blocked_tags", ()) if previous and previous["rid"] == claims["rid"] else ()
+            if "blocked_tags" in claims:
+                claims["_blocked_tags"] = tuple(item.strip() for item in claims["blocked_tags"])
+            else:
+                claims["_blocked_tags"] = prev_tags
             if claims["iat"] <= self._ended.get(int(gid), float("-inf")) or claims["jti"] in self._revoked:
                 raise PermissionError("grant is not for this device now")
             self._grants[int(gid)] = claims
@@ -474,9 +487,13 @@ class DirectHost:
                     with self._lock:
                         claims = self._grants.get(gid)
                         tag = claims.get("_reservation_tag") if claims else None
+                        blocked_tags = claims.get("_blocked_tags", ()) if claims else ()
                     tagged.args.pop("__rrf_reservation_tag", None)
+                    tagged.args.pop("__rrf_blocked_tags", None)
                     if tag is not None:
                         tagged.args["__rrf_reservation_tag"].CopyFrom(map_arg(tag))
+                    if blocked_tags:
+                        tagged.args["__rrf_blocked_tags"].CopyFrom(map_arg(json.dumps(list(blocked_tags))))
                     call = partial(self.run_call, gid, tagged, expected_epoch=epoch)
                     results = await asyncio.get_running_loop().run_in_executor(None, call)
                 except Exception as exc:  # device exceptions are normal RPC results

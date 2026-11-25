@@ -33,11 +33,20 @@ from .schema import (
     register_driver,
     set_drivers_dir_provider,
 )
+from .tags import (
+    blocked_tag_message,
+    find_blocked_tag,
+    normalize_tags,
+    v1_function_label,
+    v1_method_name,
+)
 from .v2 import (
     CONTROL_PROTOCOL_VERSION,
     SCHEMA_VERSION as SCHEMA_V2_VERSION,
     STREAMING_PROTOCOL_VERSION,
     build_schema as build_schema_v2,
+    get_method_tags as get_v2_method_tags,
+    get_schema_tags as get_v2_schema_tags,
     method as idl_v2_method,
     object_type as idl_v2_object,
     overload as idl_v2_overload,

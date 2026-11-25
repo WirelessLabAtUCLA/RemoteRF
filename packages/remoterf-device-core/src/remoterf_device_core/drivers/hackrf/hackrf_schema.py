@@ -315,7 +315,7 @@ class HackRFSchema(DeviceSchema):
         """Transmit VGA gain in dB (0 to 47)."""
         return int(self.device.txvga_gain)
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_txvga_gain(self, value):
         self.device.txvga_gain = int(float(value))
 
@@ -367,7 +367,7 @@ class HackRFSchema(DeviceSchema):
             )
         return np.ascontiguousarray(samples.reshape(-1))
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_load_tx_iq(self, samples):
         """Load normalized complex or native interleaved signed-int8 TX IQ."""
         payload = _complex_to_iq_bytes(samples)
@@ -395,7 +395,7 @@ class HackRFSchema(DeviceSchema):
         """Compatibility alias for setting the complex sample rate in Hz."""
         self.set_sample_rate(value)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_start_tx(self):
         """Start transmitting the IQ bytes previously loaded with load_tx_iq()."""
         if getattr(self.device, "_remoterf_tx_active", False):
@@ -407,7 +407,7 @@ class HackRFSchema(DeviceSchema):
         self.device._remoterf_tx_active = True
         return payload_bytes
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_stop_tx(self):
         """Stop an active HackRF transmission."""
         if not getattr(self.device, "_remoterf_tx_active", False):

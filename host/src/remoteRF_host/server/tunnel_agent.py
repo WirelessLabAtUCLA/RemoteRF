@@ -1008,10 +1008,19 @@ class HostTunnelAgent:
                 if not isinstance(tag, str):
                     raise ValueError("tag is not a string")
                 resync = payload.get("resync", False) is True
+                raw_tags = payload.get("blocked_tags", ())
+                if raw_tags != () and not isinstance(raw_tags, list):
+                    raise ValueError("blocked_tags is not a list")
+                if any(not isinstance(item, str) or not item.strip() for item in raw_tags):
+                    raise ValueError("blocked_tags contains an invalid entry")
+                blocked_tags = tuple(item.strip() for item in raw_tags)
             except Exception as exc:
                 warn(f"Invalid {kind} payload: {exc}", component="hostrf.tunnel_agent")
-                bypass, tag, resync = False, "", False
-            prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
+                bypass, tag, resync, blocked_tags = False, "", False, ()
+            if blocked_tags:
+                prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync, blocked_tags=blocked_tags)
+            else:
+                prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
             info(f"Reservation started on device {gid}: preparing device.", component="hostrf")
             return
         try:
@@ -1113,6 +1122,10 @@ class HostTunnelAgent:
 
             # self._override_token_for_gid(args_map, gid_s)
 
+            try:
+                args_map.pop("__rrf_blocked_tags", None)
+            except Exception:
+                pass
             try:
                 args_map["gid"].CopyFrom(_argument_string(gid_s))
             except Exception:

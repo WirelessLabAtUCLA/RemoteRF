@@ -28,6 +28,7 @@
 
 from remoterf_device_core.idl import (
     build_schema_v2,
+    get_v2_schema_tags,
     idl_client,
     idl_expose,
     idl_register,
@@ -73,7 +74,7 @@ def _v2_param(name, wire_type="any", *, required=True, default=None):
     )
 
 
-def _phaser_v2_method(name, parameters=(), *, returns="None", mutations=(), doc=""):
+def _phaser_v2_method(name, parameters=(), *, returns="None", mutations=(), doc="", tag=None):
     """Describe one Phaser control call in the v2 manifest."""
     return idl_v2_method(
         name,
@@ -82,6 +83,7 @@ def _phaser_v2_method(name, parameters=(), *, returns="None", mutations=(), doc=
         execution="server_control",
         mutations=mutations,
         doc=doc,
+        tag=tag,
     )
 
 
@@ -186,6 +188,7 @@ def _phaser_v2_methods():
             returns="int",
             mutations=("phaser",),
             doc="Set the CN0566 TX output switch.",
+            tag="TX",
         ),
         _phaser_v2_method(
             "phaser_set_tx_path",
@@ -193,6 +196,7 @@ def _phaser_v2_methods():
             returns="bool",
             mutations=("phaser",),
             doc="Enable or disable the CN0566 TX input/output path.",
+            tag="TX",
         ),
         _phaser_v2_method(
             "phaser_get_state",
@@ -314,6 +318,7 @@ class UsrpPhaserSchema(UsrpSchema):
             capability_fields=base["capability_fields"],
             coverage=coverage,
             deprecations=base.get("deprecations", ()),
+            inherited_tags=get_v2_schema_tags(base),
         )
 
     def invoke_native(self, method_name, args, positional_args=None):
@@ -501,7 +506,7 @@ class UsrpPhaserSchema(UsrpSchema):
         self._get_phaser().latch_rx_settings()
         return True
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_phaser_set_tx_switch(self, value):
         """Set the CN0566 TX output switch directly."""
         value = int(value)
@@ -512,7 +517,7 @@ class UsrpPhaserSchema(UsrpSchema):
         phaser._gpios.gpio_tx_sw = value
         return value
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_phaser_set_tx_path(self, enabled):
         """Route the CN0566 LO to the TX circuitry."""
         enabled = bool(enabled)

@@ -911,6 +911,25 @@ After running `serverrf --serve`, you’ll enter the **RemoteRF Server Shell**. 
 * `groups delete` — Delete a user group *(interactive)*
 * `groups csv` — Export all groups as a CSV
 
+### Function tags
+
+Drivers can annotate exposed RPCs with policy tags (`tag="TX"` or a tuple/list of strings) without changing any schema hash or wire payload:
+
+* v1: `@idl_expose(kind="call", tag="TX")`
+* v2: `method("set_tx_freq", ..., tag="TX")`
+
+Tags are compared case-insensitively. Built-in SDR transmit entry points (ADALM-Pluto/MIMO, HackRF, USRP v1/v2, and USRP Phaser) are pre-tagged with `TX`.
+
+Admins can blacklist tags per user group interactively (`groups create` / `groups edit`) or via flags:
+
+```bash
+serverrf groups create rxonly --devices 0,1 --blacklist-tags TX --yes
+serverrf groups edit rxonly --blacklist-tags TX,FOO --yes
+serverrf groups edit rxonly --clear-blacklist-tags --yes
+```
+
+Multi-group rule: for a reservation holder on a device, a tag is blocked only if **every** user group granting that user access to the device blacklists it (non-blacklist wins). Admins, Power Users, and members of the built-in `admin` group are never blocked.
+
 ---
 
 ### Enrollment Codes

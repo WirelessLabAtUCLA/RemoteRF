@@ -205,7 +205,7 @@ class PlutoMIMOSchema(PlutoSchema):
     def get_tx_enabled_channels(self):
         return list(self.device.tx_enabled_channels)
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_enabled_channels(self, value):
         self.device.tx_enabled_channels = _normalize_channels(value, [0, 1])
 
@@ -235,7 +235,7 @@ class PlutoMIMOSchema(PlutoSchema):
     def get_tx_hardwaregain_chan1(self):
         return self.device.tx_hardwaregain_chan1
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_hardwaregain_chan1(self, value):
         self.device.tx_hardwaregain_chan1 = value
 
@@ -272,7 +272,7 @@ class PlutoMIMOSchema(PlutoSchema):
         """tx_int8_filter_en: Enable interpolate-by-8 filter in FPGA"""
         return bool(_fpga_filter_enabled(self.device, True))
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_int8_filter_en(self, value):
         """tx_int8_filter_en: Enable interpolate-by-8 filter in FPGA"""
         _set_fpga_filter(self.device, True, value)

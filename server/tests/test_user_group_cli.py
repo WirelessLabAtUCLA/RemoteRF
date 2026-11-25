@@ -34,6 +34,7 @@ class EditUserGroupCliTests(unittest.TestCase):
             "",        # lifetime unchanged
             "",        # days ahead unchanged
             "",        # LAN only unchanged
+            "",        # blacklisted tags unchanged
             "n",       # do not persist the edit
         ])
         output = io.StringIO()
@@ -43,7 +44,7 @@ class EditUserGroupCliTests(unittest.TestCase):
         self.assertIn("devices_whitelist       : 0,1", output.getvalue())
 
     def test_enter_leaves_the_whitelist_unchanged(self) -> None:
-        session = _Session(["1", "renamed", "", "", "", "", "", "", "n"])
+        session = _Session(["1", "renamed", "", "", "", "", "", "", "", "n"])
         output = io.StringIO()
         with redirect_stdout(output):
             edit_user_group_local(session)
@@ -298,6 +299,194 @@ class AdminGroupTests(unittest.TestCase):
         self.assertEqual((self.admin()["max_reservation_time_sec"], self.admin()["max_reservations"]), (7200, 5))
         self.m.UserGroupHandler()  # a restart keeps the edited limits
         self.assertEqual(self.admin()["max_reservations"], 5)
+
+
+class FunctionTagBlacklistGroupTests(unittest.TestCase):
+    """Per-group blacklisted_tags storage, migration, CLI, and multi-group intersection."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from remoteRF_server.server import user_group_handler as m
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.db_dir = Path(tmp.name)
+        root = mock.patch.object(m, "get_db_dir", return_value=self.db_dir)
+        root.start()
+        self.addCleanup(root.stop)
+        self.m = m
+        self.h = m.UserGroupHandler()
+
+    def _enroll(self, uid: int, group_id: int, code: str) -> None:
+        self.h.create_enrollment_codes(code_names=[code], group_id=group_id, uses=5, duration_sec=0)
+        self.assertTrue(self.h.enroll_user_with_code(uid=uid, code_name=code))
+
+    def test_storage_edit_admin_refusal_list_export_and_interactive_cli(self) -> None:
+        import csv
+        from unittest import mock
+
+        from remoteRF_server.server import user_group_cli
+
+        gid = int(self.h.create_user_group(
+            group_name="rx-only",
+            devices_whitelist=[1, 2],
+            max_reservation_time_sec=600,
+            max_reservations=1,
+            lifetime_sec=0,
+            blacklisted_tags=["TX", "tx", "Cal"],
+        ))
+        (row,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_id"] == gid]
+        self.assertEqual(row["blacklisted_tags"], ["TX", "Cal"])
+
+        # Built-in admin group refuses non-empty tag blacklists.
+        (admin_row,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_name"] == "admin"]
+        self.assertFalse(self.h.edit_user_group(group_id=admin_row["group_id"], blacklisted_tags=["TX"]))
+
+        # Edit and clear tags.
+        self.assertTrue(self.h.edit_user_group(group_id=gid, blacklisted_tags=["RF"]))
+        (row,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_id"] == gid]
+        self.assertEqual(row["blacklisted_tags"], ["RF"])
+        self.assertTrue(self.h.edit_user_group(group_id=gid, blacklisted_tags=[]))
+        (row,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_id"] == gid]
+        self.assertEqual(row["blacklisted_tags"], [])
+
+        # Interactive create, edit, list, and CSV export.
+        out = io.StringIO()
+        with mock.patch.object(user_group_cli, "user_group_handler", self.h), \
+                mock.patch.object(user_group_cli, "_clusters_here", return_value=[]), \
+                mock.patch.object(user_group_cli, "_print_device_choices"), \
+                mock.patch.object(user_group_cli, "_resolve_download_dir", return_value=self.db_dir), \
+                mock.patch("remoteRF_server.server.federation.cluster.shared_with", return_value=[]), \
+                redirect_stdout(out):
+            create_session = _Session([
+                "class-a", "y", "0,1", "900", "2", "0", "7", "TX, FOO", "y", "n", "y",
+            ])
+            user_group_cli.make_user_group_local(create_session)
+            (created,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_name"] == "class-a"]
+            self.assertEqual(created["blacklisted_tags"], ["TX", "FOO"])
+
+            user_group_cli.list_user_groups_local(_Session([]))
+            self.assertIn("blacklisted_tags", out.getvalue())
+            self.assertIn("TX, FOO", out.getvalue())
+
+            csv_path = user_group_cli.export_user_groups_csv_local()
+            self.assertIsNotNone(csv_path)
+
+            edit_session = _Session([
+                str(created["group_id"]), "", "", "", "", "", "", "", "none", "y",
+            ])
+            user_group_cli.edit_user_group_local(edit_session)
+
+        (after_clear,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_name"] == "class-a"]
+        self.assertEqual(after_clear["blacklisted_tags"], [])
+
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        by_name = {r["group_name"]: r for r in rows}
+        self.assertEqual(by_name["class-a"]["blacklisted_tags"], '["TX","FOO"]')
+
+    def test_migration_adds_blacklisted_tags_to_old_database(self) -> None:
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from remoteRF_server.server.federation.migrations import migrate_gate_f_usergroups_schema
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_dir = Path(tmp.name)
+        db_path = db_dir / "usergroups.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE UserGroups (
+                    group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT NOT NULL UNIQUE,
+                    devices_whitelist TEXT NOT NULL DEFAULT '[]',
+                    max_reservation_time_sec INTEGER NOT NULL,
+                    max_reservations INTEGER NOT NULL,
+                    lifetime_sec INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE UsersLookup (
+                    user_id INTEGER NOT NULL,
+                    group_id INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, group_id)
+                );
+                CREATE TABLE EnrollmentCodes (
+                    code_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code_name TEXT NOT NULL UNIQUE,
+                    group_id INTEGER NOT NULL,
+                    uses INTEGER NOT NULL,
+                    duration_sec INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO UserGroups (group_name, devices_whitelist, max_reservation_time_sec, max_reservations, lifetime_sec)
+                VALUES ('legacy', '[0]', 600, 1, 0);
+                """
+            )
+            migrate_gate_f_usergroups_schema(conn)
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(UserGroups)")}
+            self.assertIn("blacklisted_tags", cols)
+
+        with mock.patch.object(self.m, "get_db_dir", return_value=db_dir):
+            migrated = self.m.UserGroupHandler()
+            (legacy,) = [g for g in migrated.get_all_user_groups(include_users=False) if g["group_name"] == "legacy"]
+            self.assertEqual(legacy["blacklisted_tags"], [])
+            self.assertTrue(migrated.edit_user_group(group_id=legacy["group_id"], blacklisted_tags=["TX"]))
+            (updated,) = [g for g in migrated.get_all_user_groups(include_users=False) if g["group_name"] == "legacy"]
+            self.assertEqual(updated["blacklisted_tags"], ["TX"])
+
+    def test_effective_blocked_tags_multi_group_rules_and_admin_bypass(self) -> None:
+        g_rx = int(self.h.create_user_group(
+            group_name="rx", devices_whitelist=[1], max_reservation_time_sec=600,
+            max_reservations=1, lifetime_sec=0, blacklisted_tags=["TX", "Cal"],
+        ))
+        g_tx_other = int(self.h.create_user_group(
+            group_name="tx-other-dev", devices_whitelist=[2], max_reservation_time_sec=600,
+            max_reservations=1, lifetime_sec=0, blacklisted_tags=[],
+        ))
+        g_rx2 = int(self.h.create_user_group(
+            group_name="rx2", devices_whitelist=[1, 2], max_reservation_time_sec=600,
+            max_reservations=1, lifetime_sec=0, blacklisted_tags=["tx", "Diag"],
+        ))
+        g_open = int(self.h.create_user_group(
+            group_name="open", devices_whitelist=[1], max_reservation_time_sec=600,
+            max_reservations=1, lifetime_sec=0, blacklisted_tags=[],
+        ))
+
+        # No access-granting group -> no access.
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=1), (False, []))
+
+        # Single granting group blacklists TX and Cal.
+        self._enroll(50, g_rx, "C_RX")
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=1), (True, ["TX", "Cal"]))
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=2), (False, []))
+
+        # Adding a group for a DIFFERENT device does not lift TX on device 1.
+        self._enroll(50, g_tx_other, "C_OTHER")
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=1), (True, ["TX", "Cal"]))
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=2), (True, []))
+
+        # Adding a second granting group that also blacklists tx (different case) -> intersection is ["TX"].
+        self._enroll(50, g_rx2, "C_RX2")
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=1), (True, ["TX"]))
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=2), (True, []))
+
+        # Adding a granting group with no TX blacklist -> non-blacklist wins.
+        self._enroll(50, g_open, "C_OPEN")
+        self.assertEqual(self.h.get_users_blocked_tags(uid=50, device_id=1), (True, []))
+
+        # Built-in admin group never blocks tags.
+        (admin_row,) = [g for g in self.h.get_all_user_groups(include_users=False) if g["group_name"] == "admin"]
+        self._enroll(60, g_rx, "C_RX_ADMIN")
+        self.assertEqual(self.h.get_users_blocked_tags(uid=60, device_id=1), (True, ["TX", "Cal"]))
+        self._enroll(60, admin_row["group_id"], "C_ADMIN")
+        self.assertEqual(self.h.get_users_blocked_tags(uid=60, device_id=1), (True, []))
 
 
 if __name__ == "__main__":

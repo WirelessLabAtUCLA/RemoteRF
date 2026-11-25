@@ -167,21 +167,33 @@ def close_all_bridge_sessions() -> int:
     return session_manager.close_all()
 
 
-def run_bridge(*, operation: str, args: dict, gid: int) -> dict:
+def run_bridge(
+    *,
+    operation: str,
+    args: dict,
+    gid: int,
+    blocked_tags: tuple[str, ...] = (),
+) -> dict:
     """Execute one serialized v2 protobuf request for a trusted server tunnel."""
+    from .dynamic_v2 import GRANT_BLOCKED_TAGS
+
     operation = str(operation or "")
     wire = _wire_arg(args)
+    token = GRANT_BLOCKED_TAGS.set(tuple(blocked_tags or ()))
     try:
-        response = _dispatch(operation, wire, gid)
-    except RemoteRFError as exc:
-        # A closed session or a mismatched device is the client's to handle,
-        # typed as the servicer would type it, not an opaque tunnel failure.
-        if operation == "SampleFrame":
-            response = _SAMPLES._error_frame(grpc_pb2.SampleFrame.FromString(wire), exc)
-        elif operation in _RESPONSE_TYPES:
-            response = _RESPONSE_TYPES[operation](error=error_envelope(exc))
-        else:
-            raise
+        try:
+            response = _dispatch(operation, wire, gid)
+        except RemoteRFError as exc:
+            # A closed session or a mismatched device is the client's to handle,
+            # typed as the servicer would type it, not an opaque tunnel failure.
+            if operation == "SampleFrame":
+                response = _SAMPLES._error_frame(grpc_pb2.SampleFrame.FromString(wire), exc)
+            elif operation in _RESPONSE_TYPES:
+                response = _RESPONSE_TYPES[operation](error=error_envelope(exc))
+            else:
+                raise
+    finally:
+        GRANT_BLOCKED_TAGS.reset(token)
     return {"wire": map_arg(response.SerializeToString())}
 
 

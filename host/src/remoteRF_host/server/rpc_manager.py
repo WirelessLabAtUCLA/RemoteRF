@@ -19,6 +19,13 @@ import json
 
 import numpy as np
 
+from remoterf_device_core.idl.tags import (
+    blocked_tag_message,
+    find_blocked_tag,
+    v1_function_label,
+    v1_method_name,
+)
+
 from ..common.utils import map_arg, unmap_arg
 from .device_manager import find_device_id_by_name, get_device, get_device_schema
 
@@ -83,16 +90,31 @@ class RpcManager:
         from .device_manager import hardware_access, get_local_device_context, reset_before_rpc
         args = dict(args)
         tag_arg = args.pop("__rrf_reservation_tag", None)
+        blocked_arg = args.pop("__rrf_blocked_tags", None)
         try:
             tag = None if tag_arg is None else unmap_arg(tag_arg)
         except Exception:
             tag = None
         if tag_arg is not None and not isinstance(tag, str):
             return {"Error": map_arg("The reservation on this device changed; call again.")}
+        grant_blocked_tags: tuple[str, ...] = ()
+        if blocked_arg is not None:
+            try:
+                raw_blocked = unmap_arg(blocked_arg)
+                parsed_blocked = json.loads(raw_blocked) if isinstance(raw_blocked, str) else raw_blocked
+                if not isinstance(parsed_blocked, list) or any(
+                    not isinstance(item, str) or not item.strip() for item in parsed_blocked
+                ):
+                    raise ValueError("invalid blocked_tags")
+                grant_blocked_tags = tuple(item.strip() for item in parsed_blocked)
+            except Exception:
+                return {"Error": map_arg("Invalid blocked tags metadata.")}
         gid = self._resolve_gid(args)
         if (gid is None or function_name.startswith("IDL:") or function_name == "echo"
                 or (function_name.startswith("DynamicV2:") and tag is None)):
-            return self._run_admitted(function_name=function_name, args=args)
+            return self._run_admitted(
+                function_name=function_name, args=args, blocked_tags=grant_blocked_tags
+            )
         try:
             context = get_local_device_context(gid) or {}
             dynamic_v2 = function_name.startswith("DynamicV2:")
@@ -103,12 +125,16 @@ class RpcManager:
                 if "epoch" in context:
                     reset_before_rpc(gid, context["epoch"] if expected_epoch is None else expected_epoch, context["schema"], tag, reset=not dynamic_v2)
                 if not run_after:
-                    return self._run_admitted(function_name=function_name, args=args)
-            return self._run_admitted(function_name=function_name, args=args)
+                    return self._run_admitted(
+                        function_name=function_name, args=args, blocked_tags=grant_blocked_tags
+                    )
+            return self._run_admitted(
+                function_name=function_name, args=args, blocked_tags=grant_blocked_tags
+            )
         except Exception as exc:
             return {"Error": map_arg(str(exc))}
 
-    def _run_admitted(self, *, function_name, args) -> dict:
+    def _run_admitted(self, *, function_name, args, blocked_tags: tuple[str, ...] = ()) -> dict:
         if function_name == "echo":
             return args
 
@@ -119,6 +145,13 @@ class RpcManager:
             try:
                 from .dynamic_v2_bridge import run_bridge
 
+                if blocked_tags:
+                    return run_bridge(
+                        operation=function_name.split(":", 1)[1],
+                        args=args,
+                        gid=gid,
+                        blocked_tags=blocked_tags,
+                    )
                 return run_bridge(
                     operation=function_name.split(":", 1)[1],
                     args=args,
@@ -153,6 +186,25 @@ class RpcManager:
 
         if self._should_use_builtin_ip_fallback(gid=gid, prop=prop, verb=verb):
             return {"ip": self._safe_map(f"{actual_type or 'device'}:{gid}")}
+
+        from .device_manager import get_local_device_context
+
+        context = get_local_device_context(gid) or {}
+        effective_blocked = (
+            tuple(getattr(schema, "blocked_tags", ()) or ())
+            + tuple(context.get("blocked_tags", ()) or ())
+            + tuple(blocked_tags or ())
+        )
+        if effective_blocked:
+            method_name = v1_method_name(prop, verb)
+            get_tags = getattr(schema, "get_method_tags", None)
+            if method_name is not None and callable(get_tags):
+                matched = find_blocked_tag(get_tags(method_name), effective_blocked)
+                if matched is not None:
+                    return {
+                        prop: map_arg("None"),
+                        "Error": map_arg(blocked_tag_message(v1_function_label(prop, verb), matched)),
+                    }
 
         if getattr(schema, "session_scoped", False) and getattr(schema, "device", None) is None:
             # The legacy path is about to open the hardware lazily; a Dynamic

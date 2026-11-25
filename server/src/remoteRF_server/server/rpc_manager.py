@@ -71,6 +71,14 @@ import json
 
 import numpy as np
 
+from remoterf_device_core.idl.tags import (
+    blocked_tag_message,
+    find_blocked_tag,
+    v1_function_label,
+    v1_method_name,
+)
+from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
 from .reservation import reservation_handler
 from ..common.utils import *
 from ..common.grpc import grpc_pb2 as generic_pb2
@@ -81,10 +89,27 @@ from ..host import host_tunnel_server as hts
 # <Prefix>:batch:CALLN runs op0..op{n-1} in order under one io_lock hold.
 _BATCH_MAX_OPS = 64
 _BATCH_VERBS = {"GET", "SET", "CALL0", "CALL1", "CALLN"}
-_BATCH_ROUTING_KEYS = {"a", "g", "gid", "token", "device_id", "device_name"}
+_BATCH_ROUTING_KEYS = {"a", "g", "gid", "token", "device_id", "device_name", "__rrf_reservation_tag", "__rrf_blocked_tags"}
 # <Prefix>:rx_n:CALL1 returns up to arg1 rx() buffers stacked on a new axis.
 _RX_N_MAX_BUFFERS = 64
 _RX_N_MAX_SAMPLES = 1 << 20
+
+
+def _check_v1_blocked_tags(schema: object, prop: str, verb: str, blocked_tags) -> None:
+    if not blocked_tags or schema is None:
+        return
+    get_tags = getattr(schema, "get_method_tags", None)
+    if not callable(get_tags):
+        return
+    method_name = v1_method_name(prop, verb)
+    if method_name is None:
+        return
+    matched = find_blocked_tag(get_tags(method_name), blocked_tags)
+    if matched is not None:
+        raise RemoteRFPolicyError(
+            blocked_tag_message(v1_function_label(prop, verb), matched),
+            method=method_name,
+        )
 
 
 def _normalize_device_rpc_type(value: str) -> str:
@@ -254,8 +279,14 @@ class RpcManager:
             return {"ip": map_arg(self._builtin_ip_fallback(gid=gid, dev=dev))}
 
         if isinstance(dev, VirtualDevice):
+            if getattr(dev, "blocked_tags", ()):
+                from .host_dynamic_v2 import lab_copy
+                local = lab_copy(gid, dev)
+                if local is not None:
+                    _check_v1_blocked_tags(local, prop, verb, dev.blocked_tags)
             fwd_args = dict(args)
             fwd_args.pop('a', None)
+            fwd_args.pop('__rrf_blocked_tags', None)
             fwd_args['g'] = map_arg(int(gid))
             fwd_args['__rrf_reservation_tag'] = map_arg(dev.reservation_tag)
             results = hts.handle_host_device(
@@ -403,6 +434,7 @@ class RpcManager:
 
     def _dispatch_native_schema(self, *, function_name: str, args: dict, dev: object, gid: int | None = None) -> dict:
         _, prop, verb = function_name.split(':', 2)
+        _check_v1_blocked_tags(dev, prop, verb, getattr(dev, "blocked_tags", ()))
 
         if gid is not None and getattr(dev, "session_scoped", False) and getattr(dev, "device", None) is None:
             # The legacy path is about to open the hardware lazily; a Dynamic
@@ -434,7 +466,7 @@ class RpcManager:
             return {prop: map_arg(result)} if result is not None else {prop: map_arg('None')}
 
         if verb == "CALLN":
-            reserved = {"a", "g", "token", "device_id", "device_name", "wire"}
+            reserved = {"a", "g", "token", "device_id", "device_name", "wire", "__rrf_reservation_tag", "__rrf_blocked_tags"}
             call_args = {
                 str(key): unmap_arg(value)
                 for key, value in dict(args).items()

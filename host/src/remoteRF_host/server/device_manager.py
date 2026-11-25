@@ -51,6 +51,7 @@ class _DeviceState:
     epoch: int = 0
     reservation_tag: str = ""
     lockout_bypass: bool = False
+    blocked_tags: tuple[str, ...] = ()
 
 
 _devices: Dict[int, _DeviceState] = {}
@@ -448,6 +449,7 @@ def _reload_devices_unfenced(*, force: bool) -> bool:
                 st.epoch = previous.epoch
                 st.reservation_tag = previous.reservation_tag
                 st.lockout_bypass = previous.lockout_bypass
+                st.blocked_tags = previous.blocked_tags
         _devices.clear()
         _devices.update(tmp_devices)
 
@@ -576,6 +578,7 @@ def get_local_device_context(device_id: int) -> dict[str, Any] | None:
             "io_lock": st.io_lock,
             "epoch": st.epoch,
             "reservation_tag": st.reservation_tag,
+            "blocked_tags": st.blocked_tags,
         }
 
 
@@ -642,14 +645,32 @@ def _run_hook(gid: int, name: str, failed: str) -> Optional[Future]:
     return future
 
 
-def set_lockout_bypass(device_id: int | str, bypass: bool = False, tag: str = "") -> None:
+def _clean_blocked_tags(blocked_tags) -> tuple[str, ...]:
+    if not blocked_tags:
+        return ()
+    return tuple(
+        item.strip()
+        for item in blocked_tags
+        if isinstance(item, str) and item.strip()
+    )
+
+
+def set_lockout_bypass(
+    device_id: int | str,
+    bypass: bool = False,
+    tag: str = "",
+    blocked_tags=(),
+) -> None:
+    clean_tags = _clean_blocked_tags(blocked_tags)
     with _state_lock:
         st = _devices.get(int(device_id))
         if st is not None:
             st.lockout_bypass = bool(bypass)
+            st.blocked_tags = clean_tags
             if st.schema is not None:
                 # Only admission under io_lock may elevate an RPC's bypass.
                 st.schema.lockout_bypass = False
+                st.schema.blocked_tags = clean_tags
             st.reservation_tag = tag
             st.epoch += 1
 
@@ -680,13 +701,20 @@ def reset_before_rpc(gid: int, epoch: int, schema: object, tag: str | None = Non
         if st is None or st.epoch != epoch or st.schema is not schema or (tag is not None and tag != st.reservation_tag):
             raise RuntimeError("The reservation on this device changed; call again.")
         schema.lockout_bypass = st.lockout_bypass
+        schema.blocked_tags = st.blocked_tags
     if reset:
         _reset_locked(st)
 
 
-def prepare_reservation(device_id: int | str, bypass: bool = False, tag: str = "", resync: bool = False) -> Optional[Future]:
+def prepare_reservation(
+    device_id: int | str,
+    bypass: bool = False,
+    tag: str = "",
+    resync: bool = False,
+    blocked_tags=(),
+) -> Optional[Future]:
     """The lab started a reservation on this device: ready it (a switched Pluto boots) for the holder."""
-    set_lockout_bypass(device_id, bypass, tag)
+    set_lockout_bypass(device_id, bypass, tag, blocked_tags=blocked_tags)
     if resync:
         return None
     if bypass:
@@ -702,7 +730,9 @@ def end_reservation(device_id: int | str) -> Optional[Future]:
         if st is not None:
             if st.schema is not None:
                 st.schema.lockout_bypass = False
+                st.schema.blocked_tags = ()
             st.lockout_bypass = False
+            st.blocked_tags = ()
             st.reservation_tag = ""
             st.reset_pending = True
             st.epoch += 1

@@ -635,6 +635,7 @@ class ServerDirectOpenHandler(_DeviceHandlerBase):
                     device, payload["ice"], rid=str(reservation_id), reservation_end=live["end_time"],
                     still_live=lambda: authorize("get_time_now") is None,
                     tag=device_manager.reservation_tag(live["salt"], live["hash"]),
+                    blocked_tags=device_manager.get_device_blocked_tags(device_id),
                 )
                 if answer is not None:
                     return {**result, "status": "ok", "error_code": None, "payload": {"ice": json.dumps(answer)}}

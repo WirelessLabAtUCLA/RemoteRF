@@ -16,6 +16,7 @@
 """Dynamic v2 local-device control, sessions, handles, and sample streaming."""
 from __future__ import annotations
 
+import contextvars
 import json
 import math
 import numbers
@@ -27,6 +28,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
+from remoterf_device_core.idl.tags import blocked_tag_message, find_blocked_tag
 from remoterf_device_core.native_lifetime import Activity, submit_cleanup
 from remoterf_device_core.integrations import IntegrationError
 from remoterf_device_core.integrations.wire import INTEGRATION_METHODS, decode_request, validate_arguments, validate_result
@@ -41,6 +43,7 @@ from ..common.idl.v2 import (
     CONTROL_PROTOCOL_VERSION,
     SCHEMA_VERSION,
     STREAMING_PROTOCOL_VERSION,
+    get_method_tags,
 )
 # Retained as a module attribute for integrations that patched the former
 # policy loader. Runtime access is no longer gated by it.
@@ -59,6 +62,7 @@ from .device_manager import (
 from .v2_errors import (
     RemoteRFNativeUHDError,
     RemoteRFOverloadError,
+    RemoteRFPolicyError,
     RemoteRFProtocolError,
     RemoteRFReservationError,
     RemoteRFServerOverloadedError,
@@ -82,6 +86,10 @@ _SAMPLE_DTYPES = {
     "<f4": np.dtype("<f4"),
     "<f8": np.dtype("<f8"),
 }
+GRANT_BLOCKED_TAGS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "remoterf_host_grant_blocked_tags",
+    default=(),
+)
 
 
 def _opaque_id(prefix: str) -> str:
@@ -1194,6 +1202,28 @@ class SessionManager:
             job.done.wait(max(0.0, deadline - time.monotonic()))
         return len(session_ids)
 
+    @staticmethod
+    def _check_blocked_tags(
+        session: DeviceSession,
+        owner: str,
+        method_name: str,
+    ) -> None:
+        context = get_local_device_context(session.gid) or {}
+        blocked_tags = tuple(context.get("blocked_tags", ()) or ()) + tuple(
+            GRANT_BLOCKED_TAGS.get() or ()
+        )
+        if not blocked_tags:
+            return
+        matched = find_blocked_tag(
+            get_method_tags(session.schema_v2, owner, method_name),
+            blocked_tags,
+        )
+        if matched is not None:
+            raise RemoteRFPolicyError(
+                blocked_tag_message(method_name, matched),
+                method=method_name,
+            )
+
     def invoke(self, session_id, handle, method_name, args, *, positional_args=None, overload_id=""):
         if method_name in INTEGRATION_METHODS:
             try:
@@ -1205,6 +1235,7 @@ class SessionManager:
                 if not any(item['owner'] == entry.type_id and item['name'] == method_name
                            for item in session.schema_v2['methods']):
                     raise IntegrationError("unsupported", "generic integration API is not declared by this driver")
+                self._check_blocked_tags(session, entry.type_id, method_name)
                 raise IntegrationError("unsupported_host", "application integrations are not supported on host radios")
             except IntegrationError as exc:
                 raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=method_name) from None
@@ -1240,6 +1271,7 @@ class SessionManager:
             )
             if descriptor is None:
                 raise RemoteRFProtocolError(f"method is not declared by schema v2: {method_name}")
+            self._check_blocked_tags(session, entry.type_id, method_name)
             _validate_overload(
                 descriptor,
                 overload_id,
@@ -1305,6 +1337,7 @@ class SessionManager:
                 f"method is not declared by schema v2: "
                 f"{entry.type_id}.{method_name}"
             )
+        self._check_blocked_tags(session, entry.type_id, method_name)
         _validate_overload(
             descriptor,
             overload_id,
@@ -1659,6 +1692,13 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             raise RemoteRFProtocolError(
                                 "sample direction does not match the streamer type"
                             )
+                        session_manager._check_blocked_tags(
+                            session,
+                            entry.type_id,
+                            "send"
+                            if request.direction == grpc_pb2.SAMPLE_DIRECTION_TX
+                            else "recv",
+                        )
                         with entry.lock:
                             if entry.active_operation:
                                 raise RemoteRFServerOverloadedError(
@@ -1796,6 +1836,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                     ):
                         if not entry.type_id.endswith("RXStreamer"):
                             raise RemoteRFStaleHandleError("RX request used a non-RX handle")
+                        session_manager._check_blocked_tags(session, entry.type_id, "recv")
                         buffer = np.empty(shape, dtype=dtype)
                         metadata = self._metadata_object(
                             session.schema, "RXMetadata", request.metadata_json
@@ -1902,6 +1943,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                     ):
                         if not entry.type_id.endswith("TXStreamer"):
                             raise RemoteRFStaleHandleError("TX data used a non-TX handle")
+                        session_manager._check_blocked_tags(session, entry.type_id, "send")
                         if len(request.payload) != byte_count:
                             raise RemoteRFProtocolError(
                                 "TX payload byte length does not match dtype/shape"

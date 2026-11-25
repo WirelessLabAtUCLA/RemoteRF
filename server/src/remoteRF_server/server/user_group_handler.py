@@ -23,6 +23,8 @@ from pathlib import Path
 from functools import wraps
 from typing import Optional, Tuple, List
 
+from remoterf_device_core.idl.tags import normalize_tags
+
 from ..common.utils import *
 from .federation.migrations import ADMIN_GROUP, migrate_gate_f_usergroups_schema
 from .global_onboarding import RELAYED
@@ -35,6 +37,32 @@ import sys
 def whitelist_allows(whitelist, device_id) -> bool:
     """An empty whitelist is unrestricted: the group may use every device."""
     return not whitelist or device_id in whitelist
+
+
+def _parse_blacklisted_tags(raw) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = [part.strip() for part in text.split(",") if part.strip()]
+    elif isinstance(raw, (list, tuple)):
+        parsed = list(raw)
+    else:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    cleaned = [str(item).strip() for item in parsed if item is not None and str(item).strip()]
+    if not cleaned:
+        return []
+    try:
+        return list(normalize_tags(cleaned))
+    except (TypeError, ValueError):
+        return []
 
 
 class UserGroupHandler:
@@ -127,6 +155,7 @@ class UserGroupHandler:
         lifetime_sec: int,
         lan_only: bool = False,
         max_horizon_sec: int = DEFAULT_HORIZON_SEC,
+        blacklisted_tags: list[str] | None = None,
     ) -> Optional[int]:
         try:
             if not isinstance(group_name, str) or not group_name.strip():
@@ -141,6 +170,16 @@ class UserGroupHandler:
                 devices_whitelist = sorted({int(d) for d in devices_whitelist})
             except Exception:
                 return None
+
+            if blacklisted_tags is None:
+                tags_list: list[str] = []
+            else:
+                if isinstance(blacklisted_tags, str) or not isinstance(blacklisted_tags, (list, tuple)):
+                    return None
+                try:
+                    tags_list = list(normalize_tags(blacklisted_tags))
+                except (TypeError, ValueError):
+                    return None
 
             try:
                 max_reservation_time_sec = int(max_reservation_time_sec)
@@ -158,13 +197,14 @@ class UserGroupHandler:
                 return None
 
             devices_json = json.dumps(devices_whitelist)
+            tags_json = json.dumps(tags_list)
 
             # ---- insert ----
             self.cursor.execute(
                 """
                 INSERT INTO UserGroups
-                (group_name, devices_whitelist, max_reservation_time_sec, max_reservations, lifetime_sec, created_at, lan_only, max_horizon_sec)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (group_name, devices_whitelist, max_reservation_time_sec, max_reservations, lifetime_sec, created_at, lan_only, max_horizon_sec, blacklisted_tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     group_name.strip(),
@@ -175,6 +215,7 @@ class UserGroupHandler:
                     datetime.now(),
                     int(bool(lan_only)),
                     max_horizon_sec,
+                    tags_json,
                 ),
             )
             group_id = self.cursor.lastrowid
@@ -353,6 +394,7 @@ class UserGroupHandler:
         lifetime_sec: int = None,
         lan_only: bool = None,
         max_horizon_sec: int = None,
+        blacklisted_tags: list[str] = None,
     ) -> bool:
         try:
             try:
@@ -370,6 +412,7 @@ class UserGroupHandler:
                 (group_name is not None and str(group_name).strip() != ADMIN_GROUP)
                 or devices_whitelist
                 or (lifetime_sec is not None and int(lifetime_sec) != 0)
+                or bool(blacklisted_tags)
             ):
                 return False
 
@@ -437,6 +480,16 @@ class UserGroupHandler:
                 sets.append("max_horizon_sec = ?")
                 params.append(v)
 
+            if blacklisted_tags is not None:
+                if isinstance(blacklisted_tags, str) or not isinstance(blacklisted_tags, (list, tuple)):
+                    return False
+                try:
+                    tags_list = list(normalize_tags(blacklisted_tags))
+                except (TypeError, ValueError):
+                    return False
+                sets.append("blacklisted_tags = ?")
+                params.append(json.dumps(tags_list))
+
             if not sets:
                 return False
 
@@ -462,7 +515,8 @@ class UserGroupHandler:
                     lifetime_sec,
                     created_at,
                     lan_only,
-                    max_horizon_sec
+                    max_horizon_sec,
+                    blacklisted_tags
                 FROM UserGroups
                 ORDER BY group_id ASC
             """)
@@ -516,6 +570,7 @@ class UserGroupHandler:
                     "lifetime_sec": life,
                     "lan_only": bool(r[7]),
                     "max_horizon_sec": int(r[8]),
+                    "blacklisted_tags": _parse_blacklisted_tags(r[9]),
                     "created_at": str(created_at) if created_at is not None else None,
                 }
                 if include_users:
@@ -975,6 +1030,68 @@ class UserGroupHandler:
             return (best is not None, best or 0)
         except Exception:
             return (False, 0)
+
+    @db_connection
+    def get_users_blocked_tags(self, *, uid: int, device_id: int) -> tuple[bool, list[str]]:
+        """(allowed, blocked_tags) for ``uid`` on ``device_id``.
+
+        Only groups that grant access to ``device_id`` participate, and a tag
+        is blocked only when EVERY such group blacklists it (case-insensitive;
+        non-blacklist wins). Members of ``admin`` are never blocked.
+        """
+        try:
+            uid = int(uid)
+            device_id = int(device_id)
+            if uid < 0 or device_id < 0:
+                return (False, [])
+
+            group_ids = self._user_group_ids(uid)
+            if not group_ids:
+                return (False, [])
+
+            placeholders = ",".join(["?"] * len(group_ids))
+            self.cursor.execute(
+                f"SELECT group_name, devices_whitelist, blacklisted_tags FROM UserGroups WHERE group_id IN ({placeholders})",
+                tuple(group_ids),
+            )
+            rows = self.cursor.fetchall()
+            if not rows:
+                return (False, [])
+
+            allowed = False
+            effective: dict[str, str] | None = None
+
+            for group_name, wl_str, tags_raw in rows:
+                if group_name == ADMIN_GROUP:
+                    return (True, [])
+                whitelist: list[int] = []
+                if wl_str is not None:
+                    try:
+                        parsed = json.loads(wl_str) if isinstance(wl_str, str) else []
+                        if isinstance(parsed, list):
+                            whitelist = [int(x) for x in parsed if str(x).strip() != ""]
+                    except Exception:
+                        try:
+                            whitelist = [int(p.strip()) for p in str(wl_str).split(",") if p.strip() != ""]
+                        except Exception:
+                            whitelist = []
+                if not whitelist_allows(whitelist, device_id):
+                    continue
+                allowed = True
+                tags = _parse_blacklisted_tags(tags_raw)
+                if not tags:
+                    effective = {}
+                elif effective is None:
+                    effective = {tag.casefold(): tag for tag in tags}
+                elif effective:
+                    current = {tag.casefold() for tag in tags}
+                    effective = {k: v for k, v in effective.items() if k in current}
+
+            if not allowed:
+                return (False, [])
+            return (True, list(effective.values()) if effective else [])
+        except Exception:
+            return (False, [])
 
     @db_connection
     def get_users_max_reservations(self, *, uid: int, device_id: int) -> tuple[bool, int]:
