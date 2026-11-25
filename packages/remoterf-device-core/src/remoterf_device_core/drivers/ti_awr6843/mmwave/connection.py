@@ -1,14 +1,20 @@
 import glob
+import logging
 import os
 import time
 from typing import List, Optional, Tuple
 import serial
 
+logger = logging.getLogger(__name__)
 
-def find_radar_ports() -> Tuple[Optional[str], Optional[str]]:
+
+def find_radar_ports(fallback: bool = True) -> Tuple[Optional[str], Optional[str]]:
     """
     Auto-detects the TI mmWave radar serial ports (CLI and Data).
     Returns (cli_port, data_port).
+
+    With fallback, guesses the first two /dev/ttyUSB* (or /dev/ttyACM*) devices
+    when /dev/serial/by-id has no TI ports, and logs a warning saying so.
     """
     by_id_dir = "/dev/serial/by-id"
     cli_port = None
@@ -26,7 +32,7 @@ def find_radar_ports() -> Tuple[Optional[str], Optional[str]]:
                     data_port = full_path
 
     # Fallback to standard /dev/ttyUSB* or /dev/ttyACM*
-    if not cli_port or not data_port:
+    if fallback and (not cli_port or not data_port):
         usb_ports = sorted(glob.glob("/dev/ttyUSB*"))
         acm_ports = sorted(glob.glob("/dev/ttyACM*"))
 
@@ -36,6 +42,12 @@ def find_radar_ports() -> Tuple[Optional[str], Optional[str]]:
         elif len(acm_ports) >= 2:
             cli_port = acm_ports[0]
             data_port = acm_ports[1]
+        if cli_port and data_port:
+            logger.warning(
+                "No TI radar under /dev/serial/by-id; guessing CLI %s and Data %s. "
+                "These may belong to another USB serial device: set cli_port and "
+                "data_port in devices.yml.", cli_port, data_port,
+            )
 
     return cli_port, data_port
 
@@ -171,9 +183,16 @@ class RadarConnection:
 
         return True
 
-    def send_config_text(self, config_text: str, verbose: bool = True) -> bool:
+    def send_config_text(
+        self,
+        config_text: str,
+        verbose: bool = True,
+        start: bool = True,
+        command_timeout: float = 0.8,
+    ) -> bool:
         """
         Sends configuration commands from a multiline string directly to the radar.
+        With start=False, sensorStart lines are skipped so the radar stays stopped.
         """
         # Check if CLI is awake
         if not self.check_connection():
@@ -191,8 +210,10 @@ class RadarConnection:
             # Skip empty lines and comment lines starting with '%'
             if not line or line.startswith("%"):
                 continue
+            if not start and line.split()[0] == "sensorStart":
+                continue
 
-            resp = self.send_command(line)
+            resp = self.send_command(line, timeout=command_timeout)
             if not resp:
                 raise RuntimeError(
                     f"Radar timed out without acknowledging command: '{line}'.\n"

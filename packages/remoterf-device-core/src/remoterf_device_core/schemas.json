@@ -13,14 +13,14 @@
  },
  {
   "device_type": "bluetooth",
-  "driver_version": "0.1.0",
-  "v1": "sha256:72644c2af2d5e202f76fd07b9a30554f4deca2fdceffddaa21e2c3eaca9056d9",
+  "driver_version": "0.1.4",
+  "v1": "sha256:5b391955d0e98c6cf6c36efcb672866dd9db5b887d40feeb615c4a0922cbe5f9",
   "v2": null
  },
  {
   "device_type": "gps",
-  "driver_version": "0.1.0",
-  "v1": "sha256:62d475b8c087bd2af633e53f85f1c4da811f6a9b7822580536019c6495cc9515",
+  "driver_version": "0.2.0",
+  "v1": "sha256:5e791256a75a5fbfd395dea1f7708f93f0e044f1e112fa324cb9602d3f7efa96",
   "v2": null
  },
  {
@@ -49,8 +49,8 @@
  },
  {
   "device_type": "ti_awr6843",
-  "driver_version": "0.1.0",
-  "v1": "sha256:a052b7e435ea138af9e8b2467a79fb0fcd47094b9cd01d8afe385a7c3b3db0e8",
+  "driver_version": "0.1.1",
+  "v1": "sha256:1a4b5f7cdb62fcbdf3aecd5a99c5c1f5f8744024104d380a0c69cccb2c5c4ab3",
   "v2": null
  },
  {
