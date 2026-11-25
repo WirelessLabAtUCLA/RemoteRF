@@ -188,6 +188,7 @@ def _connect_from_record(rec: Dict[str, Any]):
     try:
         from remoterf_device_core.drivers.adalm_pluto.lockout_keys import LOCKOUT_KEYS
         from remoterf_device_core.freq_ranges import (
+            FREQ_RANGE_KEYS,
             NON_PLUTO_LOCKOUT_KEYS,
             parse_freq_limits,
         )
@@ -207,11 +208,17 @@ def _connect_from_record(rec: Dict[str, Any]):
                 raise ValueError("frequency limit keys require a supported SDR driver (adalm_pluto, hackrf, usrp)")
         if pluto:
             cfg = parse_lockouts(init_kwargs)
-            if cfg is not None and (
-                getattr(getattr(schema_cls, "dispatch", None), "__qualname__", "") != "PlutoSchema.dispatch"
-                or not callable(getattr(schema_cls, "configure_lockouts", None))
-            ):
-                raise ValueError("the serving driver has no lockout guard")
+            if cfg is not None:
+                if (
+                    getattr(getattr(schema_cls, "dispatch", None), "__qualname__", "") != "PlutoSchema.dispatch"
+                    or not callable(getattr(schema_cls, "configure_lockouts", None))
+                ):
+                    raise ValueError("the serving driver has no lockout guard")
+                if (
+                    any(isinstance(key, str) and key.lower() in FREQ_RANGE_KEYS for key in init_kwargs)
+                    and not callable(getattr(schema_cls, "_freq_limits_for", None))
+                ):
+                    raise ValueError("the serving driver does not support frequency allow/deny range lockouts")
         elif freq_driver:
             cfg = parse_freq_limits(init_kwargs)
             if cfg is not None and not callable(getattr(schema_cls, "configure_lockouts", None)):

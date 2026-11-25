@@ -100,7 +100,13 @@ def parse_lockouts(init) -> dict | None:
     cfg = {key: init[key] for key in _ALL_LOCKOUT_KEYS if key in init}
     if not cfg:
         return None
-    limits = parse_freq_limits(init, min_hz=70e6, max_hz=6e9, strict_min_max=True)
+    limits = parse_freq_limits(
+        init,
+        min_hz=70e6,
+        max_hz=6e9,
+        strict_min_max=True,
+        reject_unknown=False,
+    )
     for key, value in list(cfg.items()):
         if key in _BOOL_KEYS:
             if type(value) is not bool:

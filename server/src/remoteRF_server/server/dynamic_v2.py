@@ -1430,15 +1430,12 @@ class SessionManager:
                     if method_name == "set_tx_rate":
                         check_rate = getattr(session.schema, "check_tx_rate_change", None)
                         if callable(check_rate):
-                            active_tx_channels = sorted(
-                                {
-                                    ch
-                                    for h in session.handles.values()
-                                    if h.type_id.endswith("TXStreamer")
-                                    for ch in (h.stream_channels or [0])
-                                }
-                            )
-                            if active_tx_channels:
+                            tx_handles = [
+                                h
+                                for h in session.handles.values()
+                                if h.type_id.endswith("TXStreamer")
+                            ]
+                            if tx_handles:
                                 rate_val = native_args.get(
                                     "rate",
                                     native_positional[0] if native_positional else None,
@@ -1446,6 +1443,17 @@ class SessionManager:
                                 chan_val = native_args.get(
                                     "chan",
                                     native_positional[1] if len(native_positional) > 1 else None,
+                                )
+                                active_tx_channels = (
+                                    ()
+                                    if any(not h.stream_channels for h in tx_handles)
+                                    else sorted(
+                                        {
+                                            ch
+                                            for h in tx_handles
+                                            for ch in h.stream_channels
+                                        }
+                                    )
                                 )
                                 check_rate(rate_val, chan_val, active_tx_channels)
                     result = session.schema.invoke_native(
@@ -1471,7 +1479,29 @@ class SessionManager:
                 stream_args = args.get("stream_args")
                 if stream_args is None and positional_args:
                     stream_args = positional_args[0]
-                if isinstance(stream_args, dict):
+                if type_id.endswith(("RXStreamer", "TXStreamer")):
+                    from ..drivers.usrp.usrp_schema import _extract_stream_channels
+                    source = (
+                        native_args.get(
+                            "stream_args",
+                            native_positional[0] if native_positional else None,
+                        )
+                        if isinstance(stream_args, Mapping)
+                        and "__remoterf_handle_arg__" in stream_args
+                        else stream_args
+                    )
+                    child.stream_channels = _extract_stream_channels(source)
+                    unwrapped = stream_args
+                    while (
+                        isinstance(unwrapped, Mapping)
+                        and unwrapped.get("__remoterf_uhd_helper__") == "stream"
+                    ):
+                        unwrapped = unwrapped.get("stream_args")
+                    if isinstance(unwrapped, Mapping):
+                        child.cpu_format = str(unwrapped.get("cpu_format") or "")
+                    elif hasattr(source, "cpu_format"):
+                        child.cpu_format = str(getattr(source, "cpu_format") or "")
+                elif isinstance(stream_args, dict):
                     child.stream_channels = [
                         int(item) for item in stream_args.get("channels", ())
                     ]
@@ -1979,7 +2009,10 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                         raise RemoteRFProtocolError(
                             "sample_count must match the final shape dimension"
                         )
-                    if entry.stream_channels and list(request.channels) != entry.stream_channels:
+                    if (
+                        entry.stream_channels
+                        and (list(request.channels) or [0]) != entry.stream_channels
+                    ):
                         raise RemoteRFProtocolError(
                             "sample channels do not match the stream handle"
                         )
@@ -2017,7 +2050,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                                 session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
                         check_rx = getattr(session.schema, "check_rx_channels", None)
                         if callable(check_rx):
-                            check_rx(entry.stream_channels or list(request.channels) or [0])
+                            check_rx(entry.stream_channels)
                         buffer = np.empty(shape, dtype=dtype)
                         metadata = self._metadata_object(
                             session.schema, "RXMetadata", request.metadata_json
@@ -2140,7 +2173,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                                     session.schema.lockout_bypass = bool(ctx["lockout_bypass"])
                             check_tx = getattr(session.schema, "check_tx_channels", None)
                             if callable(check_tx):
-                                check_tx(entry.stream_channels or list(request.channels) or [0])
+                                check_tx(entry.stream_channels)
                             count = int(
                                 entry.value.send(
                                     _native_uhd_buffer(samples),

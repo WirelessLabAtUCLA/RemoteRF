@@ -664,57 +664,205 @@ def _to_finite_float(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _policy_name(value) -> str:
+def _policy_name(value) -> str | None:
     if value is None:
         return "AUTO"
-    name = str(value).rsplit(".", 1)[-1].upper()
+    if isinstance(value, bool):
+        return None
+    raw = getattr(value, "name", None)
+    text = raw if isinstance(raw, str) else str(value)
+    name = text.rsplit(".", 1)[-1].upper()
     if name.startswith("POLICY_"):
         name = name[len("POLICY_"):]
-    return name or "AUTO"
+    return name if name in {"AUTO", "MANUAL", "NONE"} else None
 
 
-def _extract_tune_freq(tune_request, *, side: str, current_freq: float | None = None) -> float | None:
+def _finite_bounds(low: float, high: float) -> tuple[float, float] | None:
+    if not (math.isfinite(low) and math.isfinite(high)):
+        return None
+    return (low, high) if low <= high else (high, low)
+
+
+def _extract_tune_freq_bounds(
+    tune_request,
+    *,
+    side: str,
+    current_freq: float | None = None,
+    current_rf: float | None = None,
+) -> tuple[float, float] | None:
     if isinstance(tune_request, bool):
         return None
     if isinstance(tune_request, Real):
-        return _to_finite_float(tune_request)
+        val = _to_finite_float(tune_request)
+        return (val, val) if val is not None else None
+
     if isinstance(tune_request, Mapping):
-        raw_target = tune_request.get("target_freq")
-        if raw_target is None:
-            raw_target = tune_request.get("freq")
-        if raw_target is None:
-            kw = tune_request.get("kwargs")
-            if isinstance(kw, Mapping):
-                raw_target = kw.get("target_freq", kw.get("freq"))
-        if raw_target is None:
-            pos = tune_request.get("args")
-            if isinstance(pos, (list, tuple)) and pos:
-                raw_target = pos[0]
-        rf_policy = _policy_name(tune_request.get("rf_freq_policy"))
-        dsp_policy = _policy_name(tune_request.get("dsp_freq_policy"))
-        rf_freq = _to_finite_float(tune_request.get("rf_freq"))
-        dsp_freq = _to_finite_float(tune_request.get("dsp_freq"))
+        kind = tune_request.get("__uhd_type__")
+        if kind is None:
+            if (
+                ("cpu_format" in tune_request and "otw_format" in tune_request)
+                or "secs" in tune_request
+                or "spec" in tune_request
+            ):
+                return None
+            if "target_freq" in tune_request or "freq" in tune_request:
+                raw = (
+                    tune_request["target_freq"]
+                    if "target_freq" in tune_request
+                    else tune_request["freq"]
+                )
+                val = _to_finite_float(raw)
+                return (val, val) if val is not None else None
+            return None
+        if kind != "TuneRequest":
+            return None
+
+        raw_args = tune_request.get("args", ())
+        legacy_constructor_args = isinstance(raw_args, (list, tuple))
+        raw_kwargs = tune_request.get("kwargs")
+        if raw_kwargs is not None and not isinstance(raw_kwargs, Mapping):
+            return None
+        kw = dict(raw_kwargs or {})
+        if not set(kw).issubset({"target_freq", "lo_offset"}):
+            return None
+        pos = list(raw_args) if legacy_constructor_args else []
+        if len(pos) > 2:
+            return None
+
+        has_target = False
+        raw_target = None
+        raw_lo_offset = None
+        if pos:
+            if "target_freq" in kw or (len(pos) >= 2 and "lo_offset" in kw):
+                return None
+            has_target = True
+            raw_target = pos[0]
+            raw_lo_offset = pos[1] if len(pos) >= 2 else kw.get("lo_offset")
+        elif "target_freq" in tune_request:
+            if "target_freq" in kw or (
+                tune_request.get("lo_offset") is not None and "lo_offset" in kw
+            ):
+                return None
+            has_target = True
+            raw_target = tune_request["target_freq"]
+            raw_lo_offset = (
+                tune_request.get("lo_offset")
+                if tune_request.get("lo_offset") is not None
+                else kw.get("lo_offset")
+            )
+        else:
+            if "target_freq" in kw:
+                has_target = True
+                raw_target = kw["target_freq"]
+            raw_lo_offset = kw.get("lo_offset")
+
+        target_freq = _to_finite_float(raw_target) if has_target else None
+        if has_target and target_freq is None:
+            return None
+
+        if raw_lo_offset is not None:
+            lo_offset = _to_finite_float(raw_lo_offset)
+            if lo_offset is None or target_freq is None:
+                return None
+            rf_policy: str | None = "MANUAL"
+            rf_freq: float | None = target_freq + lo_offset
+            rf_freq_set = True
+        else:
+            rf_policy = "AUTO"
+            rf_freq = None
+            rf_freq_set = False
+        dsp_policy: str | None = "AUTO"
+        dsp_freq: float | None = 0.0
+
+        keep_rf = (
+            tune_request.get("lo_offset") is not None
+            and str(tune_request.get("rf_freq_policy", "")).rsplit(".", 1)[-1].upper() == "AUTO"
+            and not tune_request.get("rf_freq")
+        )
+        if "rf_freq_policy" in tune_request and not keep_rf:
+            if tune_request["rf_freq_policy"] is None:
+                return None
+            rf_policy = _policy_name(tune_request["rf_freq_policy"])
+        if "rf_freq" in tune_request and not keep_rf:
+            rf_freq = _to_finite_float(tune_request["rf_freq"])
+            rf_freq_set = True
+        if "dsp_freq_policy" in tune_request:
+            if tune_request["dsp_freq_policy"] is None:
+                return None
+            dsp_policy = _policy_name(tune_request["dsp_freq_policy"])
+        if "dsp_freq" in tune_request:
+            dsp_freq = _to_finite_float(tune_request["dsp_freq"])
     else:
-        raw_target = getattr(tune_request, "target_freq", None)
+        if not any(
+            hasattr(tune_request, attr)
+            for attr in ("target_freq", "rf_freq_policy", "dsp_freq_policy")
+        ):
+            return None
+        target_freq = _to_finite_float(getattr(tune_request, "target_freq", None))
         rf_policy = _policy_name(getattr(tune_request, "rf_freq_policy", None))
         dsp_policy = _policy_name(getattr(tune_request, "dsp_freq_policy", None))
         rf_freq = _to_finite_float(getattr(tune_request, "rf_freq", None))
+        rf_freq_set = hasattr(tune_request, "rf_freq")
         dsp_freq = _to_finite_float(getattr(tune_request, "dsp_freq", None))
 
-    if rf_policy == "MANUAL" and dsp_policy == "NONE":
-        return rf_freq
+    if rf_policy is None or dsp_policy is None:
+        return None
+
+    sign = 1.0 if side == "tx" else -1.0
+
+    if rf_policy == "AUTO" and dsp_policy == "AUTO":
+        return _finite_bounds(target_freq, target_freq) if target_freq is not None else None
+    if rf_policy == "AUTO" and dsp_policy == "MANUAL":
+        if target_freq is None or dsp_freq is None:
+            return None
+        return _finite_bounds(target_freq, target_freq + sign * dsp_freq)
+    if rf_policy == "AUTO" and dsp_policy == "NONE":
+        if target_freq is None or current_freq is None or current_rf is None:
+            return None
+        freq = target_freq + (current_freq - current_rf)
+        return _finite_bounds(freq, freq)
+    if rf_policy == "MANUAL" and dsp_policy == "AUTO":
+        if not rf_freq_set or rf_freq is None or target_freq is None:
+            return None
+        return _finite_bounds(rf_freq, target_freq)
     if rf_policy == "MANUAL" and dsp_policy == "MANUAL":
-        if rf_freq is None:
+        if not rf_freq_set or rf_freq is None or dsp_freq is None:
             return None
-        offset = 0.0 if dsp_freq is None else dsp_freq
-        return (rf_freq + offset) if side == "tx" else (rf_freq - offset)
+        return _finite_bounds(rf_freq, rf_freq + sign * dsp_freq)
+    if rf_policy == "MANUAL" and dsp_policy == "NONE":
+        if not rf_freq_set or rf_freq is None or current_freq is None or current_rf is None:
+            return None
+        freq = rf_freq + (current_freq - current_rf)
+        return _finite_bounds(freq, freq)
+    if rf_policy == "NONE" and dsp_policy == "AUTO":
+        if current_rf is None or target_freq is None:
+            return None
+        return _finite_bounds(current_rf, target_freq)
     if rf_policy == "NONE" and dsp_policy == "MANUAL":
-        if current_freq is None or dsp_freq is None:
+        if current_rf is None or dsp_freq is None:
             return None
-        return (current_freq + dsp_freq) if side == "tx" else (current_freq - dsp_freq)
+        return _finite_bounds(current_rf, current_rf + sign * dsp_freq)
     if rf_policy == "NONE" and dsp_policy == "NONE":
-        return current_freq if current_freq is not None else _to_finite_float(raw_target)
-    return _to_finite_float(raw_target)
+        return _finite_bounds(current_freq, current_freq) if current_freq is not None else None
+    return None
+
+
+def _extract_tune_freq(
+    tune_request,
+    *,
+    side: str,
+    current_freq: float | None = None,
+    current_rf: float | None = None,
+) -> float | None:
+    bounds = _extract_tune_freq_bounds(
+        tune_request,
+        side=side,
+        current_freq=current_freq,
+        current_rf=current_rf,
+    )
+    if bounds is None or bounds[0] != bounds[1]:
+        return None
+    return bounds[0]
 
 
 def _extract_stream_channels(stream_args) -> list[int]:
@@ -724,9 +872,10 @@ def _extract_stream_channels(stream_args) -> list[int]:
         raw = stream_args.get("channels")
     else:
         raw = getattr(stream_args, "channels", None)
-    if not raw:
+    if raw is None:
         return [0]
-    return [int(ch) for ch in raw]
+    channels = [int(ch) for ch in raw]
+    return channels or [0]
 
 
 @idl_register("usrp")
@@ -803,22 +952,46 @@ class UsrpSchema(DeviceSchema):
             return True, None
         return True, _to_finite_float(value)
 
+    def _read_device_lo_freq(self, side: str, chan: int) -> float | None:
+        fn = getattr(self.device, f"get_{side}_lo_freq", None)
+        if not callable(fn):
+            return None
+        try:
+            value = fn("all", chan)
+        except TypeError:
+            try:
+                value = fn(chan)
+            except Exception:
+                return None
+        except Exception:
+            return None
+        return _to_finite_float(value)
+
     def _check_tx_band(
         self,
         *,
         chan: int = 0,
         freq=None,
+        freq_bounds: tuple[float, float] | None = None,
         rate=None,
         require_positive_rate: bool = False,
     ) -> None:
         limits = self._freq_limits
         if limits is None or not limits.tx.is_active:
             return
-        if freq is None:
-            _, lo = self._read_device_channel_value("get_tx_freq", chan)
+        if freq_bounds is not None:
+            lo_f = _to_finite_float(freq_bounds[0])
+            hi_f = _to_finite_float(freq_bounds[1])
+            if lo_f is None or hi_f is None or lo_f > hi_f:
+                self._freq_refuse("TX refused: TX frequency must be a finite number.")
+                return
+        elif freq is None:
+            _, lo_f = self._read_device_channel_value("get_tx_freq", chan)
+            hi_f = lo_f
         else:
-            lo = _to_finite_float(freq)
-        if lo is None:
+            lo_f = _to_finite_float(freq)
+            hi_f = lo_f
+        if lo_f is None or hi_f is None:
             self._freq_refuse("TX refused: TX frequency must be a finite number.")
             return
         if rate is None:
@@ -847,7 +1020,7 @@ class UsrpSchema(DeviceSchema):
                 "TX refused: live TX sample rate must be a finite positive number."
             )
             return
-        low, high = lo - sr / 2.0, lo + sr / 2.0
+        low, high = lo_f - sr / 2.0, hi_f + sr / 2.0
         if not limits.tx.allows_band(low, high):
             self._freq_refuse(
                 limits.tx.format_band_error("tx", low, high, detail="tx_freq ± tx_rate/2")
@@ -872,11 +1045,20 @@ class UsrpSchema(DeviceSchema):
             return
         ch = int(chan)
         _, current = self._read_device_channel_value("get_tx_freq", ch)
-        freq = _extract_tune_freq(tune_request, side="tx", current_freq=current)
-        if freq is None:
-            self._freq_refuse("TX refused: TX frequency must be a finite number.")
+        current_rf = self._read_device_lo_freq("tx", ch)
+        bounds = _extract_tune_freq_bounds(
+            tune_request,
+            side="tx",
+            current_freq=current,
+            current_rf=current_rf,
+        )
+        if bounds is None:
+            self._freq_refuse(
+                "TX refused: cannot determine resulting TX frequency for tune request "
+                f"against {limits.tx.describe_limits('tx')}."
+            )
             return
-        self._check_tx_band(chan=ch, freq=freq, require_positive_rate=False)
+        self._check_tx_band(chan=ch, freq_bounds=bounds, require_positive_rate=False)
 
     def _check_rx_tune(self, tune_request, chan=0) -> None:
         limits = self._freq_limits
@@ -884,27 +1066,56 @@ class UsrpSchema(DeviceSchema):
             return
         ch = int(chan)
         _, current = self._read_device_channel_value("get_rx_freq", ch)
-        freq = _extract_tune_freq(tune_request, side="rx", current_freq=current)
-        self._check_rx_freq(freq)
+        current_rf = self._read_device_lo_freq("rx", ch)
+        bounds = _extract_tune_freq_bounds(
+            tune_request,
+            side="rx",
+            current_freq=current,
+            current_rf=current_rf,
+        )
+        if bounds is None:
+            self._freq_refuse(
+                "RX refused: cannot determine resulting RX frequency for tune request "
+                f"against {limits.rx.describe_limits('rx')}."
+            )
+            return
+        if bounds[0] == bounds[1]:
+            self._check_rx_freq(bounds[0])
+            return
+        if not limits.rx.allows_band(bounds[0], bounds[1]):
+            self._freq_refuse(
+                limits.rx.format_band_error(
+                    "rx", bounds[0], bounds[1], detail="RF/DSP tune range"
+                )
+            )
 
     def check_tx_channels(self, channels) -> None:
         limits = self._freq_limits
         if limits is None or not limits.tx.is_active:
             return
-        for chan in (list(channels) if channels else [0]):
+        if not channels:
+            self._freq_refuse("TX refused: stream channels are unknown.")
+            return
+        for chan in channels:
             self._check_tx_band(chan=int(chan), require_positive_rate=True)
 
     def check_rx_channels(self, channels) -> None:
         limits = self._freq_limits
         if limits is None or not limits.rx.is_active:
             return
-        for chan in (list(channels) if channels else [0]):
+        if not channels:
+            self._freq_refuse("RX refused: stream channels are unknown.")
+            return
+        for chan in channels:
             _, freq = self._read_device_channel_value("get_rx_freq", int(chan))
             self._check_rx_freq(freq)
 
     def check_tx_rate_change(self, rate, chan, active_channels) -> None:
         limits = self._freq_limits
-        if limits is None or not limits.tx.is_active or not active_channels:
+        if limits is None or not limits.tx.is_active:
+            return
+        if not active_channels:
+            self._freq_refuse("TX refused: active TX stream channels are unknown.")
             return
         if chan is None or int(chan) >= (1 << 32):
             targets = list(active_channels)

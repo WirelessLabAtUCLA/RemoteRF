@@ -16,6 +16,7 @@
 """Tests for shared multi-range frequency limits across Pluto, HackRF, and USRP."""
 from __future__ import annotations
 
+import string
 import sys
 import types
 from unittest.mock import patch
@@ -34,6 +35,7 @@ from remoterf_device_core.drivers.usrp.usrp_schema import UsrpSchema, _usrp_args
 from remoterf_device_core.drivers.usrp_phaser.usrp_phaser_schema import UsrpPhaserSchema
 from remoterf_device_core.freq_ranges import (
     FREQ_RANGE_KEYS,
+    NON_PLUTO_LOCKOUT_KEYS,
     DirectionFreqLimits,
     merge_ranges,
     parse_freq_limits,
@@ -345,6 +347,86 @@ def test_pluto_park_tx_lo_skips_covered_first_range_and_fails_if_empty():
     assert rx_only is not None and rx_only["allow_rf_loopback"] is True
 
 
+def test_pluto_deny_ranges_not_restricted_to_hardware_bounds():
+    tx_cfg = parse_lockouts({"tx_deny": [[0, 400e6]]})
+    assert tx_cfg is not None
+    assert tx_cfg["tx_deny"] == ((0.0, 400e6),)
+    assert tx_cfg["park_tx_lo"] == 915e6
+
+    rx_cfg = parse_lockouts({"rx_deny": [[5.9e9, 7.2e9]]})
+    assert rx_cfg is not None
+    assert rx_cfg["rx_deny"] == ((5.9e9, 7.2e9),)
+
+    # Pluto runtime enforcement works with out-of-hardware-bounds deny ranges.
+    radio = _FakePluto()
+    schema = PlutoSchema()
+    schema.bind(radio)
+    schema.configure_lockouts(parse_lockouts({"tx_deny": [[0, 400e6]], "rx_deny": [[5.9e9, 7.2e9]]}))
+    with pytest.raises(RemoteRFPolicyError, match=r"0–400 MHz"):
+        schema.dispatch("set_tx_lo", {"value": 300_000_000})
+    with pytest.raises(RemoteRFPolicyError, match=r"5900–7200 MHz"):
+        schema.dispatch("set_rx_lo", {"value": 5_950_000_000})
+    schema.dispatch("set_rx_lo", {"value": 5_800_000_000})
+
+    # Parking selects a valid frequency inside Pluto's 70 MHz-6 GHz range, or fails if nothing remains.
+    park_cfg = parse_lockouts({"tx_deny": [[0, 1e9]]})
+    assert park_cfg is not None and 1e9 < park_cfg["park_tx_lo"] < 6e9
+    with pytest.raises(ValueError, match="park_tx_lo"):
+        parse_lockouts({"tx_deny": [[0, 10e9]]})
+
+    # Hardware bounds still apply to allow ranges, and negative deny frequencies still fail.
+    with pytest.raises(ValueError, match="between"):
+        parse_lockouts({"tx_allow": [[0, 400e6]]})
+    with pytest.raises(ValueError, match="between"):
+        parse_lockouts({"rx_allow": [[5.9e9, 7.2e9]]})
+    with pytest.raises(ValueError, match=">= 0"):
+        parse_lockouts({"tx_deny": [[-1.0, 400e6]]})
+
+
+def test_unknown_or_misspelled_freq_limit_keys_fail_closed():
+    for bad_key in (
+        "tx_alow",
+        "tx_deny_ranges",
+        "rx_alow",
+        "rx_denied",
+        "tx_range",
+        "freq_allow",
+        "TX_ALOW",
+        "admin_override",
+        "tx_lockout",
+        "rx_only",
+    ):
+        with pytest.raises(ValueError, match="unknown frequency-limit init key") as exc:
+            parse_freq_limits({bad_key: [[902e6, 928e6]]})
+        assert "\n" not in str(exc.value)
+
+    # Every single-edit typo of every non-Pluto lockout key fails closed.
+    characters = string.ascii_lowercase + "_-"
+    for key in sorted(NON_PLUTO_LOCKOUT_KEYS):
+        typos = {key[:i] + key[i + 1:] for i in range(len(key))}
+        typos.update(key[:i] + key[i + 1] + key[i] + key[i + 2:] for i in range(len(key) - 1))
+        typos.update(key[:i] + ch + key[i + 1:] for i in range(len(key)) for ch in characters)
+        typos.update(key[:i] + ch + key[i:] for i in range(len(key) + 1) for ch in characters)
+        for typo in sorted(typos - NON_PLUTO_LOCKOUT_KEYS):
+            with pytest.raises(ValueError):
+                parse_freq_limits({typo: 1})
+
+    # Legitimate HackRF / USRP / Phaser init keys are unaffected.
+    assert parse_freq_limits(
+        {
+            "serial": "31A2B3C",
+            "addr": "192.168.10.2",
+            "device_index": 0,
+            "profile": "usrp2901",
+            "type": "b200",
+            "args": "num_recv_frames=256",
+            "master_clock_rate": 16e6,
+            "num_recv_frames": 256,
+            "phaser_uri": "ip:localhost",
+        }
+    ) is None
+
+
 # ── HackRF enforcement ────────────────────────────────────────────────
 
 
@@ -447,7 +529,7 @@ def test_hackrf_tx_rx_half_duplex_and_bypass():
 
 
 class _FakeTuneRequest:
-    def __init__(self, target_freq, lo_offset=0.0):
+    def __init__(self, target_freq=0.0, lo_offset=0.0):
         self.target_freq = float(target_freq)
         self.rf_freq = float(target_freq) + float(lo_offset)
         self.dsp_freq = 0.0
@@ -718,6 +800,237 @@ def test_usrp_v2_invoke_native_and_session_cloning():
                 session_schema.invoke_native("get_tx_stream", {"stream_args": stream_payload})
             with pytest.raises(RemoteRFPolicyError, match=r"900–930 MHz"):
                 session_schema.invoke_native("get_tx_stream", {}, positional_args=[stream_payload])
+
+
+def test_usrp_tune_precheck_all_policies_and_legacy_args():
+    class _LoAwareUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_lo_freqs = {0: 915e6}
+            self.rx_lo_freqs = {0: 915e6}
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo_freqs[chan]
+
+        def get_rx_lo_freq(self, name="all", chan=0):
+            return self.rx_lo_freqs[chan]
+
+    fake_uhd = _fake_uhd_module()
+    limits = parse_freq_limits(
+        {
+            "tx_allow": [[902e6, 928e6]],
+            "tx_deny": [[917e6, 918e6]],
+            "rx_allow": [[902e6, 928e6]],
+            "rx_deny": [[920e6, 922e6]],
+        }
+    )
+
+    # Without LO readback: policies depending on unknown RF LO or DSP offset fail closed.
+    plain_dev = _FakeUSRP()
+    plain_dev.tx_rates[0] = 2e6
+    plain_schema = UsrpSchema()
+    plain_schema.bind(plain_dev)
+    plain_schema.configure_lockouts(limits)
+
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # Dict carrying both target_freq and legacy args uses args[0] (matching _construct).
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "target_freq": 915e6, "args": [2.45e9]},
+                0,
+            )
+        assert plain_dev.tx_freqs[0] == 915e6
+
+        # Old-client keep_rf envelope with huge lo_offset is refused.
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {
+                    "__uhd_type__": "TuneRequest",
+                    "target_freq": 915e6,
+                    "lo_offset": 1.5e9,
+                    "rf_freq": 0.0,
+                    "rf_freq_policy": "AUTO",
+                    "dsp_freq_policy": "AUTO",
+                },
+                0,
+            )
+
+        # (AUTO, MANUAL): RF at target + manual DSP offset.
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {
+                    "__uhd_type__": "TuneRequest",
+                    "target_freq": 915e6,
+                    "rf_freq_policy": "AUTO",
+                    "dsp_freq_policy": "MANUAL",
+                    "dsp_freq": 30e6,
+                },
+                0,
+            )
+        # (AUTO, MANUAL) clamping spoof (RF at 2.45 GHz, huge negative DSP to fake 915 MHz).
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {
+                    "__uhd_type__": "TuneRequest",
+                    "target_freq": 2.45e9,
+                    "rf_freq_policy": "AUTO",
+                    "dsp_freq_policy": "MANUAL",
+                    "dsp_freq": -1.535e9,
+                },
+                0,
+            )
+        # Constructed TuneRequest object on v2 path with (AUTO, MANUAL) +30 MHz refused.
+        tr_auto_manual = _FakeTuneRequest(915e6)
+        tr_auto_manual.dsp_freq_policy = "MANUAL"
+        tr_auto_manual.dsp_freq = 30e6
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.invoke_native("set_tx_freq", {"tune_request": tr_auto_manual, "chan": 0})
+        # Valid small (AUTO, MANUAL) in-band shift passes.
+        plain_schema.call_set_tx_freq(
+            {
+                "__uhd_type__": "TuneRequest",
+                "target_freq": 912e6,
+                "rf_freq_policy": "AUTO",
+                "dsp_freq_policy": "MANUAL",
+                "dsp_freq": 2e6,
+            },
+            0,
+        )
+
+        # (MANUAL, AUTO): RF at 2.45 GHz with target 915 MHz refused (DSP clamps to ±MCR/2).
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {
+                    "__uhd_type__": "TuneRequest",
+                    "target_freq": 915e6,
+                    "rf_freq": 2.45e9,
+                    "rf_freq_policy": "MANUAL",
+                    "dsp_freq_policy": "AUTO",
+                },
+                0,
+            )
+        # (MANUAL, AUTO) whose RF..target hull crosses tx_deny [917, 918] refused.
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "target_freq": 915e6, "lo_offset": 5e6},
+                0,
+            )
+        # Valid (MANUAL, AUTO) LO offset completely inside allow and outside deny passes.
+        plain_schema.call_set_tx_freq(
+            {"__uhd_type__": "TuneRequest", "target_freq": 910e6, "lo_offset": 2e6},
+            0,
+        )
+
+        # (MANUAL, MANUAL) clamping spoof refused; valid in-band passes.
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {
+                    "__uhd_type__": "TuneRequest",
+                    "rf_freq": 2.45e9,
+                    "rf_freq_policy": "MANUAL",
+                    "dsp_freq": -1.535e9,
+                    "dsp_freq_policy": "MANUAL",
+                },
+                0,
+            )
+        plain_schema.call_set_tx_freq(
+            {
+                "__uhd_type__": "TuneRequest",
+                "rf_freq": 910e6,
+                "rf_freq_policy": "MANUAL",
+                "dsp_freq": 2e6,
+                "dsp_freq_policy": "MANUAL",
+            },
+            0,
+        )
+
+        # Policies requiring unknown RF LO / current DSP fail closed when LO readback is absent.
+        for req in (
+            {"__uhd_type__": "TuneRequest", "target_freq": 910e6, "rf_freq_policy": "AUTO", "dsp_freq_policy": "NONE"},
+            {"__uhd_type__": "TuneRequest", "rf_freq": 910e6, "rf_freq_policy": "MANUAL", "dsp_freq_policy": "NONE"},
+            {"__uhd_type__": "TuneRequest", "target_freq": 910e6, "rf_freq_policy": "NONE", "dsp_freq_policy": "AUTO"},
+            {"__uhd_type__": "TuneRequest", "rf_freq_policy": "NONE", "dsp_freq_policy": "MANUAL", "dsp_freq": 1e6},
+            {"__uhd_type__": "TuneRequest", "target_freq": 910e6, "rf_freq_policy": "BOGUS"},
+        ):
+            with pytest.raises(RemoteRFPolicyError):
+                plain_schema.call_set_tx_freq(req, 0)
+
+        # (NONE, NONE) checks live current_freq.
+        plain_dev.tx_freqs[0] = 910e6
+        plain_schema.call_set_tx_freq(
+            {"__uhd_type__": "TuneRequest", "target_freq": 2.45e9, "rf_freq_policy": "NONE", "dsp_freq_policy": "NONE"},
+            0,
+        )
+        plain_dev.tx_freqs[0] = 2.45e9
+        with pytest.raises(RemoteRFPolicyError):
+            plain_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "target_freq": 910e6, "rf_freq_policy": "NONE", "dsp_freq_policy": "NONE"},
+                0,
+            )
+
+    # With LO readback: NONE policies use real RF LO / current DSP, never stale get_tx_freq + dsp.
+    lo_dev = _LoAwareUSRP()
+    lo_dev.tx_rates[0] = 2e6
+    lo_schema = UsrpSchema()
+    lo_schema.bind(lo_dev)
+    lo_schema.configure_lockouts(limits)
+
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # Old DSP = -10 MHz (rf_lo=915 MHz, get_tx_freq=905 MHz); rf=NONE, dsp=MANUAL(+20 MHz)
+        # tunes UHD to 915 + 20 = 935 MHz (NOT 905 + 20 = 925 MHz) -> refused.
+        lo_dev.tx_lo_freqs[0] = 915e6
+        lo_dev.tx_freqs[0] = 905e6
+        with pytest.raises(RemoteRFPolicyError):
+            lo_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "rf_freq_policy": "NONE", "dsp_freq_policy": "MANUAL", "dsp_freq": 20e6},
+                0,
+            )
+        # With RF LO at 910 MHz and dsp=+2 MHz -> 910..912 MHz -> allowed.
+        lo_dev.tx_lo_freqs[0] = 910e6
+        lo_schema.call_set_tx_freq(
+            {"__uhd_type__": "TuneRequest", "rf_freq_policy": "NONE", "dsp_freq_policy": "MANUAL", "dsp_freq": 2e6},
+            0,
+        )
+
+        # (AUTO, NONE) and (MANUAL, NONE) preserve current DSP = current_freq - current_rf.
+        lo_dev.tx_lo_freqs[0] = 900e6
+        lo_dev.tx_freqs[0] = 915e6  # current DSP = +15 MHz
+        with pytest.raises(RemoteRFPolicyError):
+            lo_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "target_freq": 915e6, "rf_freq_policy": "AUTO", "dsp_freq_policy": "NONE"},
+                0,
+            )
+        with pytest.raises(RemoteRFPolicyError):
+            lo_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "rf_freq": 915e6, "rf_freq_policy": "MANUAL", "dsp_freq_policy": "NONE"},
+                0,
+            )
+        lo_dev.tx_lo_freqs[0] = 910e6
+        lo_dev.tx_freqs[0] = 910e6  # current DSP = 0
+        lo_schema.call_set_tx_freq(
+            {"__uhd_type__": "TuneRequest", "rf_freq": 912e6, "rf_freq_policy": "MANUAL", "dsp_freq_policy": "NONE"},
+            0,
+        )
+
+        # (NONE, AUTO) checks current RF LO -> target hull.
+        lo_dev.tx_lo_freqs[0] = 2.45e9
+        with pytest.raises(RemoteRFPolicyError):
+            lo_schema.call_set_tx_freq(
+                {"__uhd_type__": "TuneRequest", "target_freq": 910e6, "rf_freq_policy": "NONE", "dsp_freq_policy": "AUTO"},
+                0,
+            )
+        lo_dev.tx_lo_freqs[0] = 910e6
+        lo_schema.call_set_tx_freq(
+            {"__uhd_type__": "TuneRequest", "target_freq": 912e6, "rf_freq_policy": "NONE", "dsp_freq_policy": "AUTO"},
+            0,
+        )
+
+        # RX sign: (AUTO, MANUAL) with dsp=-30 MHz tunes RX to 915 - (-30) = 945 MHz -> refused.
+        with pytest.raises(RemoteRFPolicyError):
+            lo_schema.call_set_rx_freq(
+                {"__uhd_type__": "TuneRequest", "target_freq": 915e6, "rf_freq_policy": "AUTO", "dsp_freq_policy": "MANUAL", "dsp_freq": -30e6},
+                0,
+            )
 
 
 # ── schemas.json unchanged check ──────────────────────────────────────

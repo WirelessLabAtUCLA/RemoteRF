@@ -247,12 +247,26 @@ class FreqLimits:
         return self.tx.is_active or self.rx.is_active
 
 
+_SUSPICIOUS_KEY_WORDS = ("allow", "deny", "freq", "lockout", "admin", "override")
+
+
+def _is_suspicious_freq_key(key: str) -> bool:
+    lower = key.lower()
+    if lower in NON_PLUTO_LOCKOUT_KEYS:
+        return False
+    compact = lower.replace("_", "").replace("-", "")
+    return lower.startswith(("tx_", "rx_")) or any(
+        word in compact for word in _SUSPICIOUS_KEY_WORDS
+    )
+
+
 def parse_freq_limits(
     init: Mapping[str, Any] | None,
     *,
     min_hz: float | None = 0.0,
     max_hz: float | None = None,
     strict_min_max: bool = False,
+    reject_unknown: bool = True,
 ) -> FreqLimits | None:
     """Parse frequency allow/deny ranges and legacy min/max keys from device init."""
     if init is None:
@@ -265,6 +279,8 @@ def parse_freq_limits(
         lower = key.lower()
         if lower in NON_PLUTO_LOCKOUT_KEYS and key != lower:
             raise ValueError(f"frequency limit key {key!r} must be lowercase ({lower})")
+        if reject_unknown and _is_suspicious_freq_key(key):
+            raise ValueError(f"unknown frequency-limit init key: {key!r}")
     if not any(key in NON_PLUTO_LOCKOUT_KEYS for key in init):
         return None
 
@@ -292,7 +308,7 @@ def parse_freq_limits(
         else:
             allow = None
         deny = (
-            parse_range_list(deny_key, init[deny_key], min_hz=min_hz, max_hz=max_hz)
+            parse_range_list(deny_key, init[deny_key], min_hz=0.0, max_hz=None)
             if deny_key in init
             else ()
         )

@@ -115,13 +115,27 @@ def _lockouts(ctx):
         raise Skip(f"invalid lockouts: {exc}") from exc
 
 
+def _tx_limits(cfg):
+    limits = cfg.get("_freq_limits")
+    if limits is not None:
+        return limits.tx if limits.tx.is_active else None
+    from remoterf_device_core.freq_ranges import DirectionFreqLimits
+    allow = None
+    if "tx_allow" in cfg:
+        allow = tuple((float(lo), float(hi)) for lo, hi in cfg["tx_allow"])
+    elif "tx_min_freq" in cfg and "tx_max_freq" in cfg:
+        allow = ((float(cfg["tx_min_freq"]), float(cfg["tx_max_freq"])),)
+    deny = tuple((float(lo), float(hi)) for lo, hi in cfg.get("tx_deny", ()))
+    tx = DirectionFreqLimits(allow=allow, deny=deny)
+    return tx if tx.is_active else None
+
+
 def _check_tone(ctx, gain):
     cfg = _lockouts(ctx)
     if not cfg.get("tx_enabled", True):
         raise Skip("TX is disabled on this device")
-    if "tx_min_freq" in cfg and not (
-        cfg["tx_min_freq"] <= 915e6 - FS / 2 and 915e6 + FS / 2 <= cfg["tx_max_freq"]
-    ):
+    tx_limits = _tx_limits(cfg)
+    if tx_limits is not None and not tx_limits.allows_band(915e6 - FS / 2, 915e6 + FS / 2):
         raise Skip("tone occupied band is outside this device's TX range")
     if gain > cfg.get("tx_max_gain_db", gain):
         raise Skip("tone gain is above this device's TX limit")
@@ -133,12 +147,13 @@ def lo_tuning(ctx):
         cfg = _lockouts(ctx)
     except Skip:
         cfg = None
+    tx_limits = _tx_limits(cfg) if cfg is not None else None
     freqs = (400e6, 915e6, 2.4e9, 3.5e9)  # inside the stock AD9363 range
     tx_freqs = []
     for f in freqs:
         schema.set_rx_lo(int(f))
         _close(schema.get_rx_lo(), f, 1e3, "RX LO")
-        if cfg is not None and cfg.get("tx_min_freq", f) <= f <= cfg.get("tx_max_freq", f):
+        if cfg is not None and (tx_limits is None or tx_limits.allows_freq(f)):
             schema.set_tx_lo(int(f))
             _close(schema.get_tx_lo(), f, 1e3, "TX LO")
             tx_freqs.append(f)
