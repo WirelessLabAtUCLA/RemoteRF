@@ -23,12 +23,23 @@ change. {"seq": n, "stage": name, "path": abs .so} asks for that shared object
 at that stage; {"seq": n, "stage": null} unloads. seq increases by one per
 write; act only on a seq newer than the last applied. OAI_SHM_DIR is a
 directory shared with xApps for any shared-memory files.
+
+CSI ring protocol (what a patched OAI must write; read by read_csi and
+capture_csi_burst in this process, no job): one mmapped file per stream,
+$OAI_SHM_DIR/<stream>.ring. Little-endian. Header (64 B): magic b"RRFCSI\\0\\0",
+u32 version (1), u32 entry_bytes, u32 n_entries, u32 reserved, u64 write_seq
+(seq of the last complete entry, 0 = none), zero padding. Entry seq s lives at
+index s % n_entries: u64 lock (seqlock; odd while writing), u64 seq, u32 frame,
+u32 slot, u32 rnti, f32 snr_db, i32 ta, u32 dims[3], then dims product
+interleaved int16 I/Q pairs. A writer bumps lock, memcpys, bumps lock, then
+stores write_seq; no syscalls per slot.
 """
 from __future__ import annotations
 
 import fcntl
 import ipaddress
 import json
+import mmap
 import os
 from pathlib import Path
 import re
@@ -37,6 +48,9 @@ import socket
 import struct
 import sys
 import time
+
+import numpy as np
+from remoterf_device_core.integrations.artifacts import MAX_ENTRIES, QUOTA_BYTES
 
 
 SERIAL = re.compile(r"[A-Za-z0-9]{1,64}")
@@ -58,6 +72,15 @@ XAPP_GRACE = 5.0
 MAX_XAPP_SECONDS = 600
 OUTPUT_BYTES = 8192
 STAGE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+CSI_STREAMS = ("ul_pusch", "ul_srs", "dl_ssb")
+CSI_MAGIC = b"RRFCSI\0\0"
+CSI_VERSION = 1
+CSI_HEADER = struct.Struct("<8sIIIIQ")
+CSI_HEADER_BYTES = 64
+CSI_ENTRY = struct.Struct("<QQIIIfi3I")
+MAX_CSI_BURST = 256
+CSI_POLL_S = 0.001
+CSI_RETRIES = 100
 # SIGALRM ends the xApp at duration_s; the bounded wait is the fallback.
 XAPP_BOOTSTRAP = ("import runpy,signal,sys;signal.alarm(int(sys.argv[2]));"
                   "sys.argv=sys.argv[1:2];runpy.run_path(sys.argv[0],run_name='__main__')")
@@ -129,6 +152,7 @@ class OAI:
         self._stopped = False
         self._jobs = 0
         self._seq = 0
+        self._csi_count = 0
 
     def validate(self, profile, configuration):
         if profile not in PROFILES or type(configuration) is not dict or configuration:
@@ -248,6 +272,8 @@ class OAI:
                                 "-W", "2", "-w", str(max(1, int(wait) - 1)), _dn_ip()],
                                {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}, wait)
             return {"ok": result["returncode"] == 0, **result}
+        if action in {"read_csi", "capture_csi_burst"}:
+            return self._csi(action, parameters)
         if action not in {"load_l1_plugin", "unload_l1_plugin", "run_xapp"}:
             raise ValueError("unsupported action or parameters")
         if getattr(self._context, "user_code", False) is not True:
@@ -338,6 +364,136 @@ class OAI:
         if (work_dir / "artifacts" / name).is_file():
             result["artifact"] = {"name": name, "format": "json"}
         return result
+
+    def _csi(self, action, parameters):
+        """Read-only, in-process: no job budget and no user code."""
+        stream = parameters.get("stream")
+        if stream not in CSI_STREAMS:
+            raise ValueError(f"stream must be one of {', '.join(CSI_STREAMS)}")
+        wait = self._bound("action_timeout_s")
+        count, timeout = 1, wait
+        if action == "read_csi":
+            if set(parameters) != {"stream"}:
+                raise ValueError("read_csi accepts stream only")
+        else:
+            count, timeout = parameters.get("count"), parameters.get("timeout_s", wait)
+            if (not set(parameters) <= {"stream", "count", "timeout_s"} or type(count) is not int
+                    or not 1 <= count <= MAX_CSI_BURST or type(timeout) not in (int, float)
+                    or not 0 < timeout <= 600):
+                raise ValueError(f"capture_csi_burst requires stream, count 1-{MAX_CSI_BURST}"
+                                 " and optional timeout_s (0-600]")
+        path = Path(self._context.work_dir) / "shm" / f"{stream}.ring"
+        try:
+            with open(path, "rb") as handle:
+                ring = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        except FileNotFoundError:
+            # A raised action tears the operation down; stock OAI writes no ring.
+            return {"ok": False, "error": "ring_missing"}
+        except (OSError, ValueError):
+            return {"ok": False, "error": "ring_invalid"}
+        with ring:
+            if len(ring) < CSI_HEADER_BYTES:
+                return {"ok": False, "error": "ring_invalid"}
+            magic, version, entry_bytes, n_entries, _, _ = CSI_HEADER.unpack_from(ring)
+            if (magic != CSI_MAGIC or version != CSI_VERSION or entry_bytes < CSI_ENTRY.size
+                    or n_entries < 1 or len(ring) < CSI_HEADER_BYTES + entry_bytes * n_entries):
+                return {"ok": False, "error": "ring_invalid"}
+            # Upper bound from entry_bytes: int16 pairs become complex64, twice the size.
+            if not self._artifact_room(count * (entry_bytes - CSI_ENTRY.size) * 2):
+                return {"ok": False, "error": "artifact_limit"}
+            if action == "read_csi":
+                entries, dropped = self._csi_latest(ring, entry_bytes, n_entries, wait), 0
+            else:
+                entries, dropped = self._csi_burst(ring, entry_bytes, n_entries, count,
+                                                   min(timeout, wait))
+        if entries is None:
+            return {"ok": False, "error": "timeout", "dropped": dropped}
+        if len({entry["dims"] for entry in entries}) != 1:
+            return {"ok": False, "error": "dims_changed", "dropped": dropped}
+        return self._publish_csi(stream, entries, action == "read_csi", dropped)
+
+    def _artifact_room(self, size):
+        directory = Path(self._context.work_dir) / "artifacts"
+        files = [entry.stat().st_size for entry in directory.iterdir()] if directory.is_dir() else []
+        return len(files) < MAX_ENTRIES and sum(files) + size <= QUOTA_BYTES
+
+    def _csi_entry(self, ring, entry_bytes, n_entries, seq):
+        """Copy entry seq; None if it is being written, torn, overwritten or malformed."""
+        offset = CSI_HEADER_BYTES + (seq % n_entries) * entry_bytes
+        for _ in range(CSI_RETRIES):
+            lock = struct.unpack_from("<Q", ring, offset)[0]
+            if lock & 1:
+                time.sleep(CSI_POLL_S / 10)
+                continue
+            data = ring[offset:offset + entry_bytes]
+            if struct.unpack_from("<Q", ring, offset)[0] != lock:
+                continue
+            _, got, frame, slot, rnti, snr_db, ta, *dims = CSI_ENTRY.unpack_from(data)
+            size = 4 * dims[0] * dims[1] * dims[2]
+            if got != seq or CSI_ENTRY.size + size > entry_bytes:
+                return None
+            return {"seq": seq, "frame": frame, "slot": slot, "rnti": rnti, "snr_db": round(snr_db, 2),
+                    "ta": ta, "dims": tuple(dims), "timestamp_s": time.time(),
+                    "iq": data[CSI_ENTRY.size:CSI_ENTRY.size + size]}
+        return None
+
+    def _csi_latest(self, ring, entry_bytes, n_entries, wait):
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if self._context.cancelled.is_set():
+                raise RuntimeError("OAI CSI read was cancelled")
+            seq = CSI_HEADER.unpack_from(ring)[5]
+            entry = self._csi_entry(ring, entry_bytes, n_entries, seq) if seq else None
+            if entry is not None:
+                return [entry]
+            time.sleep(CSI_POLL_S)
+        return None
+
+    def _csi_burst(self, ring, entry_bytes, n_entries, count, wait):
+        """Wait for count entries newer than now; seqs lost to the writer are dropped."""
+        deadline = time.monotonic() + wait
+        last = CSI_HEADER.unpack_from(ring)[5]
+        entries, dropped = [], 0
+        while len(entries) < count:
+            if self._context.cancelled.is_set():
+                raise RuntimeError("OAI CSI capture was cancelled")
+            if time.monotonic() >= deadline:
+                return None, dropped
+            newest = CSI_HEADER.unpack_from(ring)[5]
+            if newest <= last:
+                time.sleep(CSI_POLL_S)
+                continue
+            # Older than one ring length is already overwritten.
+            first = max(last + 1, newest - n_entries + 1)
+            dropped += first - last - 1
+            for seq in range(first, newest + 1):
+                if len(entries) == count:
+                    break
+                entry = self._csi_entry(ring, entry_bytes, n_entries, seq)
+                if entry is None:
+                    dropped += 1
+                else:
+                    entries.append(entry)
+            last = newest
+        return entries, dropped
+
+    def _publish_csi(self, stream, entries, single, dropped):
+        self._csi_count += 1
+        name = f"csi-{stream}-{self._csi_count}.c8"
+        dims = list(entries[0]["dims"])
+        shape = dims if single else [len(entries), *dims]
+        iq = np.frombuffer(b"".join(entry["iq"] for entry in entries), dtype="<i2")
+        values = iq.astype("<f4").view("<c8").reshape(shape)
+        directory = Path(self._context.work_dir) / "artifacts"
+        directory.mkdir(exist_ok=True)
+        tmp = directory / f".{name}.tmp"
+        tmp.write_bytes(values.tobytes())
+        os.replace(tmp, directory / name)
+        metadata = {key: [entry[key] for entry in entries]
+                    for key in ("seq", "frame", "slot", "snr_db", "rnti", "ta")}
+        metadata["timestamps_s"] = [entry["timestamp_s"] for entry in entries]
+        return {"ok": True, "artifact": {"name": name, "dtype": "<c8", "shape": shape},
+                "metadata": metadata, "dropped": dropped}
 
     def stop(self):
         if self._stopped:

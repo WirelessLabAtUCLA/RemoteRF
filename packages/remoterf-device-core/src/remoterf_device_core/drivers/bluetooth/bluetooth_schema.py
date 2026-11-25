@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RemoteRF Schema for Bluetooth Devices (e.g. ZEXMTE CSR8510 USB Bluetooth Dongle).
+RemoteRF Schema for Bluetooth Devices (any BlueZ USB dongle, e.g. ZEXMTE CSR8510).
 Provides remote discovery, device inspection, and adapter control over RemoteRF RPC.
 
 Client usage example:
@@ -26,7 +26,6 @@ import time
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-
 from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
 
 # Optional imports for hardware control
@@ -44,7 +43,11 @@ except ImportError:
 
 from dbus_fast import Message, Variant
 from dbus_fast.aio import MessageBus
-from dbus_fast.constants import BusType
+from dbus_fast.constants import BusType, MessageType
+
+# A replugged dongle comes back as another hciN; its old object path is gone.
+_GONE_ERRORS = {"org.freedesktop.DBus.Error.UnknownObject", "org.freedesktop.DBus.Error.UnknownMethod"}
+_SYSFS_BLUETOOTH = Path("/sys/class/bluetooth")
 
 BT_CORE_VERSIONS = {
     0: "Bluetooth 1.0b",
@@ -76,6 +79,16 @@ def _run_coroutine_sync(coro_fn, *args, **kwargs) -> Any:
         return asyncio.run(coro_fn(*args, **kwargs))
 
 
+class _JsonList(list):
+    """A list of dicts for the wire. remoteRF-server 1.3.0 and older map_arg turns
+    a plain list into a numpy array and refuses the object-dtype one dicts make;
+    refusing numpy conversion sends it as JSON, which the client decodes back to
+    a list. 1.3.1+ servers send such lists as JSON themselves; kept for older ones."""
+
+    def __array__(self, *args, **kwargs):
+        raise TypeError("encode as JSON")
+
+
 class _BluetoothDevice:
     """Represents a live physical Bluetooth adapter instance on the host machine."""
 
@@ -89,7 +102,11 @@ class _BluetoothDevice:
         bd_address: str,
         version_str: str,
         is_zexmte: bool,
+        requested: Optional[str] = None,
+        allow_fallback: bool = False,
     ):
+        self.requested = requested
+        self.allow_fallback = allow_fallback
         self.adapter_name = adapter_name
         self.sysfs_path = sysfs_path
         self.usb_vendor = usb_vendor
@@ -101,67 +118,72 @@ class _BluetoothDevice:
         self.device_cache: Dict[str, dict] = {}
         self.last_scan_time: float = 0.0
 
+    def _reresolve(self) -> bool:
+        """Find the adapter again after a replug renumbered it; True if it moved."""
+        info = _find_adapter_sysfs(target_name=self.requested, allow_fallback=self.allow_fallback)
+        if not info or info["name"] == self.adapter_name:
+            return False
+        print(f"Bluetooth: {self.adapter_name} is now {info['name']}")
+        self.adapter_name = info["name"]
+        self.sysfs_path = info["sysfs_path"]
+        self.usb_vendor = info["vendor"]
+        self.usb_product = info["product"]
+        self.product_name = info["product_name"]
+        self.is_zexmte = info["is_zexmte"]
+        return True
+
+    async def _properties(self, member: str, signature: str, body: list):
+        """One org.freedesktop.DBus.Properties call on this adapter. If its object
+        is gone, look the adapter up again and retry once."""
+        for retry in (True, False):
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            try:
+                reply = await bus.call(
+                    Message(
+                        destination="org.bluez",
+                        path=f"/org/bluez/{self.adapter_name}",
+                        interface="org.freedesktop.DBus.Properties",
+                        member=member,
+                        signature=signature,
+                        body=body,
+                    )
+                )
+            finally:
+                bus.disconnect()
+            if reply.message_type != MessageType.ERROR:
+                return reply
+            if not (retry and reply.error_name in _GONE_ERRORS and self._reresolve()):
+                raise RuntimeError(f"{self.adapter_name}: {reply.error_name}")
+
     async def get_powered_async(self) -> bool:
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            msg = Message(
-                destination="org.bluez",
-                path=f"/org/bluez/{self.adapter_name}",
-                interface="org.freedesktop.DBus.Properties",
-                member="Get",
-                signature="ss",
-                body=["org.bluez.Adapter1", "Powered"],
-            )
-            reply = await bus.call(msg)
-            bus.disconnect()
-            if reply.body:
-                return bool(reply.body[0].value)
+            reply = await self._properties("Get", "ss", ["org.bluez.Adapter1", "Powered"])
+            return bool(reply.body[0].value)
         except Exception:
-            pass
-        return False
+            return False
 
     async def set_powered_async(self, powered: bool) -> bool:
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            msg = Message(
-                destination="org.bluez",
-                path=f"/org/bluez/{self.adapter_name}",
-                interface="org.freedesktop.DBus.Properties",
-                member="Set",
-                signature="ssv",
-                body=["org.bluez.Adapter1", "Powered", Variant("b", bool(powered))],
+            await self._properties(
+                "Set", "ssv", ["org.bluez.Adapter1", "Powered", Variant("b", bool(powered))]
             )
-            await bus.call(msg)
-            bus.disconnect()
             return True
         except Exception:
             return False
 
     async def get_discovering_async(self) -> bool:
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            msg = Message(
-                destination="org.bluez",
-                path=f"/org/bluez/{self.adapter_name}",
-                interface="org.freedesktop.DBus.Properties",
-                member="Get",
-                signature="ss",
-                body=["org.bluez.Adapter1", "Discovering"],
-            )
-            reply = await bus.call(msg)
-            bus.disconnect()
-            if reply.body:
-                return bool(reply.body[0].value)
+            reply = await self._properties("Get", "ss", ["org.bluez.Adapter1", "Discovering"])
+            return bool(reply.body[0].value)
         except Exception:
-            pass
-        return False
+            return False
 
     async def scan_async(self, duration: float) -> List[dict]:
         """Perform a BLE discovery scan using Bleak on the target adapter."""
         if BleakScanner is None:
             raise RuntimeError("bleak library is required on the host machine to scan")
 
-        # Ensure adapter is powered
+        # Ensure adapter is powered (this also finds a renumbered adapter)
         is_on = await self.get_powered_async()
         if not is_on:
             await self.set_powered_async(True)
@@ -287,9 +309,14 @@ class _BluetoothDevice:
         return list(discovered.values())
 
 
-def _find_adapter_sysfs(target_name: Optional[str] = None) -> Optional[dict]:
-    """Inspect /sys/class/bluetooth to find the target adapter or auto-detect ZEXMTE CSR8510."""
-    base = Path("/sys/class/bluetooth")
+def _find_adapter_sysfs(target_name: Optional[str] = None, allow_fallback: bool = False) -> Optional[dict]:
+    """Inspect /sys/class/bluetooth to find the target adapter or auto-detect a USB dongle.
+
+    Auto-detection prefers a CSR8510, then any plugged-in USB dongle. It never
+    settles for a built-in adapter (not on USB, on a port the kernel marks
+    'fixed', or Intel's) unless allow_fallback: the device is offline until a
+    dongle is plugged in."""
+    base = _SYSFS_BLUETOOTH
     if not base.exists():
         return None
 
@@ -300,13 +327,14 @@ def _find_adapter_sysfs(target_name: Optional[str] = None) -> Optional[dict]:
             continue
 
         resolved = entry.resolve()
-        vendor, product, prod_name = "", "", ""
+        vendor, product, prod_name, removable = "", "", "", ""
         curr = resolved
         while curr != curr.parent:
             if (curr / "idVendor").exists() and not vendor:
                 try:
                     vendor = (curr / "idVendor").read_text().strip()
                     product = (curr / "idProduct").read_text().strip()
+                    removable = (curr / "removable").read_text().strip()
                 except OSError:
                     pass
             if (curr / "product").exists() and not prod_name:
@@ -329,6 +357,8 @@ def _find_adapter_sysfs(target_name: Optional[str] = None) -> Optional[dict]:
             "product": product,
             "product_name": prod_name or "USB Bluetooth Adapter",
             "is_zexmte": is_zexmte,
+            # ponytail: Intel ships no retail dongles; a built-in on an unmarked port is only caught by vendor
+            "builtin": not vendor or removable == "fixed" or vendor.lower() == "8087",
         })
 
     if not candidates:
@@ -338,12 +368,15 @@ def _find_adapter_sysfs(target_name: Optional[str] = None) -> Optional[dict]:
     if target_name:
         return candidates[0]
 
-    # Otherwise prefer ZEXMTE dongle
+    # Otherwise prefer the CSR, then any other dongle
     for c in candidates:
         if c["is_zexmte"]:
             return c
+    for c in candidates:
+        if not c["builtin"]:
+            return c
 
-    return candidates[0]
+    return candidates[0] if allow_fallback else None
 
 
 async def _query_bluez_props(adapter_name: str) -> dict:
@@ -351,16 +384,19 @@ async def _query_bluez_props(adapter_name: str) -> dict:
     props = {}
     try:
         bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        msg = Message(
-            destination="org.bluez",
-            path=f"/org/bluez/{adapter_name}",
-            interface="org.freedesktop.DBus.Properties",
-            member="GetAll",
-            signature="s",
-            body=["org.bluez.Adapter1"],
-        )
-        reply = await bus.call(msg)
-        bus.disconnect()
+        try:
+            reply = await bus.call(
+                Message(
+                    destination="org.bluez",
+                    path=f"/org/bluez/{adapter_name}",
+                    interface="org.freedesktop.DBus.Properties",
+                    member="GetAll",
+                    signature="s",
+                    body=["org.bluez.Adapter1"],
+                )
+            )
+        finally:
+            bus.disconnect()
         if reply.body:
             for k, v in reply.body[0].items():
                 props[k] = v.value
@@ -369,11 +405,14 @@ async def _query_bluez_props(adapter_name: str) -> dict:
     return props
 
 
-def _connect_bluetooth_device(*, adapter: Optional[str] = None) -> Optional[_BluetoothDevice]:
+def _connect_bluetooth_device(
+    *, adapter: Optional[str] = None, allow_fallback: bool = False
+) -> Optional[_BluetoothDevice]:
     """Factory helper to detect and open the Bluetooth controller."""
-    info = _find_adapter_sysfs(target_name=adapter)
+    info = _find_adapter_sysfs(target_name=adapter, allow_fallback=allow_fallback)
     if not info:
-        print(f"Bluetooth: No adapter found matching {adapter or 'default'}")
+        hint = "" if adapter or allow_fallback else " (no USB dongle; set allow_fallback: true to use a built-in adapter)"
+        print(f"Bluetooth: No adapter found matching {adapter or 'default'}{hint}")
         return None
 
     dbus_props = _run_coroutine_sync(_query_bluez_props, info["name"])
@@ -390,6 +429,8 @@ def _connect_bluetooth_device(*, adapter: Optional[str] = None) -> Optional[_Blu
         bd_address=bd_address,
         version_str=version_str,
         is_zexmte=info["is_zexmte"],
+        requested=adapter,
+        allow_fallback=allow_fallback,
     )
 
 
@@ -399,13 +440,16 @@ class BluetoothSchema(DeviceSchema):
 
     device_type = "bluetooth"
     client_class = "BluetoothModule"
-    driver_version = "0.1.0"
+    driver_version = "0.1.4"
 
     @staticmethod
     def make_device(**kwargs) -> Optional[_BluetoothDevice]:
-        """Open the physical Bluetooth device based on devices.yml init block."""
+        """Open the physical Bluetooth device based on devices.yml init block.
+        Without 'adapter' the dongle's current hciN is looked up on every call."""
         adapter = kwargs.get("adapter")
-        return _connect_bluetooth_device(adapter=adapter)
+        return _connect_bluetooth_device(
+            adapter=adapter, allow_fallback=bool(kwargs.get("allow_fallback", False))
+        )
 
     # -------------------------------------------------------------------------
     # Getters: Readable device properties
@@ -483,12 +527,13 @@ class BluetoothSchema(DeviceSchema):
         if limit is not None and int(limit) > 0:
             results = results[: int(limit)]
 
-        return results
+        return _JsonList(results)
 
     @idl_expose(kind="call", doc="Perform a scan and return high-level vicinity statistics.")
     def call_scan_summary(self, timeout: float = 5.0) -> dict:
         """Scan and return a statistical overview of nearby devices and vendor distribution."""
-        devices = self.call_scan(timeout=timeout)
+        duration = max(1.0, min(float(timeout), 30.0))
+        devices = self.call_scan(timeout=duration)
         named_count = sum(1 for d in devices if d.get("name"))
 
         vendors: Dict[str, int] = {}
@@ -505,7 +550,7 @@ class BluetoothSchema(DeviceSchema):
             "anonymous_beacons": len(devices) - named_count,
             "vendors": vendors,
             "strongest_device": strongest,
-            "scan_duration_sec": float(timeout),
+            "scan_duration_sec": duration,
             "timestamp": time.time(),
         }
 
@@ -540,7 +585,7 @@ class BluetoothSchema(DeviceSchema):
         if limit is not None and int(limit) > 0:
             results = results[: int(limit)]
 
-        return results
+        return _JsonList(results)
 
     @idl_expose(kind="call", doc="Get full adapter hardware and driver metadata.")
     def call_info(self) -> dict:
@@ -568,6 +613,23 @@ class BluetoothSchema(DeviceSchema):
             "powered": True,
             "cached_devices": 0,
         }
+
+    def reset_for_next_holder(self):
+        """Called by the server (not exposed) when a reservation ends: the next
+        holder must not read this holder's scan results (nearby people's addresses
+        and names) or find the adapter left powered off."""
+        if self.device is None:
+            return
+        self.device.device_cache.clear()
+        self.device.last_scan_time = 0.0
+        # Bounded: this runs under the device's io_lock, and a D-Bus call that
+        # never gets a reply would otherwise lock the device until a restart.
+        try:
+            ok = _run_coroutine_sync(lambda: asyncio.wait_for(self.device.set_powered_async(True), 10.0))
+        except asyncio.TimeoutError:
+            ok = False
+        if not ok:
+            raise RuntimeError(f"could not power {self.device.adapter_name} on")
 
 
 if __name__ == "__main__":

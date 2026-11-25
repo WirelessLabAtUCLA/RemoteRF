@@ -3,9 +3,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from threading import Event
+import time
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from remoteRF_server.adapters import oai
@@ -456,3 +459,152 @@ def test_ue_refuses_interface_owned_by_another_ue(monkeypatch, tmp_path):
     assert not ctx.processes.launches
     adapter.stop()  # nothing launched, so no wait on the other UE's interface
     assert adapter.status() == {"ready": False, "stopped": True}
+
+
+class Ring:
+    """Python stand-in for the patched OAI CSI ring writer."""
+
+    def __init__(self, tmp_path, stream="ul_pusch", n_entries=8, dims=(1, 2, 3), entry_bytes=None,
+                 magic=oai.CSI_MAGIC, version=oai.CSI_VERSION):
+        self.dims, self.n_entries = dims, n_entries
+        self.entry_bytes = entry_bytes or oai.CSI_ENTRY.size + 4 * dims[0] * dims[1] * dims[2]
+        self.path = tmp_path / "shm" / f"{stream}.ring"
+        self.path.parent.mkdir(exist_ok=True)
+        self.path.write_bytes(bytes(oai.CSI_HEADER_BYTES + self.entry_bytes * n_entries))
+        self._header(magic, version, 0)
+
+    def _header(self, magic, version, write_seq):
+        with open(self.path, "r+b") as handle:
+            handle.write(oai.CSI_HEADER.pack(magic, version, self.entry_bytes, self.n_entries, 0, write_seq))
+
+    def write(self, seq, lock=2, publish=True):
+        n = self.dims[0] * self.dims[1] * self.dims[2]
+        iq = np.arange(2 * n, dtype="<i2") + seq
+        entry = oai.CSI_ENTRY.pack(lock, seq, seq // 20, seq % 20, 0x4601, 12.5, 3, *self.dims) + iq.tobytes()
+        with open(self.path, "r+b") as handle:
+            handle.seek(oai.CSI_HEADER_BYTES + (seq % self.n_entries) * self.entry_bytes)
+            handle.write(entry)
+        if publish:
+            self._header(oai.CSI_MAGIC, oai.CSI_VERSION, seq)
+
+    def expected(self, seq):
+        iq = (np.arange(2 * self.dims[0] * self.dims[1] * self.dims[2]) + seq).astype(np.float32)
+        return (iq[0::2] + 1j * iq[1::2]).astype(np.complex64).reshape(self.dims)
+
+
+def csi_artifact(tmp_path, result):
+    artifact = result["artifact"]
+    data = (tmp_path / "artifacts" / artifact["name"]).read_bytes()
+    # Same decode as remoterf.integrations.App._decode.
+    return np.frombuffer(data, dtype=artifact["dtype"]).reshape(artifact["shape"])
+
+
+def test_read_csi_returns_newest_entry_without_user_code_or_jobs(tmp_path):
+    ring = Ring(tmp_path)
+    for seq in (1, 2, 3):
+        ring.write(seq)
+    ctx = context(tmp_path)
+    result = oai.OAI(ctx).call("read_csi", {"stream": "ul_pusch"})
+
+    assert result["ok"] and result["dropped"] == 0
+    assert result["artifact"] == {"name": "csi-ul_pusch-1.c8", "dtype": "<c8", "shape": [1, 2, 3]}
+    assert {k: v for k, v in result["metadata"].items() if k != "timestamps_s"} == {
+        "seq": [3], "frame": [0], "slot": [3], "snr_db": [12.5], "rnti": [0x4601], "ta": [3]}
+    assert len(result["metadata"]["timestamps_s"]) == 1
+    values = csi_artifact(tmp_path, result)
+    assert values.dtype == np.complex64 and np.array_equal(values, ring.expected(3))
+    assert not ctx.processes.launches
+    assert sorted(p.name for p in (tmp_path / "artifacts").iterdir()) == ["csi-ul_pusch-1.c8"]
+
+
+def test_read_csi_retries_entry_being_written(tmp_path):
+    ring = Ring(tmp_path)
+    ring.write(1, lock=3)
+    timer = threading.Timer(0.05, ring.write, args=(1,))
+    timer.start()
+    try:
+        result = oai.OAI(context(tmp_path)).call("read_csi", {"stream": "ul_pusch"})
+    finally:
+        timer.join()
+    assert result["ok"] and np.array_equal(csi_artifact(tmp_path, result), ring.expected(1))
+
+
+def test_capture_csi_burst_reports_gap_and_torn_entry_as_dropped(tmp_path):
+    ring = Ring(tmp_path)
+    ring.write(1)
+
+    def writer():
+        time.sleep(0.05)
+        for seq in (2, 3, 5, 6):  # 4 is never written
+            ring.write(seq, lock=3 if seq == 5 else 2)  # 5 stays mid-write
+        ring.write(7)
+        ring.write(8)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        result = oai.OAI(context(tmp_path)).call(
+            "capture_csi_burst", {"stream": "ul_pusch", "count": 5, "timeout_s": 5})
+    finally:
+        thread.join()
+
+    assert result["ok"] and result["dropped"] == 2
+    assert result["metadata"]["seq"] == [2, 3, 6, 7, 8]
+    assert result["artifact"]["shape"] == [5, 1, 2, 3]
+    values = csi_artifact(tmp_path, result)
+    assert values.dtype == np.complex64
+    assert all(np.array_equal(values[i], ring.expected(seq)) for i, seq in enumerate([2, 3, 6, 7, 8]))
+
+
+def test_capture_csi_burst_times_out_without_new_entries(tmp_path):
+    Ring(tmp_path).write(1)
+    result = oai.OAI(context(tmp_path)).call(
+        "capture_csi_burst", {"stream": "ul_pusch", "count": 1, "timeout_s": 0.05})
+    assert result == {"ok": False, "error": "timeout", "dropped": 0}
+
+
+def test_csi_missing_or_invalid_ring_returns_error_without_raising(tmp_path):
+    adapter = oai.OAI(context(tmp_path))
+    assert adapter.call("read_csi", {"stream": "ul_srs"}) == {"ok": False, "error": "ring_missing"}
+    Ring(tmp_path, stream="ul_srs", magic=b"OTHERCSI")
+    assert adapter.call("read_csi", {"stream": "ul_srs"}) == {"ok": False, "error": "ring_invalid"}
+    Ring(tmp_path, stream="ul_srs", version=2)
+    assert adapter.call("read_csi", {"stream": "ul_srs"}) == {"ok": False, "error": "ring_invalid"}
+    (tmp_path / "shm" / "ul_srs.ring").write_bytes(b"")
+    assert adapter.call("read_csi", {"stream": "ul_srs"}) == {"ok": False, "error": "ring_invalid"}
+
+
+def test_csi_refused_past_artifact_limit(tmp_path):
+    Ring(tmp_path, entry_bytes=1024 * 1024).write(1)
+    result = oai.OAI(context(tmp_path)).call("capture_csi_burst", {"stream": "ul_pusch", "count": 200})
+    assert result == {"ok": False, "error": "artifact_limit"}
+    assert not list((tmp_path / "artifacts").iterdir())
+
+
+@pytest.mark.parametrize("action,parameters", [
+    ("read_csi", {}),
+    ("read_csi", {"stream": "dl_csirs"}),
+    ("read_csi", {"stream": "ul_pusch", "count": 1}),
+    ("capture_csi_burst", {"stream": "ul_pusch"}),
+    ("capture_csi_burst", {"stream": "ul_pusch", "count": 0}),
+    ("capture_csi_burst", {"stream": "ul_pusch", "count": oai.MAX_CSI_BURST + 1}),
+    ("capture_csi_burst", {"stream": "ul_pusch", "count": True}),
+    ("capture_csi_burst", {"stream": "ul_pusch", "count": 1, "timeout_s": 0}),
+    ("capture_csi_burst", {"stream": "ul_pusch", "count": 1, "extra": 1}),
+])
+def test_csi_parameters_validated(tmp_path, action, parameters):
+    with pytest.raises(ValueError):
+        oai.OAI(context(tmp_path)).call(action, parameters)
+
+
+def test_csi_artifact_decodes_through_client(tmp_path):
+    integrations = pytest.importorskip("remoterf.integrations")
+    ring = Ring(tmp_path, dims=(2, 1, 4))
+    ring.write(9)
+    result = oai.OAI(context(tmp_path)).call("read_csi", {"stream": "ul_pusch"})
+    app = integrations.App(None, "org.remoterf.oai", "gnb")
+    app.__dict__["fetch"] = lambda name: (tmp_path / "artifacts" / name).read_bytes()
+    decoded = app._decode(result)
+    assert decoded["artifact"].dtype == np.complex64
+    assert np.array_equal(decoded["artifact"], ring.expected(9))
+    assert decoded["metadata"]["seq"] == [9]

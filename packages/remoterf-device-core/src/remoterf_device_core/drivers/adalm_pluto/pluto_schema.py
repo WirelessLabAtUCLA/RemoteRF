@@ -704,7 +704,7 @@ class PlutoSchema(DeviceSchema):
 
     def reset_for_next_holder(self):
         """A reservation ended: a PoE Pluto powers off. Otherwise stop its cyclic
-        transmission, and drop its RX buffer so the next holder's rx_buffer_size takes effect."""
+        transmission, clear tx_cyclic_buffer, and drop its RX buffer so the next holder's rx_buffer_size takes effect."""
         self._fir_rate = None
         if self._lockouts is not None:
             with self._lockout_lock():
@@ -730,7 +730,11 @@ class PlutoSchema(DeviceSchema):
                     try:
                         radio.tx_destroy_buffer()
                     finally:
-                        radio.rx_destroy_buffer()
+                        try:
+                            if hasattr(radio, "tx_cyclic_buffer"):
+                                radio.tx_cyclic_buffer = False
+                        finally:
+                            radio.rx_destroy_buffer()
 
     def prepare_for_holder(self):
         """A reservation started: a PoE Pluto boots now, not at the holder's first command."""

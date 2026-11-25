@@ -49,9 +49,14 @@ PRESETS = {
 }
 
 
+def preset_settings(preset: Optional[str]) -> dict:
+    """A preset's settings (without its description); {} for an unknown preset."""
+    return {k: v for k, v in PRESETS.get(preset or "", {}).items() if k != "description"}
+
+
 def build_config(
     base_config_path: Optional[str] = None,
-    mode: str = "3d",
+    mode: Optional[str] = None,
     clutter_removal: Optional[bool] = None,
     fps: Optional[float] = None,
     sensitivity: Optional[str] = None,

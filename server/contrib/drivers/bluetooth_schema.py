@@ -392,16 +392,19 @@ async def _query_bluez_props(adapter_name: str) -> dict:
     props = {}
     try:
         bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        msg = Message(
-            destination="org.bluez",
-            path=f"/org/bluez/{adapter_name}",
-            interface="org.freedesktop.DBus.Properties",
-            member="GetAll",
-            signature="s",
-            body=["org.bluez.Adapter1"],
-        )
-        reply = await bus.call(msg)
-        bus.disconnect()
+        try:
+            reply = await bus.call(
+                Message(
+                    destination="org.bluez",
+                    path=f"/org/bluez/{adapter_name}",
+                    interface="org.freedesktop.DBus.Properties",
+                    member="GetAll",
+                    signature="s",
+                    body=["org.bluez.Adapter1"],
+                )
+            )
+        finally:
+            bus.disconnect()
         if reply.body:
             for k, v in reply.body[0].items():
                 props[k] = v.value
@@ -445,7 +448,7 @@ class BluetoothSchema(DeviceSchema):
 
     device_type = "bluetooth"
     client_class = "BluetoothModule"
-    driver_version = "0.1.3"
+    driver_version = "0.1.4"
 
     @staticmethod
     def make_device(**kwargs) -> Optional[_BluetoothDevice]:
@@ -537,7 +540,8 @@ class BluetoothSchema(DeviceSchema):
     @idl_expose(kind="call", doc="Perform a scan and return high-level vicinity statistics.")
     def call_scan_summary(self, timeout: float = 5.0) -> dict:
         """Scan and return a statistical overview of nearby devices and vendor distribution."""
-        devices = self.call_scan(timeout=timeout)
+        duration = max(1.0, min(float(timeout), 30.0))
+        devices = self.call_scan(timeout=duration)
         named_count = sum(1 for d in devices if d.get("name"))
 
         vendors: Dict[str, int] = {}
@@ -554,7 +558,7 @@ class BluetoothSchema(DeviceSchema):
             "anonymous_beacons": len(devices) - named_count,
             "vendors": vendors,
             "strongest_device": strongest,
-            "scan_duration_sec": float(timeout),
+            "scan_duration_sec": duration,
             "timestamp": time.time(),
         }
 
