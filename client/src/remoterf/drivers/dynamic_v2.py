@@ -26,7 +26,11 @@ import weakref
 
 import numpy as np
 
-from ..core.dynamic_v2_transport import DynamicV2Transport
+from ..core.dynamic_v2_transport import (
+    DynamicV2Transport,
+    SC16_DTYPE,
+    _is_sc16_dtype,
+)
 from ..core.v2_errors import RemoteRFProtocolError
 from .support import uhd_dsp, uhd_v2
 
@@ -52,14 +56,15 @@ _REMOTE_STREAM_BATCH_SAMPS = 64 * 1024
 _CPU_FORMAT_DTYPES = {
     "fc32": np.dtype(np.complex64),
     "fc64": np.dtype(np.complex128),
+    "sc16": SC16_DTYPE,
     "f32": np.dtype(np.float32),
     "f64": np.dtype(np.float64),
-    "s16": np.dtype(np.int16),
 }
 
 _SUPPORTED_SAMPLE_DTYPES = {
     np.dtype(np.complex64),
     np.dtype(np.complex128),
+    SC16_DTYPE,
     np.dtype(np.int16),
     np.dtype(np.float32),
     np.dtype(np.float64),
@@ -169,9 +174,49 @@ def validate_schema_v2(schema: dict) -> dict:
     return schema
 
 
-def _validate_sample_array(array, *, operation: str):
-    dtype = np.dtype(array.dtype).newbyteorder("=")
-    if dtype not in _SUPPORTED_SAMPLE_DTYPES:
+def _is_sc16_iq_pair(array: np.ndarray, cpu_format: str | None) -> bool:
+    if str(cpu_format or "").lower() != "sc16":
+        return False
+    dtype = np.dtype(array.dtype)
+    return (
+        not dtype.hasobject
+        and dtype.fields is None
+        and dtype.subdtype is None
+        and dtype.newbyteorder("=") == np.dtype(np.int16)
+    )
+
+
+def _sc16_iq_to_canonical(array: np.ndarray) -> np.ndarray:
+    if array.size == 0:
+        return np.empty(array.shape[:-1], dtype=SC16_DTYPE)
+    contiguous = np.ascontiguousarray(array, dtype="<i2")
+    return contiguous.view(SC16_DTYPE).reshape(contiguous.shape[:-1])
+
+
+def _validate_sample_array(array, *, operation: str, cpu_format: str | None = None):
+    dtype = np.dtype(array.dtype)
+    if str(cpu_format or "").lower() == "sc16":
+        if _is_sc16_dtype(dtype):
+            return
+        if (
+            not dtype.hasobject
+            and dtype.fields is None
+            and dtype.subdtype is None
+            and dtype.newbyteorder("=") == np.dtype(np.int16)
+        ):
+            if array.ndim in {2, 3} and array.shape[-1] == 2:
+                return
+            raise ValueError(
+                f"{operation} int16 buffer for sc16 must have shape (N, 2) or (channels, N, 2)"
+            )
+        raise ValueError(
+            f"{operation} uses unsupported sample dtype {array.dtype} for sc16"
+        )
+    if _is_sc16_dtype(dtype):
+        return
+    if dtype.hasobject or dtype.fields is not None or dtype.subdtype is not None:
+        raise ValueError(f"{operation} uses unsupported sample dtype {array.dtype}")
+    if dtype.newbyteorder("=") not in _SUPPORTED_SAMPLE_DTYPES:
         raise ValueError(f"{operation} uses unsupported sample dtype {array.dtype}")
 
 
@@ -407,10 +452,12 @@ class RXStreamer(RemoteHandleProxy):
     def recv(self, buffs, *args, **kwargs):
         self._ensure_open()
         buffer = np.asarray(buffs)
-        _validate_sample_array(buffer, operation="RX")
+        _validate_sample_array(buffer, operation="RX", cpu_format=self._cpu_format)
         if not buffer.flags.writeable:
             raise ValueError("RX buffer must be writable")
-        if buffer.ndim not in {1, 2}:
+        iq_pair_layout = _is_sc16_iq_pair(buffer, self._cpu_format)
+        canonical_shape = buffer.shape[:-1] if iq_pair_layout else buffer.shape
+        if len(canonical_shape) not in {1, 2}:
             raise ValueError("RX buffer must be one- or two-dimensional")
 
         timeout = float(kwargs.pop("timeout", 0.1))
@@ -432,20 +479,28 @@ class RXStreamer(RemoteHandleProxy):
                 raise TypeError("recv() received too many arguments")
         else:
             metadata = args[0]
-            sample_count = int(buffer.shape[-1])
+            sample_count = int(canonical_shape[-1])
             if len(args) >= 2:
                 timeout = float(args[1])
             if len(args) >= 3:
                 one_packet = bool(args[2])
             if len(args) > 3:
                 raise TypeError("recv() received too many arguments")
-        if sample_count < 0 or sample_count > buffer.shape[-1]:
+        if sample_count < 0 or sample_count > canonical_shape[-1]:
             raise ValueError("nsamps_per_buff exceeds RX buffer capacity")
-        if buffer.ndim == 2 and self._channels and buffer.shape[0] != len(self._channels):
+        if (
+            len(canonical_shape) == 2
+            and self._channels
+            and canonical_shape[0] != len(self._channels)
+        ) or (
+            len(canonical_shape) == 1
+            and len(self._channels) > 1
+        ):
             raise ValueError("RX channel dimension does not match StreamArgs.channels")
-        requested_shape = list(buffer.shape)
+        requested_shape = list(canonical_shape)
         requested_shape[-1] = sample_count
-        requested_bytes = int(np.prod(requested_shape)) * buffer.dtype.itemsize
+        wire_itemsize = SC16_DTYPE.itemsize if iq_pair_layout else buffer.dtype.itemsize
+        requested_bytes = int(np.prod(requested_shape)) * wire_itemsize
         maximum = int(
             self._owner._capabilities.get("remote_resource_limits", {}).get(
                 "maximum_sample_payload_bytes",
@@ -455,12 +510,24 @@ class RXStreamer(RemoteHandleProxy):
         if requested_bytes > maximum:
             raise ValueError(f"RX request exceeds the {maximum}-byte remote limit")
 
+        if iq_pair_layout:
+            if (
+                buffer.size > 0
+                and buffer.flags.c_contiguous
+                and buffer.dtype == np.dtype("<i2")
+            ):
+                transport_buffer = buffer.view(SC16_DTYPE).reshape(canonical_shape)
+            else:
+                transport_buffer = np.empty(requested_shape, dtype=SC16_DTYPE)
+        else:
+            transport_buffer = buffer
+
         count, samples, metadata_snapshot = self._transport.recv(
             session_id=self._session_id,
             handle=self._handle,
             generation=self._generation,
             sequence=self._sequence,
-            buffer=buffer,
+            buffer=transport_buffer,
             sample_count=sample_count,
             channels=self._channels,
             timeout=timeout,
@@ -468,7 +535,14 @@ class RXStreamer(RemoteHandleProxy):
             metadata=metadata,
         )
         self._sequence += 2
-        if buffer.ndim == 1:
+        if iq_pair_layout:
+            if buffer.ndim == 2:
+                buffer[:count, 0] = samples["re"][:count]
+                buffer[:count, 1] = samples["im"][:count]
+            else:
+                buffer[:, :count, 0] = samples["re"][:, :count]
+                buffer[:, :count, 1] = samples["im"][:, :count]
+        elif buffer.ndim == 1:
             buffer[:count] = samples[:count]
         else:
             buffer[:, :count] = samples[:, :count]
@@ -499,8 +573,10 @@ class TXStreamer(RemoteHandleProxy):
     def send(self, buffs, *args, **kwargs):
         self._ensure_open()
         samples = np.asarray(buffs)
-        _validate_sample_array(samples, operation="TX")
-        if samples.ndim not in {1, 2}:
+        _validate_sample_array(samples, operation="TX", cpu_format=self._cpu_format)
+        iq_pair_layout = _is_sc16_iq_pair(samples, self._cpu_format)
+        canonical_shape = samples.shape[:-1] if iq_pair_layout else samples.shape
+        if len(canonical_shape) not in {1, 2}:
             raise ValueError("TX samples must be one- or two-dimensional")
         timeout = float(kwargs.pop("timeout", 0.1))
         if kwargs:
@@ -518,24 +594,37 @@ class TXStreamer(RemoteHandleProxy):
                 raise TypeError("send() received too many arguments")
         else:
             metadata = args[0]
-            sample_count = int(samples.shape[-1])
+            sample_count = int(canonical_shape[-1])
             if len(args) >= 2:
                 timeout = float(args[1])
             if len(args) > 2:
                 raise TypeError("send() received too many arguments")
-        if sample_count < 0 or sample_count > samples.shape[-1]:
+        if sample_count < 0 or sample_count > canonical_shape[-1]:
             raise ValueError("nsamps_per_buff exceeds TX sample capacity")
-        if samples.ndim == 2 and self._channels and samples.shape[0] != len(self._channels):
+        if (
+            len(canonical_shape) == 2
+            and self._channels
+            and canonical_shape[0] != len(self._channels)
+        ) or (
+            len(canonical_shape) == 1
+            and len(self._channels) > 1
+        ):
             raise ValueError("TX channel dimension does not match StreamArgs.channels")
-        subset = samples[..., :sample_count]
         maximum = int(
             self._owner._capabilities.get("remote_resource_limits", {}).get(
                 "maximum_sample_payload_bytes",
                 4 * 1024 * 1024,
             )
         )
-        if subset.nbytes > maximum:
-            raise ValueError(f"TX request exceeds the {maximum}-byte remote limit")
+        if iq_pair_layout:
+            iq_subset = samples[..., :sample_count, :]
+            if iq_subset.nbytes > maximum:
+                raise ValueError(f"TX request exceeds the {maximum}-byte remote limit")
+            subset = _sc16_iq_to_canonical(iq_subset)
+        else:
+            subset = samples[..., :sample_count]
+            if subset.nbytes > maximum:
+                raise ValueError(f"TX request exceeds the {maximum}-byte remote limit")
         count = self._transport.send(
             session_id=self._session_id,
             handle=self._handle,
