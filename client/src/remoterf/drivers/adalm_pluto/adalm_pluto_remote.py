@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: adalm_pluto  driver_version: 0.0.4  schema_hash: sha256:9cbbbbc0cd76fc7897dd702adc0c4a0aa9b5042484c6cb38d0057ca217cb92ce
+# device_type: adalm_pluto  driver_version: 0.0.5  schema_hash: sha256:93097fbb33d6680473ccb681d1854d031702b216ebd9f35dfd03d58eea797ad5
 
 _PREFIX = "Adalm_pluto"
-_SCHEMA_HASH = "sha256:9cbbbbc0cd76fc7897dd702adc0c4a0aa9b5042484c6cb38d0057ca217cb92ce"
+_SCHEMA_HASH = "sha256:93097fbb33d6680473ccb681d1854d031702b216ebd9f35dfd03d58eea797ad5"
 _CLIENT_MODULES = {}
 _CLIENT_OBJECTS = {}
 
@@ -300,6 +300,16 @@ class Pluto:
     @sample_rate.setter
     def sample_rate(self, value):
         _try_set("sample_rate", value, self.token)
+
+    @property
+    def temp(self):
+        'Alias for temperature: AD9361 die temperature in degrees C.'
+        return _try_get("temp", self.token)
+
+    @property
+    def temperature(self):
+        'AD9361 die temperature in degrees C.'
+        return _try_get("temperature", self.token)
 
     @property
     def tx_channel_names(self):

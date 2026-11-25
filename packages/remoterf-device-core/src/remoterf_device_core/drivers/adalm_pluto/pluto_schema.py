@@ -251,7 +251,7 @@ class PlutoSchema(DeviceSchema):
 
     device_type = "adalm_pluto"
     client_class = "Pluto"
-    driver_version = "0.0.4"
+    driver_version = "0.0.5"
     _fir_rate = None  # the rate whose pyadi FIR this schema last loaded
     lockout_bypass: bool = False
     _lockouts = None
@@ -918,5 +918,15 @@ class PlutoSchema(DeviceSchema):
     def get_rates(self):
         """Get decimation/interpolation rates from the FPGA filter block."""
         return self.device._get_rates(self.device._rxadc, False)
+
+    @idl_expose(kind="get")
+    def get_temperature(self):
+        """AD9361 die temperature in degrees C."""
+        return float(self.device._get_iio_attr("temp0", "input", False)) / 1000
+
+    @idl_expose(kind="get")
+    def get_temp(self):
+        """Alias for temperature: AD9361 die temperature in degrees C."""
+        return self.get_temperature()
 
     # endregion

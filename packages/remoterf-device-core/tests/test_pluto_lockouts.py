@@ -1144,3 +1144,23 @@ def test_seeded_schema_copy_carries_the_guard(tmp_path):
     finally:
         idl._DRIVER_REGISTRY.clear()
         idl._DRIVER_REGISTRY.update(registered)
+
+
+class TempRadio(FakeRadio):
+    def _get_iio_attr(self, channel, attr, output, ctrl=None):
+        self.events.append(("iio", channel, attr, output, ctrl))
+        return 41500
+
+
+@pytest.mark.parametrize("cls", [PlutoSchema, PlutoMIMOSchema])
+def test_get_temperature_reads_die_sensor_in_celsius(cls):
+    radio = TempRadio()
+    radio._ctrl = "phy"
+    obj = schema(cls=cls, radio=radio)
+    assert obj.get_temperature() == 41.5
+    assert rpc(obj, "get_temperature") == 41.5
+    assert rpc(obj, "get_temp") == 41.5
+    iio = [event for event in radio.events if event[0] == "iio"]
+    assert iio[0][1:4] == ("temp0", "input", False)
+    if cls is PlutoMIMOSchema:
+        assert iio[0][4] == "phy"

@@ -174,7 +174,7 @@ class PlutoMIMOSchema(PlutoSchema):
 
     device_type = "adalm_pluto_mimo"
     client_class = "PlutoMIMO"
-    driver_version = "0.0.2"
+    driver_version = "0.0.3"
 
     @staticmethod
     def make_device(**kwargs):
@@ -281,5 +281,10 @@ class PlutoMIMOSchema(PlutoSchema):
     def get_rates(self):
         """Get decimation/interpolation rates from the FPGA filter block."""
         return _fpga_rates(self.device, False)
+
+    @idl_expose(kind="get")
+    def get_temperature(self):
+        """AD9361 die temperature in degrees C."""
+        return float(self.device._get_iio_attr("temp0", "input", False, self.device._ctrl)) / 1000
 
     # endregion
