@@ -1555,6 +1555,26 @@ class UsrpSchema(DeviceSchema):
             self._freq_refuse(
                 "LO source and export changes are refused while frequency limits are active."
             )
+        elif method_name == "set_tx_subdev_spec":
+            if limits.tx.is_active:
+                self._freq_refuse(
+                    "TX subdev spec changes are refused while TX frequency limits are active."
+                )
+        elif method_name == "set_rx_subdev_spec":
+            if limits.rx.is_active:
+                self._freq_refuse(
+                    "RX subdev spec changes are refused while RX frequency limits are active."
+                )
+        elif method_name == "set_tx_iq_balance":
+            if limits.tx.is_active:
+                self._freq_refuse(
+                    "TX IQ balance changes are refused while TX frequency limits are active."
+                )
+        elif method_name == "set_tx_filter":
+            if limits.tx.is_active:
+                self._freq_refuse(
+                    "TX filter changes are refused while TX frequency limits are active."
+                )
         elif method_name == "issue_stream_cmd":
             if limits.rx.is_active:
                 cmd = _arg("stream_cmd", 0)
@@ -1730,7 +1750,14 @@ class UsrpSchema(DeviceSchema):
         if self.device is None:
             raise RuntimeError("USRP session is not open")
         target = getattr(self.device, method_name)
-        if method_name in ("set_command_time", "clear_command_time"):
+        if method_name in (
+            "set_command_time",
+            "clear_command_time",
+            "set_tx_subdev_spec",
+            "set_rx_subdev_spec",
+            "set_tx_iq_balance",
+            "set_tx_filter",
+        ):
             self._check_native_call(method_name, args, positional_args)
             positional = [_construct(item) for item in (positional_args or ())]
             keywords = {str(key): _construct(item) for key, item in dict(args or {}).items()}
@@ -1928,6 +1955,10 @@ class UsrpSchema(DeviceSchema):
 
     @idl_expose(kind="call")
     def call_set_tx_subdev_spec(self, spec, mboard=0):
+        if self._freq_limits is not None and self._freq_limits.tx.is_active:
+            self._freq_refuse(
+                "TX subdev spec changes are refused while TX frequency limits are active."
+            )
         self.device.set_tx_subdev_spec(_construct(spec), mboard)
 
     @idl_expose(kind="call")
@@ -1936,6 +1967,10 @@ class UsrpSchema(DeviceSchema):
 
     @idl_expose(kind="call")
     def call_set_rx_subdev_spec(self, spec, mboard=0):
+        if self._freq_limits is not None and self._freq_limits.rx.is_active:
+            self._freq_refuse(
+                "RX subdev spec changes are refused while RX frequency limits are active."
+            )
         self.device.set_rx_subdev_spec(_construct(spec), mboard)
 
     @idl_expose(kind="call")

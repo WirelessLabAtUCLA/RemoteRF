@@ -434,6 +434,7 @@ class _FakeHackRF:
     def __init__(self):
         self.center_freq = 915_000_000
         self.sample_rate = 4_000_000
+        self.filter_bandwidth = 2_500_000
         self.buffer = bytearray(b"\x01\x02\x03\x04")
         self.tx_starts = 0
         self.rx_reads = 0
@@ -656,6 +657,42 @@ class _FakeStreamCMD:
         self.num_samps = 0
 
 
+class _FakeSubdevSpec:
+    def __init__(self, spec=""):
+        self.spec = str(spec)
+
+    def __str__(self):
+        return self.spec
+
+
+class _FakeFilterType:
+    DIGITAL_FIR_I16 = "DIGITAL_FIR_I16"
+
+
+class _FakeDigitalFilterFIRI16:
+    def __init__(
+        self,
+        filter_type,
+        bypassed,
+        position,
+        input_rate,
+        interpolation,
+        decimation,
+        tap_full_scale,
+        max_num_taps,
+        taps,
+    ):
+        self.filter_type = filter_type
+        self.bypassed = bypassed
+        self.position = position
+        self.input_rate = input_rate
+        self.interpolation = interpolation
+        self.decimation = decimation
+        self.tap_full_scale = tap_full_scale
+        self.max_num_taps = max_num_taps
+        self.taps = list(taps)
+
+
 def _fake_uhd_module():
     types_ns = types.SimpleNamespace(
         TuneRequest=_FakeTuneRequest,
@@ -665,9 +702,17 @@ def _fake_uhd_module():
         StreamMode=_FakeStreamMode,
         StreamCMD=_FakeStreamCMD,
     )
+    filters_ns = types.SimpleNamespace(
+        FilterType=_FakeFilterType,
+        DigitalFilterFIRI16=_FakeDigitalFilterFIRI16,
+    )
     return types.SimpleNamespace(
         types=types_ns,
-        usrp=types.SimpleNamespace(StreamArgs=_FakeStreamArgs),
+        filters=filters_ns,
+        usrp=types.SimpleNamespace(
+            StreamArgs=_FakeStreamArgs,
+            SubdevSpec=_FakeSubdevSpec,
+        ),
         libpyuhd=types.SimpleNamespace(types=types.SimpleNamespace(tune_request=_FakeTuneRequest)),
     )
 
@@ -1891,6 +1936,338 @@ def test_usrp_named_lo_stages_checked_or_refused():
     assert b210.tx_lo == 910e6
     b210_schema.invoke_native("set_tx_lo_freq", {"freq": 912e6, "name": "lo1", "chan": 0})
     assert b210.tx_lo == 912e6
+
+
+def test_usrp_subdev_spec_remap_refused_while_limits_active():
+    """Round 4 item 1: B210 5-step subdev remap sequence refused at the subdev step on v2 and v1."""
+
+    class _B210SubdevUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_subdev = "A:A"
+            self.rx_subdev = "A:A"
+            self.tx_lo = 915e6
+            self.tx_dsp = {"A:A": 0.0, "A:B": 0.0}
+            self.tx_rate = 1e6
+
+        def get_mboard_name(self, mboard=0):
+            return "B210"
+
+        def get_tx_num_channels(self):
+            return len(self.tx_subdev.split())
+
+        def get_tx_subdev_spec(self, mboard=0):
+            return self.tx_subdev
+
+        def set_tx_subdev_spec(self, spec, mboard=0):
+            self.tx_subdev = str(spec)
+
+        def get_rx_subdev_spec(self, mboard=0):
+            return self.rx_subdev
+
+        def set_rx_subdev_spec(self, spec, mboard=0):
+            self.rx_subdev = str(spec)
+
+        def get_tx_lo_freq(self, name="all", chan=0):
+            return self.tx_lo
+
+        def get_tx_freq(self, chan=0):
+            fe = self.tx_subdev.split()[int(chan)]
+            return self.tx_lo + self.tx_dsp[fe]
+
+        def get_tx_rate(self, chan=0):
+            return self.tx_rate
+
+        def set_tx_freq(self, tune_request, chan=0):
+            fe = self.tx_subdev.split()[int(chan)]
+            rf_pol = str(getattr(tune_request, "rf_freq_policy", "AUTO")).upper()
+            dsp_pol = str(getattr(tune_request, "dsp_freq_policy", "AUTO")).upper()
+            if rf_pol == "MANUAL":
+                self.tx_lo = float(tune_request.rf_freq)
+            elif rf_pol == "AUTO":
+                self.tx_lo = float(getattr(tune_request, "target_freq", tune_request))
+            if dsp_pol == "MANUAL":
+                self.tx_dsp[fe] = float(tune_request.dsp_freq)
+            elif dsp_pol == "AUTO":
+                target = float(getattr(tune_request, "target_freq", tune_request))
+                self.tx_dsp[fe] = target - self.tx_lo
+            return self.get_tx_freq(chan)
+
+        def get_tx_stream(self, stream_args):
+            bound_fe = self.tx_subdev.split()[int(stream_args.channels[0])]
+            streamer = _FakeStreamer()
+            streamer.bound_fe = bound_fe
+            return streamer
+
+    fake_uhd = _fake_uhd_module()
+    subdev_b = {"__uhd_type__": "SubdevSpec", "spec": "A:B"}
+    tune_a = {
+        "__uhd_type__": "TuneRequest",
+        "rf_freq_policy": "MANUAL",
+        "rf_freq": 915e6,
+        "dsp_freq_policy": "MANUAL",
+        "dsp_freq": 14e6,
+    }
+    stream_args = {
+        "__uhd_type__": "StreamArgs",
+        "cpu_format": "fc32",
+        "otw_format": "sc16",
+        "channels": [0],
+    }
+
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # Dynamic v2 native path: 5-step B210 sequence refused at step 3 (set_tx_subdev_spec).
+        dev = _B210SubdevUSRP()
+        schema = UsrpSchema()
+        schema.bind(dev)
+        schema.configure_lockouts(
+            parse_freq_limits({"tx_allow": [[900e6, 930e6]], "admin_group_override": True})
+        )
+        # Step 1: tune A:A to LO=915 MHz + DSP=+14 MHz = 929 MHz (checked span 914.5..929.5 MHz).
+        schema.invoke_native("set_tx_freq", {"tune_request": tune_a, "chan": 0})
+        assert dev.get_tx_freq(0) == 929e6
+        # Step 2: create TX streamer bound to A:A.
+        tx_streamer = schema.invoke_native("get_tx_stream", {}, positional_args=[stream_args])
+        assert tx_streamer.bound_fe == "A:A"
+        # Step 3: attempt to remap ch0 to A:B -> refused before reaching hardware.
+        with pytest.raises(RemoteRFPolicyError, match=r"[Ss]ubdev"):
+            schema.invoke_native("set_tx_subdev_spec", {"spec": subdev_b})
+        assert dev.tx_subdev == "A:A"
+
+        # v1 IDL path: same sequence refused at call_set_tx_subdev_spec.
+        schema.call_set_tx_freq(tune_a, 0)
+        schema.call_get_tx_stream(stream_args)
+        with pytest.raises(RemoteRFPolicyError, match=r"[Ss]ubdev"):
+            schema.call_set_tx_subdev_spec(subdev_b)
+        assert dev.tx_subdev == "A:A"
+
+        # RX subdev spec stays allowed when only TX limits are active.
+        schema.invoke_native("set_rx_subdev_spec", {"spec": subdev_b})
+        assert dev.rx_subdev == "A:B"
+        schema.call_set_rx_subdev_spec({"__uhd_type__": "SubdevSpec", "spec": "A:A"})
+        assert dev.rx_subdev == "A:A"
+
+        # Admin bypass lets TX subdev spec through on both v2 and v1.
+        schema.lockout_bypass = True
+        schema.invoke_native("set_tx_subdev_spec", {"spec": subdev_b})
+        assert dev.tx_subdev == "A:B"
+        schema.call_set_tx_subdev_spec({"__uhd_type__": "SubdevSpec", "spec": "A:A"})
+        assert dev.tx_subdev == "A:A"
+
+        # With only RX limits active: RX subdev spec refused on v2 and v1; TX subdev spec allowed.
+        schema.lockout_bypass = False
+        schema.configure_lockouts(
+            parse_freq_limits({"rx_allow": [[900e6, 930e6]], "admin_group_override": True})
+        )
+        with pytest.raises(RemoteRFPolicyError, match=r"[Ss]ubdev"):
+            schema.invoke_native("set_rx_subdev_spec", {"spec": subdev_b})
+        with pytest.raises(RemoteRFPolicyError, match=r"[Ss]ubdev"):
+            schema.call_set_rx_subdev_spec(subdev_b)
+        assert dev.rx_subdev == "A:A"
+        schema.invoke_native("set_tx_subdev_spec", {"spec": subdev_b})
+        assert dev.tx_subdev == "A:B"
+        schema.call_set_tx_subdev_spec({"__uhd_type__": "SubdevSpec", "spec": "A:A"})
+        assert dev.tx_subdev == "A:A"
+
+        # Without admin_group_override, lockout_bypass does not allow subdev spec changes.
+        schema.configure_lockouts(parse_freq_limits({"tx_allow": [[900e6, 930e6]]}))
+        schema.lockout_bypass = True
+        with pytest.raises(RemoteRFPolicyError, match=r"[Ss]ubdev"):
+            schema.invoke_native("set_tx_subdev_spec", {"spec": subdev_b})
+        with pytest.raises(RemoteRFPolicyError, match=r"[Ss]ubdev"):
+            schema.call_set_tx_subdev_spec(subdev_b)
+
+        # Without any limits active, both TX and RX subdev spec changes are allowed.
+        schema.configure_lockouts(None)
+        schema.lockout_bypass = False
+        schema.invoke_native("set_tx_subdev_spec", {"spec": subdev_b})
+        schema.call_set_rx_subdev_spec(subdev_b)
+        assert dev.tx_subdev == "A:B"
+        assert dev.rx_subdev == "A:B"
+
+
+def test_usrp_set_tx_iq_balance_refused_with_tx_limits_and_allowed_without():
+    """Round 4 item 2: set_tx_iq_balance refused while TX limits are active, allowed without."""
+
+    class _IqBalanceUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_iq_calls = []
+
+        def set_tx_iq_balance(self, correction, chan=0):
+            self.tx_iq_calls.append((correction, chan))
+
+    dev = _IqBalanceUSRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+
+    # Without limits, set_tx_iq_balance is allowed.
+    schema.invoke_native("set_tx_iq_balance", {"correction": complex(-1, 0), "chan": 0})
+    assert dev.tx_iq_calls == [(complex(-1, 0), 0)]
+
+    # With TX limits active (allow or deny), set_tx_iq_balance is refused (keyword and positional).
+    for cfg in (
+        {"tx_allow": [[900e6, 930e6]], "admin_group_override": True},
+        {"tx_deny": [[910e6, 912e6]], "admin_group_override": True},
+    ):
+        schema.configure_lockouts(parse_freq_limits(cfg))
+        schema.lockout_bypass = False
+        with pytest.raises(RemoteRFPolicyError, match=r"IQ balance"):
+            schema.invoke_native("set_tx_iq_balance", {"correction": complex(-1, 0), "chan": 0})
+        with pytest.raises(RemoteRFPolicyError, match=r"IQ balance"):
+            schema.invoke_native("set_tx_iq_balance", {}, positional_args=[complex(-1, 0), 0])
+    assert len(dev.tx_iq_calls) == 1
+
+    # Admin bypass allows set_tx_iq_balance when admin_group_override is enabled.
+    schema.lockout_bypass = True
+    schema.invoke_native("set_tx_iq_balance", {"correction": complex(0.5, 0), "chan": 0})
+    assert dev.tx_iq_calls[-1] == (complex(0.5, 0), 0)
+
+    # With only RX limits active, set_tx_iq_balance is allowed.
+    schema.lockout_bypass = False
+    schema.configure_lockouts(parse_freq_limits({"rx_allow": [[900e6, 930e6]]}))
+    schema.invoke_native("set_tx_iq_balance", {"correction": complex(0.25, 0), "chan": 0})
+    assert dev.tx_iq_calls[-1] == (complex(0.25, 0), 0)
+
+
+def test_usrp_set_tx_filter_refused_while_set_tx_bandwidth_allowed():
+    """Round 4 item 3: set_tx_filter refused while TX limits are active; set_tx_bandwidth stays allowed."""
+
+    class _FilterUSRP(_FakeUSRP):
+        def __init__(self):
+            super().__init__()
+            self.tx_filter_calls = []
+            self.tx_bandwidth_calls = []
+
+        def set_tx_filter(self, name, filter_obj, chan=0):
+            self.tx_filter_calls.append((name, filter_obj, chan))
+
+        def set_tx_bandwidth(self, bandwidth, chan=0):
+            self.tx_bandwidth_calls.append((bandwidth, chan))
+
+    fake_uhd = _fake_uhd_module()
+    fir_payload = {
+        "__uhd_type__": "FilterInfoBase",
+        "native_class": "digital_filter_fir_i16",
+        "filter_type": "DIGITAL_FIR_I16",
+        "bypassed": False,
+        "position": 0,
+        "input_rate": 16e6,
+        "interpolation": 2,
+        "decimation": 1,
+        "tap_full_scale": 32767,
+        "max_num_taps": 128,
+        "taps": [32767] + [0] * 15,
+    }
+    dev = _FilterUSRP()
+    schema = UsrpSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(
+        parse_freq_limits({"tx_allow": [[900e6, 930e6]], "admin_group_override": True})
+    )
+
+    with patch("remoterf_device_core.drivers.usrp.usrp_schema.uhd", fake_uhd):
+        # set_tx_filter refused (positional as in manifest, and keyword).
+        with pytest.raises(RemoteRFPolicyError, match=r"[Tt][Xx] filter"):
+            schema.invoke_native("set_tx_filter", {}, positional_args=["FIR_1", fir_payload, 0])
+        with pytest.raises(RemoteRFPolicyError, match=r"[Tt][Xx] filter"):
+            schema.invoke_native(
+                "set_tx_filter", {"name": "FIR_1", "filter": fir_payload, "chan": 0}
+            )
+        assert dev.tx_filter_calls == []
+
+        # set_tx_bandwidth remains allowed while TX limits are active.
+        schema.invoke_native("set_tx_bandwidth", {"bandwidth": 56e6, "chan": 0})
+        assert dev.tx_bandwidth_calls == [(56e6, 0)]
+
+        # Admin bypass allows set_tx_filter.
+        schema.lockout_bypass = True
+        schema.invoke_native("set_tx_filter", {}, positional_args=["FIR_1", fir_payload, 0])
+        assert len(dev.tx_filter_calls) == 1
+
+        # Without TX limits (RX-only or None), set_tx_filter is allowed.
+        schema.lockout_bypass = False
+        schema.configure_lockouts(parse_freq_limits({"rx_allow": [[900e6, 930e6]]}))
+        schema.invoke_native("set_tx_filter", {}, positional_args=["FIR_1", fir_payload, 0])
+        assert len(dev.tx_filter_calls) == 2
+
+        schema.configure_lockouts(None)
+        schema.invoke_native("set_tx_filter", {}, positional_args=["FIR_1", fir_payload, 0])
+        assert len(dev.tx_filter_calls) == 3
+
+
+def test_hackrf_filter_bandwidth_widening_refused():
+    """Round 4 item 4: HackRF TX band uses max(sample_rate, filter_bandwidth) and checks live widening."""
+    dev = _FakeHackRF()
+    schema = HackRFSchema()
+    schema.bind(dev)
+    schema.configure_lockouts(
+        parse_freq_limits(
+            {
+                "tx_allow": [[902e6, 928e6]],
+                "tx_deny": [[918e6, 920e6]],
+                "admin_group_override": True,
+            }
+        )
+    )
+
+    # Idle widening: 2 MS/s with 28 MHz filter at 903 MHz -> 889..917 MHz -> refused on start_tx.
+    schema.set_sample_rate(2_000_000)
+    schema.set_filter_bandwidth(28_000_000)
+    schema.set_center_freq(903_000_000)
+    with pytest.raises(RemoteRFPolicyError, match=r"889–917 MHz.*902–928 MHz"):
+        schema.call_start_tx()
+    assert dev.tx_starts == 0
+
+    # Narrow filter (1.75 MHz) at 903 MHz / 2 MS/s -> 902..904 MHz -> start_tx allowed.
+    schema.set_filter_bandwidth(1_750_000)
+    schema.call_start_tx()
+    assert dev.tx_starts == 1
+
+    # Live widening past tx_allow while TX is active -> refused, filter unchanged.
+    with pytest.raises(RemoteRFPolicyError, match=r"900\.5–905\.5 MHz.*902–928 MHz"):
+        schema.set_filter_bandwidth(5_000_000)
+    assert dev.filter_bandwidth == 1_750_000
+    with pytest.raises(RemoteRFPolicyError, match=r"889–917 MHz.*902–928 MHz"):
+        schema.set_filter_bandwidth(28_000_000)
+    assert dev.filter_bandwidth == 1_750_000
+
+    # Move center to 914 MHz while TX is active (913..915 MHz allowed).
+    schema.set_center_freq(914_000_000)
+    # In-band widening (5 MHz -> 911.5..916.5 MHz) succeeds.
+    schema.set_filter_bandwidth(5_000_000)
+    assert dev.filter_bandwidth == 5_000_000
+    # Widening into tx_deny [918, 920] (8 MHz -> 910..918 MHz, including snap from 7.6 MHz) refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"910–918 MHz.*918–920 MHz"):
+        schema.set_filter_bandwidth(7_600_000)
+    assert dev.filter_bandwidth == 5_000_000
+    # Live retune also uses filter_bandwidth (916 ± 2.5 = 913.5..918.5 touches 918..920 deny) -> refused.
+    with pytest.raises(RemoteRFPolicyError, match=r"918–920 MHz"):
+        schema.set_center_freq(916_000_000)
+    assert dev.center_freq == 914_000_000
+
+    # Admin bypass permits live filter widening when enabled.
+    schema.lockout_bypass = True
+    schema.set_filter_bandwidth(28_000_000)
+    assert dev.filter_bandwidth == 28_000_000
+    schema.call_stop_tx()
+
+    # Unreadable/non-finite filter_bandwidth fails closed on start_tx.
+    schema.lockout_bypass = False
+    dev.filter_bandwidth = float("nan")
+    with pytest.raises(RemoteRFPolicyError, match=r"filter bandwidth"):
+        schema.call_start_tx()
+    dev.filter_bandwidth = None
+    with pytest.raises(RemoteRFPolicyError, match=r"filter bandwidth"):
+        schema.call_start_tx()
+
+    # Without limits, widening while TX is active is allowed.
+    dev.filter_bandwidth = 1_750_000
+    schema.configure_lockouts(None)
+    schema.call_start_tx()
+    schema.set_filter_bandwidth(28_000_000)
+    assert dev.filter_bandwidth == 28_000_000
+    schema.call_stop_tx()
 
 
 # ── schemas.json unchanged check ──────────────────────────────────────

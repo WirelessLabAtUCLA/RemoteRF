@@ -293,7 +293,10 @@ class HackRFSchema(DeviceSchema):
         raise RemoteRFPolicyError(message)
 
     def _device_float(self, attr: str) -> float:
-        raw = getattr(self.device, attr, None)
+        try:
+            raw = getattr(self.device, attr, None)
+        except Exception:
+            return float("nan")
         if isinstance(raw, (bool, np.bool_)):
             return float("nan")
         try:
@@ -301,20 +304,41 @@ class HackRFSchema(DeviceSchema):
         except (TypeError, ValueError, OverflowError):
             return float("nan")
 
-    def _check_tx_band(self, center_freq: float, sample_rate: float) -> None:
+    def _check_tx_band(
+        self,
+        center_freq: float,
+        sample_rate: float,
+        filter_bandwidth: float | None = None,
+    ) -> None:
         limits = self._freq_limits
         if limits is None or not limits.tx.is_active:
             return
-        if not (math.isfinite(center_freq) and math.isfinite(sample_rate) and sample_rate > 0):
+        bw = (
+            self._device_float("filter_bandwidth")
+            if filter_bandwidth is None
+            else filter_bandwidth
+        )
+        if not (
+            math.isfinite(center_freq)
+            and math.isfinite(sample_rate)
+            and sample_rate > 0
+            and math.isfinite(bw)
+            and bw > 0
+        ):
             self._freq_refuse(
-                "TX refused: center frequency and sample rate must be finite positive numbers."
+                "TX refused: center frequency, sample rate, and filter bandwidth "
+                "must be finite positive numbers."
             )
             return
-        low, high = center_freq - sample_rate / 2.0, center_freq + sample_rate / 2.0
+        span = max(sample_rate, bw)
+        low, high = center_freq - span / 2.0, center_freq + span / 2.0
         if not limits.tx.allows_band(low, high):
             self._freq_refuse(
                 limits.tx.format_band_error(
-                    "tx", low, high, detail="center_freq ± sample_rate/2"
+                    "tx",
+                    low,
+                    high,
+                    detail="center_freq ± max(sample_rate, filter_bandwidth)/2",
                 )
             )
 
@@ -392,6 +416,19 @@ class HackRFSchema(DeviceSchema):
 
     @idl_expose(kind="set")
     def set_filter_bandwidth(self, value):
+        if (
+            self._freq_limits is not None
+            and self._freq_limits.tx.is_active
+            and getattr(self.device, "_remoterf_tx_active", False)
+        ):
+            bw = _nearest_filter_bandwidth(_finite_hz(value, "Filter bandwidth"))
+            self._check_tx_band(
+                self._device_float("center_freq"),
+                self._device_float("sample_rate"),
+                float(bw),
+            )
+            self.device.filter_bandwidth = bw
+            return
         self.device.filter_bandwidth = _nearest_filter_bandwidth(value)
 
     @idl_expose(kind="get")

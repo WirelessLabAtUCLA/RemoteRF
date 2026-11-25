@@ -286,6 +286,7 @@ class _FakeHackRF:
     def __init__(self):
         self.center_freq = 104_000_000
         self.sample_rate = 4_000_000
+        self.filter_bandwidth = 2_500_000
         self.buffer = bytearray(b"\x01\x02\x03\x04")
         self.tx_starts = 0
 
