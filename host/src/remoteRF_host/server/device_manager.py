@@ -702,6 +702,9 @@ def end_reservation(device_id: int | str) -> Optional[Future]:
         if st is not None:
             if st.schema is not None:
                 st.schema.lockout_bypass = False
+                clear = getattr(type(st.schema), "clear_active_frequencies", None)
+                if callable(clear):
+                    clear(st.schema)
             st.lockout_bypass = False
             st.reservation_tag = ""
             st.reset_pending = True

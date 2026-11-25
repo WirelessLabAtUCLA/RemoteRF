@@ -23,8 +23,8 @@ def devices():
 
 
 # The stable reservation API (remoterf.api), imported on first use: `ops` is internal.
-_API = ("use", "whoami", "list_devices", "slots", "reservations", "reserve", "reserve_now", "cancel",
-        "RemoteRFOpsError")
+_API = ("use", "whoami", "list_devices", "get_active_frequencies", "slots", "reservations", "reserve", "reserve_now",
+        "cancel", "RemoteRFOpsError")
 
 
 def __getattr__(name):
@@ -32,6 +32,14 @@ def __getattr__(name):
         from . import api
 
         return getattr(api, name)
+    if name == "ops":
+        from . import ops
+
+        return ops
+    if name == "api":
+        from . import api
+
+        return api
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

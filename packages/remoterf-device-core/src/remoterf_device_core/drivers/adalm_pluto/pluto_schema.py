@@ -24,6 +24,7 @@ import subprocess
 import re
 import logging
 import math
+import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from numbers import Real, Integral
@@ -172,6 +173,30 @@ def _mhz(value):
     return f"{value / 1e6:g}"
 
 
+def _freq_number(value):
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    if isinstance(value, Integral):
+        return int(value)
+    if not isinstance(value, (Real, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _any_nonzero(value) -> bool:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        return any(_any_nonzero(v) for v in value)
+    return bool(value)
+
+
 def _normalize_channels(value):
     """Restore channel lists after numeric lists cross the legacy RPC codec."""
     if hasattr(value, "tolist"):
@@ -253,11 +278,99 @@ class PlutoSchema(DeviceSchema):
     client_class = "Pluto"
     driver_version = "0.0.5"
     _fir_rate = None  # the rate whose pyadi FIR this schema last loaded
+    _freq_state = None
     lockout_bypass: bool = False
     _lockouts = None
     _broken = False
     _tx_flag = False
     _rf_loopback = False
+
+    def _freq_snapshot(self):
+        state = self._freq_state
+        if state is None:
+            return {
+                "rx_hz": None,
+                "tx_hz": None,
+                "sample_rate": None,
+                "rx_rf_bandwidth": None,
+                "tx_rf_bandwidth": None,
+                "tx_buffer_active": False,
+                "dds_active": False,
+                "updated_at": None,
+            }
+        return dict(state)
+
+    def _record_freq(self, field, value):
+        number = _freq_number(value)
+        if number is None:
+            return
+        state = self._freq_snapshot()
+        state[field] = number
+        state["updated_at"] = time.time()
+        self._freq_state = state
+
+    def _record_tx(self, *, buffer=None, dds=None):
+        current = self._freq_state
+        if current is None and not buffer and not dds:
+            return
+        state = self._freq_snapshot()
+        changed = False
+        if buffer is not None:
+            flag = bool(buffer)
+            if flag or state["tx_buffer_active"] != flag:
+                state["tx_buffer_active"] = flag
+                changed = True
+        if dds is not None:
+            flag = bool(dds)
+            if flag or state["dds_active"] != flag:
+                state["dds_active"] = flag
+                changed = True
+        if changed:
+            state["updated_at"] = time.time()
+            self._freq_state = state
+
+    def clear_active_frequencies(self):
+        self._freq_state = None
+
+    def active_frequencies(self) -> dict:
+        """Last holder-configured frequencies and TX state without touching hardware."""
+        state = self._freq_state
+        if state is None:
+            return {
+                "rx_hz": None,
+                "tx_hz": None,
+                "tx_active": False,
+                "sample_rate": None,
+                "rx_rf_bandwidth": None,
+                "tx_rf_bandwidth": None,
+                "updated_at": None,
+            }
+        return {
+            "rx_hz": state["rx_hz"],
+            "tx_hz": state["tx_hz"],
+            "tx_active": bool(state["tx_buffer_active"] or state["dds_active"]),
+            "sample_rate": state["sample_rate"],
+            "rx_rf_bandwidth": state["rx_rf_bandwidth"],
+            "tx_rf_bandwidth": state["tx_rf_bandwidth"],
+            "updated_at": state["updated_at"],
+        }
+
+    def bind(self, device) -> None:
+        self.clear_active_frequencies()
+        self._fir_rate = None
+        super().bind(device)
+
+    def close(self) -> None:
+        self.clear_active_frequencies()
+        self._fir_rate = None
+        dev = self.device
+        self.device = None
+        if dev is not None:
+            close = getattr(dev, "close", None)
+            if callable(close):
+                close()
+
+    close_native_device = close
 
     def _lockout_lock(self):
         # Device managers also hold io_lock across the entire dispatch/hook.
@@ -280,6 +393,7 @@ class PlutoSchema(DeviceSchema):
             return False
         try:
             power_down(self.device)
+            self.clear_active_frequencies()
             return True
         except Exception:
             _log.exception("Pluto lockout power-off failed")
@@ -534,6 +648,7 @@ class PlutoSchema(DeviceSchema):
                     self._lockout_hygiene()
             if method_name in _STOP_METHODS and not self._lockout_on():
                 self._tx_flag = False
+                self._record_tx(buffer=False, dds=False)
                 return
             start = self._lockout_checks(method_name, normalized, bypass)
             if start:
@@ -551,6 +666,7 @@ class PlutoSchema(DeviceSchema):
                         finally:
                             self.device.disable_dds()
                     self._tx_flag = False
+                    self._record_tx(buffer=False, dds=False)
                     return result
                 result = ex.fn(self, **normalized)
                 if method_name == "set_loopback":
@@ -619,6 +735,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_rx_rf_bandwidth(self, value):
         self.device.rx_rf_bandwidth = value
+        self._record_freq("rx_rf_bandwidth", value)
 
     @idl_expose(kind="get")
     def get_tx_rf_bandwidth(self):
@@ -627,6 +744,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_tx_rf_bandwidth(self, value):
         self.device.tx_rf_bandwidth = value
+        self._record_freq("tx_rf_bandwidth", value)
 
     @idl_expose(kind="get")
     def get_sample_rate(self):
@@ -642,12 +760,14 @@ class PlutoSchema(DeviceSchema):
                     self.device.sample_rate == value
                     and self.device._get_iio_attr("out", "voltage_filter_fir_en", False) == 1
                 ):
+                    self._record_freq("sample_rate", value)
                     return
             except Exception:
                 pass
         self._fir_rate = None
         self.device.sample_rate = value
         self._fir_rate = value
+        self._record_freq("sample_rate", value)
 
     @idl_expose(kind="get")
     def get_rx_lo(self):
@@ -656,6 +776,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_rx_lo(self, value):
         self.device.rx_lo = value
+        self._record_freq("rx_hz", value)
 
     @idl_expose(kind="get")
     def get_tx_lo(self):
@@ -664,6 +785,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_tx_lo(self, value):
         self.device.tx_lo = value
+        self._record_freq("tx_hz", value)
 
     @idl_expose(kind="get")
     def get_tx_cyclic_buffer(self):
@@ -697,15 +819,18 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="call")
     def call_tx(self, value):
         self.device.tx(value)
+        self._record_tx(buffer=True)
 
     @idl_expose(kind="call")
     def call_tx_destroy_buffer(self):
         self.device.tx_destroy_buffer()
+        self._record_tx(buffer=False)
 
     def reset_for_next_holder(self):
         """A reservation ended: a PoE Pluto powers off. Otherwise stop its cyclic
         transmission, clear tx_cyclic_buffer, and drop its RX buffer so the next holder's rx_buffer_size takes effect."""
         self._fir_rate = None
+        self.clear_active_frequencies()
         if self._lockouts is not None:
             with self._lockout_lock():
                 self._lockout_hygiene(park=True)
@@ -745,6 +870,7 @@ class PlutoSchema(DeviceSchema):
     def call_disable_dds(self):
         """Disable the internal DDS tone generator."""
         self.device.disable_dds()
+        self._record_tx(dds=False)
 
     # region power (PoE Plutos; a no-op on any other Pluto)
 
@@ -760,6 +886,7 @@ class PlutoSchema(DeviceSchema):
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
             self.device.power_down()
+            self.clear_active_frequencies()
 
     @idl_expose(kind="call")
     def call_power_cycle(self):
@@ -767,6 +894,7 @@ class PlutoSchema(DeviceSchema):
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
             self.device.power_cycle()
+            self.clear_active_frequencies()
 
     # endregion
 
@@ -776,6 +904,7 @@ class PlutoSchema(DeviceSchema):
     def call_dds_single_tone(self, frequency, scale, channel=0):
         """Generate one complex DDS tone on the selected TX channel."""
         self.device.dds_single_tone(frequency, scale, channel)
+        self._record_tx(dds=True)
 
     @idl_expose(kind="call")
     def call_dds_dual_tone(
@@ -794,6 +923,7 @@ class PlutoSchema(DeviceSchema):
             scale2,
             channel,
         )
+        self._record_tx(dds=True)
 
     @idl_expose(kind="get")
     def get_dds_frequencies(self):
@@ -810,6 +940,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_dds_scales(self, value):
         self.device.dds_scales = value
+        self._record_tx(dds=_any_nonzero(value))
 
     @idl_expose(kind="get")
     def get_dds_phases(self):
@@ -826,6 +957,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_dds_enabled(self, value):
         self.device.dds_enabled = value
+        self._record_tx(dds=_any_nonzero(value))
 
     # endregion
 
