@@ -17,19 +17,31 @@ CONTRIB = Path(__file__).resolve().parents[1] / "contrib" / "drivers"
 
 
 def _load(name, fakes, path=None):
-    saved = dict(idl_schema._DRIVER_REGISTRY)
-    missing = {key: value for key, value in fakes.items() if key not in sys.modules}
-    sys.modules.update(missing)
+    saved_registry = dict(idl_schema._DRIVER_REGISTRY)
+    saved_modules = {key: sys.modules.get(key) for key in fakes}
+    sys.modules.update(fakes)
     try:
         spec = importlib.util.spec_from_file_location(f"contrib_{name}", path or CONTRIB / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
-        for key in missing:
-            sys.modules.pop(key, None)
+        for key, value in saved_modules.items():
+            if value is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = value
         idl_schema._DRIVER_REGISTRY.clear()
-        idl_schema._DRIVER_REGISTRY.update(saved)
+        idl_schema._DRIVER_REGISTRY.update(saved_registry)
     return module
+
+
+def test_load_replaces_preloaded_modules_and_restores_them(monkeypatch):
+    sentinel = types.ModuleType("pynmea2")
+    monkeypatch.setitem(sys.modules, "pynmea2", sentinel)
+    fake = _FakeNmea()
+    mod = _load("gps_schema", {"pynmea2": fake})
+    assert mod.pynmea2 is fake
+    assert sys.modules["pynmea2"] is sentinel
 
 
 def _wait(condition, timeout=3.0):
@@ -194,6 +206,43 @@ def test_gps_wait_for_fix_is_capped_and_read_raw_ignores_non_positive_counts(gps
         dev.close()
 
 
+def test_gps_wait_for_fix_default_and_large_timeout_are_capped_at_20s(gps, monkeypatch):
+    import threading
+
+    assert gps.GpsDevice.MAX_WAIT_FOR_FIX == 20.0
+    dev = gps.GpsDevice.__new__(gps.GpsDevice)
+    dev._lock = threading.Lock()
+    dev.has_fix = False
+    schema = gps.GpsSchema()
+    schema.bind(dev)
+
+    clock = [1000.0]
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(gps, "time", types.SimpleNamespace(time=lambda: clock[0], sleep=fake_sleep))
+
+    # Default exposed timeout (30 s) and larger values are both clamped to 20 s.
+    assert schema.dispatch("call_wait_for_fix", {}) is False
+    assert clock[0] - 1000.0 == pytest.approx(20.0)
+    assert all(0 < s <= 0.5 for s in sleeps)
+
+    sleeps.clear()
+    clock[0] = 2000.0
+    assert schema.dispatch("call_wait_for_fix", {"timeout": 120.0}) is False
+    assert clock[0] - 2000.0 == pytest.approx(20.0)
+
+    # Fractional timeouts do not overshoot by a full 0.5 s polling step.
+    sleeps.clear()
+    clock[0] = 3000.0
+    assert schema.dispatch("call_wait_for_fix", {"timeout": 0.7}) is False
+    assert clock[0] - 3000.0 == pytest.approx(0.7)
+    assert sleeps == [pytest.approx(0.5), pytest.approx(0.2)]
+
+
 def test_gps_auto_detect_takes_any_u_blox_but_no_other_serial_port(gps, monkeypatch):
     def port(device, vid, description, manufacturer=None):
         return types.SimpleNamespace(device=device, vid=vid, description=description, manufacturer=manufacturer, product=None)
@@ -341,6 +390,21 @@ def test_a_renumbered_csr_is_found_again_when_bluez_forgets_it(bt, sysfs):
     # A pinned adapter is not swapped for another one, and an error is no success.
     assert bt._run_coroutine_sync(pinned.set_powered_async, True) is False
     assert pinned.adapter_name == "hci1"
+
+
+def test_bluetooth_contrib_scan_is_capped_at_20s(bt):
+    assert bt.MAX_SCAN_SECONDS == 20.0
+    durations = []
+
+    async def scan_async(duration):
+        durations.append(duration)
+        return []
+
+    schema = bt.BluetoothSchema()
+    schema.bind(types.SimpleNamespace(scan_async=scan_async))
+    summary = schema.call_scan_summary(timeout=60.0)
+    assert summary["scan_duration_sec"] == 20.0
+    assert durations == [20.0]
 
 
 # -- simulated SDR ----------------------------------------------------------

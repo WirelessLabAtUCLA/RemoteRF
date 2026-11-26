@@ -48,6 +48,8 @@ from dbus_fast.constants import BusType, MessageType
 # A replugged dongle comes back as another hciN; its old object path is gone.
 _GONE_ERRORS = {"org.freedesktop.DBus.Error.UnknownObject", "org.freedesktop.DBus.Error.UnknownMethod"}
 _SYSFS_BLUETOOTH = Path("/sys/class/bluetooth")
+# Single-RPC wait cap: stay under the 25 s Host tunnel and 30 s Global relay timeouts.
+MAX_SCAN_SECONDS = 20.0
 
 BT_CORE_VERSIONS = {
     0: "Bluetooth 1.0b",
@@ -183,11 +185,15 @@ class _BluetoothDevice:
         if BleakScanner is None:
             raise RuntimeError("bleak library is required on the host machine to scan")
 
+        val = float(duration)
+        duration = 0.0 if math.isnan(val) else max(0.0, min(val, MAX_SCAN_SECONDS))
+        deadline = time.monotonic() + duration
+
         # Ensure adapter is powered (this also finds a renumbered adapter)
         is_on = await self.get_powered_async()
         if not is_on:
             await self.set_powered_async(True)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
         discovered: Dict[str, dict] = {}
 
@@ -300,7 +306,7 @@ class _BluetoothDevice:
         )
         await scanner.start()
         try:
-            await asyncio.sleep(duration)
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()))
         finally:
             await scanner.stop()
 
@@ -513,7 +519,8 @@ class BluetoothSchema(DeviceSchema):
         Filters by named_only (True/False) or min_rssi (dBm).
         Returns a list of device dictionaries sorted by signal strength.
         """
-        duration = max(1.0, min(float(timeout), 30.0))
+        val = float(timeout)
+        duration = 1.0 if math.isnan(val) else max(1.0, min(val, MAX_SCAN_SECONDS))
         results = _run_coroutine_sync(self.device.scan_async, duration)
 
         if named_only:
@@ -532,7 +539,8 @@ class BluetoothSchema(DeviceSchema):
     @idl_expose(kind="call", doc="Perform a scan and return high-level vicinity statistics.")
     def call_scan_summary(self, timeout: float = 5.0) -> dict:
         """Scan and return a statistical overview of nearby devices and vendor distribution."""
-        duration = max(1.0, min(float(timeout), 30.0))
+        val = float(timeout)
+        duration = 1.0 if math.isnan(val) else max(1.0, min(val, MAX_SCAN_SECONDS))
         devices = self.call_scan(timeout=duration)
         named_count = sum(1 for d in devices if d.get("name"))
 

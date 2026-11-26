@@ -194,10 +194,21 @@ class WizardTests(unittest.TestCase):
         elif dtype in CONTRIB_KEYS:
             self.assertLessEqual(set(init), CONTRIB_KEYS[dtype])
 
-    def test_contrib_driver_not_installed_is_noted_but_written(self):
-        rc, out = self.wizard(["bluetooth", "", "bt-1", "", "", ""])
+    def test_bluetooth_is_built_in_with_no_contrib_label_or_copy_note(self):
+        self.assertNotIn("contrib", cli._WIZARD_TYPES["bluetooth"][0].lower())
+        with mock.patch("importlib.util.find_spec", return_value=object()):
+            rc, out = self.wizard(["bluetooth", "", "bt-1", "", "", ""])
         self.assertEqual(rc, 0, out)
-        self.assertIn("bluetooth driver is not installed", out)
+        self.assertNotIn("driver is not installed", out)
+        self.assertNotIn("contrib/drivers", out)
+        self.assertNotIn("remoteRF-server[bluetooth]", out)
+
+        self.yml.unlink(missing_ok=True)
+        with mock.patch("importlib.util.find_spec", return_value=None):
+            rc, out = self.wizard(["bluetooth", "", "bt-2", "", "", ""])
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("contrib/drivers", out)
+        self.assertIn("remoteRF-server[bluetooth]", out)
 
     def test_gps_is_built_in_so_no_contrib_note(self):
         rc, out = self.wizard(["gps", "", "gps-1", "", "", ""])
