@@ -202,6 +202,122 @@ class HostTunnelAndV1TagEnforcementTests(unittest.TestCase):
             7, bypass=False, tag="res-1", resync=False, blocked_tags=("TX", "Cal")
         )
 
+    def test_reservation_start_malformed_payload_fails_closed_to_block_all(self):
+        agent = self._agent(None)
+        malformed_outer_payloads = (
+            "{bad-json",
+            "[]",
+            json.dumps({"tag": 123, "lockout_bypass": True, "resync": True, "blocked_tags": ["TX"]}),
+        )
+        for bad_payload in malformed_outer_payloads:
+            with mock.patch("remoteRF_host.server.tunnel_agent.prepare_reservation") as prepare:
+                agent._handle_control(host_pb2.Control(
+                    kind="reservation_start",
+                    device_id="7",
+                    payload=bad_payload,
+                ))
+            prepare.assert_called_once_with(
+                7, bypass=False, tag="", resync=False, blocked_tags=(BLOCK_ALL_TAG,)
+            )
+
+        for bad_tags in ("TX", "", {}, None, [""], [123], ["TX", None]):
+            with mock.patch("remoteRF_host.server.tunnel_agent.prepare_reservation") as prepare:
+                agent._handle_control(host_pb2.Control(
+                    kind="reservation_start",
+                    device_id="7",
+                    payload=json.dumps({"tag": "res-1", "blocked_tags": bad_tags}),
+                ))
+            prepare.assert_called_once_with(
+                7, bypass=False, tag="res-1", resync=False, blocked_tags=(BLOCK_ALL_TAG,)
+            )
+
+        with mock.patch("remoteRF_host.server.tunnel_agent.prepare_reservation") as prepare:
+            agent._handle_control(host_pb2.Control(
+                kind="reservation_start",
+                device_id="7",
+                payload=json.dumps({
+                    "tag": "res-resync",
+                    "lockout_bypass": True,
+                    "resync": True,
+                    "blocked_tags": "TX",
+                }),
+            ))
+        prepare.assert_called_once_with(
+            7, bypass=True, tag="res-resync", resync=True, blocked_tags=(BLOCK_ALL_TAG,)
+        )
+
+        # End-to-end: malformed blocked_tags keeps tag/resync, blocks tagged TX calls, and allows untagged RX.
+        from remoteRF_host.server import device_manager
+
+        radio = _TaggedHostRadio()
+        radio.bind(object())
+        st = device_manager._DeviceState(radio, "radio", "", "tagged_host_radio", {})
+        with mock.patch.dict(device_manager._devices, {7: st}, clear=False), \
+                mock.patch.object(device_manager, "_run_hook") as run_hook:
+            agent._handle_control(host_pb2.Control(
+                kind="reservation_start",
+                device_id="7",
+                payload=json.dumps({"tag": "res-bad", "blocked_tags": "TX"}),
+            ))
+            self.assertEqual(st.reservation_tag, "res-bad")
+            self.assertEqual(st.blocked_tags, (BLOCK_ALL_TAG,))
+            run_hook.assert_called_once_with(7, "prepare_for_holder", "preparing")
+            res_tx = rpc_manager.RpcManager().run_rpc(
+                function_name="tagged_host_radio:tx:CALL1",
+                args={
+                    "g": map_arg(7),
+                    "arg1": map_arg([1, 2]),
+                    "__rrf_reservation_tag": map_arg("res-bad"),
+                },
+            )
+            self.assertEqual(
+                unmap_arg(res_tx["Error"]),
+                "tx is blocked for your user groups on this device (tag TX)",
+            )
+            self.assertEqual(radio.tx_calls, [])
+            res_rx = rpc_manager.RpcManager().run_rpc(
+                function_name="tagged_host_radio:rx:CALL0",
+                args={
+                    "g": map_arg(7),
+                    "__rrf_reservation_tag": map_arg("res-bad"),
+                },
+            )
+            self.assertNotIn("Error", res_rx)
+            self.assertEqual(unmap_arg(res_rx["rx"]), 1)
+
+            # Resync with malformed blocked_tags keeps tag and skips hardware prepare.
+            run_hook.reset_mock()
+            agent._handle_control(host_pb2.Control(
+                kind="reservation_start",
+                device_id="7",
+                payload=json.dumps({
+                    "tag": "res-resync",
+                    "lockout_bypass": True,
+                    "resync": True,
+                    "blocked_tags": "TX",
+                }),
+            ))
+            run_hook.assert_not_called()
+            self.assertEqual(st.reservation_tag, "res-resync")
+            self.assertTrue(st.lockout_bypass)
+            self.assertEqual(st.blocked_tags, (BLOCK_ALL_TAG,))
+            res_rx_resync = rpc_manager.RpcManager().run_rpc(
+                function_name="tagged_host_radio:rx:CALL0",
+                args={
+                    "g": map_arg(7),
+                    "__rrf_reservation_tag": map_arg("res-resync"),
+                },
+            )
+            self.assertNotIn("Error", res_rx_resync)
+            self.assertEqual(unmap_arg(res_rx_resync["rx"]), 2)
+
+        # _clean_blocked_tags also fails closed on malformed inputs.
+        for bad in ("TX", "", [""], [None], [123], ["TX", None], 123, {"TX": True}):
+            self.assertEqual(device_manager._clean_blocked_tags(bad), (BLOCK_ALL_TAG,), repr(bad))
+        self.assertEqual(device_manager._clean_blocked_tags(()), ())
+        self.assertEqual(device_manager._clean_blocked_tags(None), ())
+        self.assertEqual(device_manager._clean_blocked_tags(["TX", "Cal"]), ("TX", "Cal"))
+
     def test_host_v1_rpc_enforces_context_and_grant_blocked_tags(self):
         radio = _TaggedHostRadio()
         radio.bind(object())
@@ -291,6 +407,59 @@ class HostTunnelAndV1TagEnforcementTests(unittest.TestCase):
                 [("set_tx_lo", 2_400_000_000), ("set_tx_lo", 915_000_000)],
             )
 
+    def test_host_v1_slow_reset_cannot_bypass_blocked_tags_on_handover_or_expiry(self):
+        import threading
+        from remoteRF_host.server import device_manager
+
+        class _SlowResetHostRadio(_TaggedHostRadio):
+            def __init__(self):
+                super().__init__()
+                self.reset_hook = None
+
+            def reset_for_next_holder(self):
+                if self.reset_hook is not None:
+                    hook, self.reset_hook = self.reset_hook, None
+                    hook()
+
+        gid = 7171
+        expected_changed = "The reservation on this device changed; call again."
+        for action in ("expiry", "handover"):
+            radio = _SlowResetHostRadio()
+            radio.bind(object())
+            st = device_manager._DeviceState(radio, "radio", "", "tagged_host_radio", {})
+            with mock.patch.dict(device_manager._devices, {gid: st}, clear=False), \
+                    mock.patch.object(device_manager, "_reservation_end_callbacks", []), \
+                    mock.patch.object(device_manager, "_run_hook"):
+                device_manager.prepare_reservation(gid, tag="tagA", blocked_tags=("TX",))
+                st.reset_pending = True
+                in_reset, transition_done = threading.Event(), threading.Event()
+                radio.reset_hook = lambda: (in_reset.set(), self.assertTrue(transition_done.wait(1.0)))
+
+                result_box = []
+                worker = threading.Thread(
+                    target=lambda: result_box.append(
+                        rpc_manager.RpcManager().run_rpc(
+                            function_name="tagged_host_radio:tx:CALL1",
+                            args={
+                                "g": map_arg(gid),
+                                "arg1": map_arg([7, 7]),
+                                "__rrf_reservation_tag": map_arg("tagA"),
+                            },
+                        )
+                    )
+                )
+                worker.start()
+                self.assertTrue(in_reset.wait(1.0))
+                if action == "expiry":
+                    device_manager.end_reservation(gid)
+                else:
+                    device_manager.prepare_reservation(gid, tag="tagB", blocked_tags=())
+                transition_done.set()
+                worker.join(2.0)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(radio.tx_calls, [], action)
+                self.assertEqual(unmap_arg(result_box[0]["Error"]), expected_changed, action)
+
 
 class HostV2TagEnforcementTests(unittest.TestCase):
     def test_host_v2_invoke_sample_stream_and_bridge_enforce_blocked_tags(self):
@@ -330,8 +499,10 @@ class HostV2TagEnforcementTests(unittest.TestCase):
             )
             self.assertTrue(rx_res["__remoterf_handle__"].startswith("rx_"))
 
-            # Open a TX streamer while unblocked, then enforce via bridge blocked_tags (direct path).
+            # Open a fresh session while unblocked, then enforce via bridge blocked_tags (direct path).
+            manager.close(session.session_id)
             context["blocked_tags"] = ()
+            session = manager.open("bridge-token")
             tx_res, _ = manager.invoke(
                 session.session_id, session.root_handle, "get_tx_stream", {}, positional_args=[{}], overload_id="default"
             )
@@ -386,7 +557,24 @@ class HostV2TagEnforcementTests(unittest.TestCase):
             self.assertEqual(dynamic_v2.GRANT_BLOCKED_TAGS.get(), ())
 
             # Master token bypasses holder blocked_tags on host v2 Invoke and SampleFrame.
+            manager.close(session.session_id)
             context["blocked_tags"] = ("TX",)
+            session = manager.open("bridge-token")
+            tx_entry = manager.register_handle(
+                session,
+                inventory.live.tx_streamer,
+                "uhd.usrp.TXStreamer",
+                parent=session.root_handle,
+            )
+            tx_handle = tx_entry.handle
+            tx_gen = tx_entry.generation
+            inv_req = grpc_pb2.InvokeRequest(
+                session_id=session.session_id,
+                handle=session.root_handle,
+                method="set_tx_gain",
+                overload_id="gain_chan",
+            )
+            inv_req.args.add(name="gain", value=encode_value(5.0))
             bridged_master = dynamic_v2_bridge.run_bridge(
                 operation="Invoke",
                 args={"wire": map_arg(inv_req.SerializeToString())},
@@ -434,6 +622,65 @@ class HostV2TagEnforcementTests(unittest.TestCase):
             self.assertFalse(dynamic_v2.GRANT_MASTER_BYPASS.get())
 
             manager.close(session.session_id)
+
+    def test_host_v2_session_snapshots_blocked_tags_and_refuses_midflight_expiry(self):
+        import threading
+        from remoteRF_host.server import device_manager
+        from remoteRF_host.server.v2_errors import RemoteRFSessionExpiredError
+
+        gid = 7172
+        inventory = _FakeInventoryUsrp()
+        st = device_manager._DeviceState(inventory, "host-usrp", "SERIAL", "usrp", {})
+        manager = dynamic_v2.SessionManager()
+        state_updated, allow_close = threading.Event(), threading.Event()
+
+        def _delayed_close(_gid):
+            state_updated.set()
+            allow_close.wait(1.0)
+            manager.close_gid(_gid, wait=False)
+
+        with mock.patch.dict(sys.modules, {"uhd": _fake_uhd_module()}), \
+                mock.patch.dict(device_manager._devices, {gid: st}, clear=False), \
+                mock.patch.object(device_manager, "_reservation_end_callbacks", [_delayed_close]), \
+                mock.patch.object(device_manager, "_run_hook"), \
+                mock.patch("remoteRF_host.server.dynamic_v2.session_manager", manager):
+            device_manager.prepare_reservation(gid, tag="tagA", blocked_tags=("TX",))
+            session = manager.open(device_manager.make_host_bridge_token(gid))
+
+            # Mutating st.blocked_tags without advancing epoch cannot weaken a TX-blocked session.
+            with device_manager._state_lock:
+                st.blocked_tags = ()
+            with self.assertRaises(RemoteRFPolicyError):
+                manager.invoke(
+                    session.session_id,
+                    session.root_handle,
+                    "set_tx_freq",
+                    {"tune_request": 2.4e9},
+                    overload_id="default",
+                )
+            self.assertEqual(inventory.live.calls, [])
+
+            # Reservation end before close_gid runs refuses immediately with session expiry.
+            with device_manager._state_lock:
+                st.blocked_tags = ("TX",)
+            ender = threading.Thread(target=lambda: device_manager.end_reservation(gid))
+            ender.start()
+            self.assertTrue(state_updated.wait(1.0))
+            try:
+                with self.assertRaises(RemoteRFSessionExpiredError):
+                    manager.invoke(
+                        session.session_id,
+                        session.root_handle,
+                        "set_tx_freq",
+                        {"tune_request": 2.4e9},
+                        overload_id="default",
+                    )
+                self.assertEqual(inventory.live.calls, [])
+            finally:
+                allow_close.set()
+                ender.join(2.0)
+                self.assertFalse(ender.is_alive())
+                manager.close(session.session_id)
 
 
 class HostDirectPathTagEnforcementTests(unittest.TestCase):
@@ -492,7 +739,7 @@ class HostDirectPathTagEnforcementTests(unittest.TestCase):
 
     def test_direct_grant_validates_blocked_tags_and_enforces_on_call(self):
         # Malformed blocked_tags claims are refused.
-        for bad in ("TX", [123], [""]):
+        for bad in (None, "TX", [123], [""]):
             with self.assertRaises(PermissionError):
                 self.host.verify(self._token(blocked_tags=bad), 7)
 
@@ -527,6 +774,27 @@ class HostDirectPathTagEnforcementTests(unittest.TestCase):
         self.assertFalse(drop_rx)
         self.assertNotIn("Error", rx_res)
         self.assertEqual(unmap_arg(rx_res["rx"]), 1)
+
+        # If the grant ends right after the lock-held _refusal check, _serve_call refuses
+        # instead of defaulting blocked_tags=() and executing the call.
+        run_call_spy = mock.Mock()
+        self.host.run_call = run_call_spy
+        original_refusal = self.host._refusal
+        refusal_calls = 0
+
+        def end_grant_after_second_check(gid, rid, fn):
+            nonlocal refusal_calls
+            refusal_calls += 1
+            res = original_refusal(gid, rid, fn)
+            if res is None and refusal_calls == 2:
+                self.host.end(gid)
+            return res
+
+        with mock.patch.object(self.host, "_refusal", side_effect=end_grant_after_second_check):
+            race_res, drop_race = asyncio.run(self.host._serve_call(7, "reservation-1", tx_req))
+        self.assertTrue(drop_race)
+        self.assertEqual(unmap_arg(race_res["a"]), direct_host.GRANT_ENDED)
+        run_call_spy.assert_not_called()
 
 
 if __name__ == "__main__":

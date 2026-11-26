@@ -466,6 +466,102 @@ class ReservationBlockedTagsTests(unittest.TestCase):
         self.assertEqual(groups.get_users_blocked_tags(uid=10, device_id=3), (True, [BLOCK_ALL_TAG]))
         self.assertEqual(groups.get_users_blocked_tags(uid=10, device_id=4), (True, [BLOCK_ALL_TAG]))
 
+    def test_malformed_devices_whitelist_cannot_lift_blacklisted_tags(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "usergroups.db"
+        malformed_whitelists = (
+            "{corrupt",
+            "[3",
+            "{}",
+            "123",
+            '"3"',
+            "true",
+            "null",
+            "[null]",
+            '[""]',
+            '["   "]',
+            "[true]",
+            "[1.5]",
+            '[3, "bad"]',
+            '[3, null]',
+            "",
+            "   ",
+            ",,",
+            "3,",
+            "abc",
+            "3,abc",
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE UserGroups (
+                    group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT NOT NULL UNIQUE,
+                    devices_whitelist TEXT NOT NULL DEFAULT '[]',
+                    max_reservation_time_sec INTEGER NOT NULL DEFAULT 3600,
+                    max_reservations INTEGER NOT NULL DEFAULT 1,
+                    lifetime_sec INTEGER NOT NULL DEFAULT 0,
+                    lan_only INTEGER NOT NULL DEFAULT 0,
+                    max_horizon_sec INTEGER NOT NULL DEFAULT 604800,
+                    blacklisted_tags TEXT NOT NULL DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE UsersLookup (
+                    user_id INTEGER NOT NULL,
+                    group_id INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, group_id)
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, blacklisted_tags) "
+                "VALUES (1, 'rx-only', '[3]', '[\"TX\"]')"
+            )
+            conn.execute("INSERT INTO UsersLookup VALUES (10, 1)")
+            for idx, bad_wl in enumerate(malformed_whitelists, start=2):
+                conn.execute(
+                    "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, blacklisted_tags) "
+                    "VALUES (?, ?, ?, '[]')",
+                    (idx, f"corrupt-{idx}", bad_wl),
+                )
+                conn.execute("INSERT INTO UsersLookup VALUES (10, ?)", (idx,))
+                conn.execute("INSERT INTO UsersLookup VALUES (11, ?)", (idx,))
+            # Well-formed groups for regression parity: legacy CSV, string ints, explicit all-devices.
+            conn.execute(
+                "INSERT INTO UserGroups (group_id, group_name, devices_whitelist, blacklisted_tags) "
+                "VALUES (100, 'csv-rx', '5, 6', '[\"TX\"]'), "
+                "(101, 'str-ids', '[\"7\"]', '[\"Cal\"]'), "
+                "(102, 'all-open', '[]', '[]')"
+            )
+            conn.execute("INSERT INTO UsersLookup VALUES (20, 100), (20, 101), (21, 1), (21, 102)")
+
+        groups = UserGroupHandler.__new__(UserGroupHandler)
+        groups.filepath = db_path
+        groups.lock = threading.RLock()
+
+        # Malformed unrestricted groups must not lift TX on device 3 or grant access to other devices.
+        self.assertEqual(groups.get_users_blocked_tags(uid=10, device_id=3), (True, ["TX"]))
+        self.assertEqual(groups.get_users_blocked_tags(uid=10, device_id=9), (False, []))
+
+        # A user belonging only to malformed-whitelist groups is denied, and holder tag lookup fails closed.
+        self.assertEqual(groups.get_users_blocked_tags(uid=11, device_id=3), (False, []))
+        handler = reservation.ReservationHandler.__new__(reservation.ReservationHandler)
+        handler.get_uid = mock.Mock(return_value=11)
+        fake_perms = mock.Mock()
+        fake_perms.get_perms.return_value = [["Normal User"]]
+        with mock.patch.object(reservation, "perms", fake_perms), \
+                mock.patch.object(reservation, "user_group_handler", groups):
+            self.assertEqual(handler._blocked_tags_for_holder_locked("corrupt_only", 3), (BLOCK_ALL_TAG,))
+
+        # Well-formed whitelists keep identical behavior.
+        self.assertEqual(groups.get_users_blocked_tags(uid=20, device_id=5), (True, ["TX"]))
+        self.assertEqual(groups.get_users_blocked_tags(uid=20, device_id=6), (True, ["TX"]))
+        self.assertEqual(groups.get_users_blocked_tags(uid=20, device_id=7), (True, ["Cal"]))
+        self.assertEqual(groups.get_users_blocked_tags(uid=20, device_id=8), (False, []))
+        self.assertEqual(groups.get_users_blocked_tags(uid=21, device_id=3), (True, []))
+        self.assertEqual(groups.get_users_blocked_tags(uid=21, device_id=9), (True, []))
+
     def test_update_devices_pushes_blocked_tags_and_admin_bypass(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -743,6 +839,177 @@ class ServerV1DispatchTagEnforcementTests(unittest.TestCase):
         res = rpc._dispatch_native_schema(function_name="ti_awr6843:fps:GET", args={}, dev=schema)
         self.assertEqual(unmap_arg(res["fps"]), 10.0)
 
+    def test_v1_batch_rx_n_and_slow_reset_cannot_bypass_blocked_tags_on_handover_or_expiry(self):
+        from remoteRF_server.common.utils.api_token import hash_token
+
+        gid = 4141
+        sa, ha = hash_token("tokA")
+        sb, hb = hash_token("tokB")
+
+        class _RaceRadio(_TaggedRadioSchema):
+            def __init__(self):
+                super().__init__()
+                self.rx_hook = None
+                self.reset_hook = None
+
+            @idl_expose(kind="call")
+            def call_rx(self):
+                if self.rx_hook is not None:
+                    hook, self.rx_hook = self.rx_hook, None
+                    hook()
+                self.rx_calls += 1
+                return np.array([self.rx_calls, self.rx_calls + 1], dtype=np.complex128)
+
+            def reset_for_next_holder(self):
+                if self.reset_hook is not None:
+                    hook, self.reset_hook = self.reset_hook, None
+                    hook()
+
+        def _req(name, **req_args):
+            return grpc_pb2.GenericRPCRequest(function_name=name, args=req_args).SerializeToString()
+
+        def _setup_state():
+            dev = _RaceRadio()
+            dev.bind(object())
+            st = device_manager._DeviceState(
+                dev=dev, origin="local", online=True, salt="", hsh="",
+                name="race-radio", ident="r", dtype="tagged_radio",
+            )
+            with device_manager._state_lock:
+                device_manager._devices[gid] = st
+            rpc = RpcManager()
+            rpc._federated_route = lambda **kw: None
+            return dev, st, rpc
+
+        expected_changed = "The reservation on this device changed; call again."
+        saved = device_manager._devices.get(gid)
+        try:
+            with mock.patch.object(device_manager, "_sync_host_devices"), \
+                    mock.patch.object(device_manager, "_reservation_end_callbacks", []), \
+                    mock.patch.object(device_manager, "_reset_if_pending"), \
+                    mock.patch.object(device_manager, "_get_master_token", return_value=""):
+                # 1) Batch [rx, tx] via acquire_device: mid-flight handover to unblocked B.
+                dev, st, rpc = _setup_state()
+                device_manager.set_device(gid, sa, ha, blocked_tags=("TX",))
+                pre = rpc._handle_device_rpc(
+                    function_name="tagged_radio:tx:CALL1",
+                    args={"a": map_arg("tokA"), "arg1": map_arg([1, 2])},
+                )
+                self.assertEqual(unmap_arg(pre["a"]), "tx is blocked for your user groups on this device (tag TX)")
+                self.assertEqual(dev.tx_calls, [])
+
+                in_rx, handover_done = threading.Event(), threading.Event()
+
+                def _pause_in_rx():
+                    in_rx.set()
+                    self.assertTrue(handover_done.wait(1.0))
+
+                dev.rx_hook = _pause_in_rx
+                batch_args = {
+                    "a": map_arg("tokA"),
+                    "op0": map_arg(_req("tagged_radio:rx:CALL0")),
+                    "op1": map_arg(_req("tagged_radio:tx:CALL1", arg1=map_arg([9, 9]))),
+                }
+                result_box = []
+                worker = threading.Thread(
+                    target=lambda: result_box.append(
+                        rpc._handle_device_rpc(function_name="tagged_radio:batch:CALLN", args=batch_args)
+                    )
+                )
+                worker.start()
+                self.assertTrue(in_rx.wait(1.0))
+                device_manager.set_device(gid, sb, hb, blocked_tags=())
+                handover_done.set()
+                worker.join(2.0)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(dev.tx_calls, [])
+                self.assertEqual(unmap_arg(result_box[0]["batch_done"]), 1)
+                self.assertEqual(unmap_arg(result_box[0]["batch_failed"]), 1)
+                self.assertEqual(unmap_arg(result_box[0]["batch_error"]), expected_changed)
+
+                # 2) Batch [rx, tx] via acquire_device_by_gid: mid-flight reservation expiry.
+                dev, st, rpc = _setup_state()
+                device_manager.set_device(gid, sa, ha, blocked_tags=("TX",))
+                in_rx, expiry_done = threading.Event(), threading.Event()
+                dev.rx_hook = lambda: (in_rx.set(), self.assertTrue(expiry_done.wait(1.0)))
+                result_box.clear()
+                worker = threading.Thread(
+                    target=lambda: result_box.append(
+                        rpc.run_device_rpc_for_gid(
+                            gid=gid,
+                            function_name="tagged_radio:batch:CALLN",
+                            args={
+                                "op0": map_arg(_req("tagged_radio:rx:CALL0")),
+                                "op1": map_arg(_req("tagged_radio:tx:CALL1", arg1=map_arg([5, 5]))),
+                            },
+                            expected_reservation=(sa, ha),
+                        )
+                    )
+                )
+                worker.start()
+                self.assertTrue(in_rx.wait(1.0))
+                device_manager.set_device(gid, "", "")
+                expiry_done.set()
+                worker.join(2.0)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(dev.tx_calls, [])
+                self.assertEqual(unmap_arg(result_box[0]["batch_done"]), 1)
+                self.assertEqual(unmap_arg(result_box[0]["batch_failed"]), 1)
+                self.assertEqual(unmap_arg(result_box[0]["batch_error"]), expected_changed)
+
+                # 3) rx_n mid-flight expiry stops after the in-flight op and refuses remaining ops.
+                dev, st, rpc = _setup_state()
+                device_manager.set_device(gid, sa, ha, blocked_tags=("TX",))
+                in_rx, expiry_done = threading.Event(), threading.Event()
+                dev.rx_hook = lambda: (in_rx.set(), self.assertTrue(expiry_done.wait(1.0)))
+                result_box.clear()
+                worker = threading.Thread(
+                    target=lambda: result_box.append(
+                        rpc._handle_device_rpc(
+                            function_name="tagged_radio:rx_n:CALL1",
+                            args={"a": map_arg("tokA"), "arg1": map_arg(4)},
+                        )
+                    )
+                )
+                worker.start()
+                self.assertTrue(in_rx.wait(1.0))
+                device_manager.set_device(gid, "", "")
+                expiry_done.set()
+                worker.join(2.0)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(dev.rx_calls, 1)
+                self.assertEqual(unmap_arg(result_box[0]["rx_n"]).shape, (1, 2))
+
+                # 4) Single TX call with a slow reset_for_next_holder hook during handover.
+                dev, st, rpc = _setup_state()
+                device_manager.set_device(gid, sa, ha, blocked_tags=("TX",))
+                st.reset_pending = True
+                in_reset, handover_done = threading.Event(), threading.Event()
+                dev.reset_hook = lambda: (in_reset.set(), self.assertTrue(handover_done.wait(1.0)))
+                result_box.clear()
+                worker = threading.Thread(
+                    target=lambda: result_box.append(
+                        rpc._handle_device_rpc(
+                            function_name="tagged_radio:tx:CALL1",
+                            args={"a": map_arg("tokA"), "arg1": map_arg([7, 7])},
+                        )
+                    )
+                )
+                worker.start()
+                self.assertTrue(in_reset.wait(1.0))
+                device_manager.set_device(gid, sb, hb, blocked_tags=())
+                handover_done.set()
+                worker.join(2.0)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(dev.tx_calls, [])
+                self.assertEqual(unmap_arg(result_box[0]["a"]), expected_changed)
+        finally:
+            with device_manager._state_lock:
+                if saved is None:
+                    device_manager._devices.pop(gid, None)
+                else:
+                    device_manager._devices[gid] = saved
+
 
 class ServerV2DispatchTagEnforcementTests(unittest.TestCase):
     def test_v2_invoke_and_sample_stream_enforce_blocked_tags(self):
@@ -820,15 +1087,19 @@ class ServerV2DispatchTagEnforcementTests(unittest.TestCase):
             t_val, _ = manager.invoke(session.session_id, session.root_handle, "get_time_now", {}, overload_id="default")
             self.assertEqual(t_val, 1.5)
 
-            # Even if a TXStreamer handle exists, SampleStream TX OPEN refuses it.
-            context["blocked_tags"] = ()
-            tx_res, _ = manager.invoke(
-                session.session_id, session.root_handle, "get_tx_stream", {}, positional_args=[{}], overload_id="default"
-            )
-            tx_handle = tx_res["__remoterf_handle__"]
-            tx_gen = tx_res["generation"]
-
+            # Even if a TXStreamer handle exists on a TX-blocked session, SampleStream TX OPEN refuses it.
+            manager.close(session.session_id)
             context["blocked_tags"] = ("tx",)
+            session = manager.open("user-token")
+            tx_entry = manager.register_handle(
+                session,
+                inventory.live.tx_streamer,
+                "uhd.usrp.TXStreamer",
+                parent=session.root_handle,
+            )
+            tx_handle = tx_entry.handle
+            tx_gen = tx_entry.generation
+
             open_frame = grpc_pb2.SampleFrame(
                 session_id=session.session_id,
                 handle=tx_handle,
@@ -962,26 +1233,167 @@ class ServerV2DispatchTagEnforcementTests(unittest.TestCase):
                 )
             self.assertEqual(prop.writes, [])
 
-            # Unrestricted holder can write.
+            # Unrestricted holder opens its own session and can write.
+            manager.close(session.session_id)
             context["blocked_tags"] = ()
+            unrestricted = manager.open("unrestricted-token")
+            tree_res2, _ = manager.invoke(
+                unrestricted.session_id, unrestricted.root_handle, "get_tree", {}, overload_id="default"
+            )
+            prop_res2, _ = manager.invoke(
+                unrestricted.session_id,
+                tree_res2["__remoterf_handle__"],
+                "access_double",
+                {},
+                positional_args=["/mboards/0/dboards/A/tx_frontends/0/freq/value"],
+                overload_id="default",
+            )
+            prop_handle2 = prop_res2["__remoterf_handle__"]
             manager.invoke(
-                session.session_id,
-                prop_handle,
+                unrestricted.session_id,
+                prop_handle2,
                 "set",
                 {},
                 positional_args=[2.45e9],
                 overload_id="default",
             )
             manager.invoke(
-                session.session_id,
-                prop_handle,
+                unrestricted.session_id,
+                prop_handle2,
                 "set_coerced",
                 {},
                 positional_args=[2.46e9],
                 overload_id="default",
             )
             self.assertEqual(prop.writes, [("set", 2.45e9), ("set_coerced", 2.46e9)])
-            manager.close(session.session_id)
+            manager.close(unrestricted.session_id)
+
+    def test_host_sync_swapping_the_state_object_during_reset_is_not_a_reservation_change(self):
+        import copy
+        from remoteRF_server.common.utils.api_token import hash_token
+
+        gid = 4142
+        sa, ha = hash_token("tokA")
+
+        class _SwapRadio(_TaggedRadioSchema):
+            reset_hook = None
+
+            def reset_for_next_holder(self):
+                if self.reset_hook is not None:
+                    hook, self.reset_hook = self.reset_hook, None
+                    hook()
+
+        dev = _SwapRadio()
+        dev.bind(object())
+        st = device_manager._DeviceState(
+            dev=dev, origin="local", online=True, salt="", hsh="",
+            name="swap-radio", ident="s", dtype="tagged_radio",
+        )
+        saved = device_manager._devices.get(gid)
+        try:
+            with mock.patch.object(device_manager, "_sync_host_devices"), \
+                    mock.patch.object(device_manager, "_reservation_end_callbacks", []), \
+                    mock.patch.object(device_manager, "_reset_if_pending"), \
+                    mock.patch.object(device_manager, "_get_master_token", return_value=""):
+                with device_manager._state_lock:
+                    device_manager._devices[gid] = st
+                device_manager.set_device(gid, sa, ha, blocked_tags=("TX",))
+                device_manager._devices[gid].reset_pending = True
+
+                def _swap():  # what _sync_host_devices does: same lock and reservation, new object
+                    with device_manager._state_lock:
+                        device_manager._devices[gid] = copy.copy(device_manager._devices[gid])
+
+                dev.reset_hook = _swap
+                rpc = RpcManager()
+                rpc._federated_route = lambda **kw: None
+                out = rpc._handle_device_rpc(function_name="tagged_radio:rx:CALL0", args={"a": map_arg("tokA")})
+                self.assertIsNone(dev.reset_hook)  # the swap really happened mid-acquire
+                self.assertEqual(dev.rx_calls, 1, out)
+        finally:
+            with device_manager._state_lock:
+                if saved is None:
+                    device_manager._devices.pop(gid, None)
+                else:
+                    device_manager._devices[gid] = saved
+
+    def test_v2_session_snapshots_blocked_tags_and_refuses_midflight_handover(self):
+        from remoteRF_server.common.utils.api_token import hash_token
+        from remoteRF_server.server.v2_errors import RemoteRFSessionExpiredError
+
+        gid = 4142
+        sa, ha = hash_token("tokA")
+        sb, hb = hash_token("tokB")
+        inventory = _FakeInventoryUsrp()
+        st = device_manager._DeviceState(
+            dev=inventory, origin="local", online=True, salt="", hsh="",
+            name="v2-usrp", ident="SERIAL", dtype="usrp",
+        )
+        manager = SessionManager()
+        saved = device_manager._devices.get(gid)
+        with device_manager._state_lock:
+            device_manager._devices[gid] = st
+        try:
+            state_updated, allow_close = threading.Event(), threading.Event()
+
+            def _delayed_close(_gid):
+                state_updated.set()
+                allow_close.wait(1.0)
+                manager.close_gid(_gid, wait=False)
+
+            with mock.patch.dict(sys.modules, {"uhd": _fake_uhd_module()}), \
+                    mock.patch.object(device_manager, "_sync_host_devices"), \
+                    mock.patch.object(device_manager, "_reset_if_pending"), \
+                    mock.patch.object(device_manager, "_get_master_token", return_value=""), \
+                    mock.patch.object(device_manager, "_reservation_end_callbacks", [_delayed_close]), \
+                    mock.patch("remoteRF_server.server.dynamic_v2.session_manager", manager):
+                device_manager.set_device(gid, sa, ha, blocked_tags=("TX",))
+                session = manager.open("tokA")
+
+                # Mutating live st.blocked_tags without changing reservation cannot weaken a TX-blocked session.
+                with device_manager._state_lock:
+                    st.blocked_tags = ()
+                with self.assertRaises(RemoteRFPolicyError):
+                    manager.invoke(
+                        session.session_id,
+                        session.root_handle,
+                        "set_tx_freq",
+                        {"tune_request": 2.4e9},
+                        overload_id="default",
+                    )
+                self.assertEqual(inventory.live.calls, [])
+
+                # Mid-flight handover before close_gid completes refuses immediately with session expiry.
+                with device_manager._state_lock:
+                    st.blocked_tags = ("TX",)
+                handover = threading.Thread(
+                    target=lambda: device_manager.set_device(gid, sb, hb, blocked_tags=())
+                )
+                handover.start()
+                self.assertTrue(state_updated.wait(1.0))
+                try:
+                    with self.assertRaises(RemoteRFSessionExpiredError):
+                        manager._check_blocked_tags(session, "uhd.usrp.MultiUSRP", "set_tx_freq")
+                    with self.assertRaises(RemoteRFSessionExpiredError):
+                        manager.invoke(
+                            session.session_id,
+                            session.root_handle,
+                            "set_tx_freq",
+                            {"tune_request": 2.4e9},
+                            overload_id="default",
+                        )
+                    self.assertEqual(inventory.live.calls, [])
+                finally:
+                    allow_close.set()
+                    handover.join(2.0)
+                    self.assertFalse(handover.is_alive())
+                    manager.close(session.session_id)
+        finally:
+            with device_manager._state_lock:
+                if saved is None:
+                    device_manager._devices.pop(gid, None)
+                else:
+                    device_manager._devices[gid] = saved
 
 
 class HostDynamicV2TagEnforcementTests(unittest.TestCase):
@@ -1148,6 +1560,13 @@ class HostDirectGrantBlockedTagsTests(unittest.TestCase):
             )
             self.assertNotIn("blocked_tags", claims_plain)
 
+            for bad in ("TX", "", {}, {"TX": True}, [""], [None], [123], ["TX", None]):
+                claims_bad = verify_eddsa_jwt(
+                    host_direct.issue_grant("lab-host", 7, "res-1", 2000, "tag-1", bad),
+                    pub,
+                )
+                self.assertEqual(claims_bad["blocked_tags"], [BLOCK_ALL_TAG], repr(bad))
+
         # offer() forwards blocked_tags to issue_grant and _start_refresher when host advertises support.
         host_direct._offer_cooldowns.clear()
         session = hts.HostSession(
@@ -1224,6 +1643,22 @@ class HostDirectGrantBlockedTagsTests(unittest.TestCase):
                 blocked_tags=(),
             )
             self.assertIsNotNone(ans)
+
+            # Malformed blocked_tags fails closed: still refuses old host and fails closed in device_manager.
+            issue_grant.reset_mock()
+            for bad in ("TX", "", {}, {"TX": True}, [""], [None], [123], ["TX", None]):
+                self.assertEqual(device_manager._clean_blocked_tags(bad), (BLOCK_ALL_TAG,), repr(bad))
+                with self.assertRaises(RemoteRFPolicyError):
+                    host_direct.offer(
+                        device_manager.VirtualDevice(gid=7, host_id="host-old", device_id="7"),
+                        "{}",
+                        rid="res-9",
+                        reservation_end=2000,
+                        still_live=lambda: True,
+                        tag="tag-1",
+                        blocked_tags=bad,
+                    )
+            issue_grant.assert_not_called()
 
     def test_federated_direct_open_raises_host_too_old_without_falling_back(self):
         from remoteRF_server.server import direct_path

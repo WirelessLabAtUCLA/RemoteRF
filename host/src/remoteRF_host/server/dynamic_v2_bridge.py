@@ -19,6 +19,8 @@ from __future__ import annotations
 import queue
 import threading
 
+from remoterf_device_core.idl.tags import clean_blocked_tags
+
 from ..common.grpc import grpc_pb2
 from ..common.utils import map_arg, unmap_arg
 from .device_manager import make_host_bridge_token
@@ -180,7 +182,7 @@ def run_bridge(
 
     operation = str(operation or "")
     wire = _wire_arg(args)
-    token = GRANT_BLOCKED_TAGS.set(tuple(blocked_tags or ()))
+    token = GRANT_BLOCKED_TAGS.set(clean_blocked_tags(blocked_tags))
     bypass_token = GRANT_MASTER_BYPASS.set(bool(master_bypass))
     try:
         try:

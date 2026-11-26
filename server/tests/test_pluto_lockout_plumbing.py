@@ -352,8 +352,10 @@ def test_holder_change_never_elevates_in_flight_batch(monkeypatch, state):
     finally:
         resume.set()
         worker.join(2)
-    assert not worker.is_alive() and observed == [False, False]
-    assert unmap_arg(result[0]["batch_done"]) == 2
+    assert not worker.is_alive() and observed == [False]
+    assert unmap_arg(result[0]["batch_done"]) == 1
+    assert unmap_arg(result[0]["batch_failed"]) == 1
+    assert unmap_arg(result[0]["batch_error"]) == MESSAGE
     with dm.acquire_device_by_gid(7, expected_reservation=("admin", "next")):
         assert state.dev.lockout_bypass is True
 
@@ -463,10 +465,12 @@ def test_host_forwarding_keeps_authorized_tag_across_holder_change(monkeypatch, 
         args, name = {"__rrf_reservation_tag": map_arg("forged")}, "fake:rx:CALL0"
     result = rpc.RpcManager().run_device_rpc_for_gid(gid=7, function_name=name, args=args,
         expected_reservation=("s", "h"))
-    assert tags == [dm.reservation_tag("s", "h")] * (1 if operation == "single" else 2)
+    assert tags == [dm.reservation_tag("s", "h")]
     if operation == "batch":
         assert unmap_arg(result["batch_failed"]) == 1
         assert unmap_arg(result["batch_error"]) == MESSAGE
+    elif operation == "rx_n":
+        assert unmap_arg(result["rx_n"]).shape == (1, 1)
 
 
 @pytest.mark.parametrize("capable", [False, True])

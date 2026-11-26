@@ -94,6 +94,10 @@ class FunctionTagHelperTests(unittest.TestCase):
         self.assertIsNone(find_blocked_tag(("RX",), ["TX"]))
         self.assertIsNone(find_blocked_tag((), ["TX"]))
         self.assertIsNone(find_blocked_tag(("TX",), ()))
+        for bad_blocked in ("TX", "", [""], [None], [123], ["TX", None], 123, {}, {"TX": True}):
+            self.assertEqual(find_blocked_tag(("TX",), bad_blocked), "TX", repr(bad_blocked))
+            self.assertEqual(find_blocked_tag(("Cal",), bad_blocked), "Cal", repr(bad_blocked))
+            self.assertIsNone(find_blocked_tag((), bad_blocked), repr(bad_blocked))
         self.assertEqual(
             blocked_tag_message("set_tx_lo", "TX"),
             "set_tx_lo is blocked for your user groups on this device (tag TX)",

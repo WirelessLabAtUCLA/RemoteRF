@@ -32,7 +32,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from remoterf_device_core.idl.tags import OLD_HOST_TAGS_ERROR
+from remoterf_device_core.idl.tags import OLD_HOST_TAGS_ERROR, clean_blocked_tags
 from remoterf_device_core.v2_errors import RemoteRFPolicyError
 
 from ..host import host_tunnel_server as hts
@@ -145,7 +145,7 @@ def issue_grant(
         "iat": now,
         "exp": int(min(float(reservation_end), now + 120)),
     }
-    tags = [item.strip() for item in (blocked_tags or ()) if isinstance(item, str) and item.strip()]
+    tags = list(clean_blocked_tags(blocked_tags))
     if tags:
         claims["blocked_tags"] = tags
     return jwt.encode(
@@ -215,7 +215,8 @@ def _start_refresher(
             logger.warning("host direct grant refresh unavailable for %s: no tunnel", host_id)
             schedule()
             return
-        if blocked_tags and not hts.host_supports_function_tags(host_id, registry=registry):
+        clean_blocked = clean_blocked_tags(blocked_tags)
+        if clean_blocked and not hts.host_supports_function_tags(host_id, registry=registry):
             logger.warning("host direct grant refresh refused for %s: host lacks function_tags capability", host_id)
             try:
                 registry.send_control(
@@ -228,8 +229,8 @@ def _start_refresher(
             return
         try:
             grant = (
-                issue_grant(host_id, gid, rid, reservation_end, tag, blocked_tags)
-                if blocked_tags
+                issue_grant(host_id, gid, rid, reservation_end, tag, clean_blocked)
+                if clean_blocked
                 else issue_grant(host_id, gid, rid, reservation_end, tag)
             )
         except Exception as exc:
@@ -311,11 +312,7 @@ def offer(
     """Ask the owning Host to answer ICE, leaving callers to use lab fallback."""
     host_id = str(getattr(device, "host_id", "") or "")
     gid = int(getattr(device, "gid"))
-    clean_blocked = tuple(
-        item.strip()
-        for item in (blocked_tags or ())
-        if isinstance(item, str) and item.strip()
-    )
+    clean_blocked = clean_blocked_tags(blocked_tags)
     registry = hts.get_tunnel_registry(create=False)
     if clean_blocked and not hts.host_supports_function_tags(host_id, registry=registry):
         raise RemoteRFPolicyError(OLD_HOST_TAGS_ERROR)
@@ -339,8 +336,8 @@ def offer(
     try:
         def ask():
             grant = (
-                issue_grant(host_id, gid, rid, reservation_end, tag, blocked_tags)
-                if blocked_tags
+                issue_grant(host_id, gid, rid, reservation_end, tag, clean_blocked)
+                if clean_blocked
                 else issue_grant(host_id, gid, rid, reservation_end, tag)
             )
             return registry.request_control(
@@ -373,8 +370,8 @@ def offer(
         slot = getattr(registry, "relay_slot_for_host", lambda _host_id: None)(host_id)
         if isinstance(relay, dict) and slot is not None:
             answer["relay"] = {"session": relay["session"], "endpoint": slot["endpoint"]}
-        if blocked_tags:
-            _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag, blocked_tags)
+        if clean_blocked:
+            _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag, clean_blocked)
         else:
             _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag)
         return answer

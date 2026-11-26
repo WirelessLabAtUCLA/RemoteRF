@@ -183,7 +183,7 @@ class DirectHost:
             or iat <= ended
             or claims["jti"] in revoked
             or (
-                blocked_tags is not None
+                "blocked_tags" in claims
                 and (
                     not isinstance(blocked_tags, list)
                     or any(type(item) is not str or not item.strip() for item in blocked_tags)
@@ -480,14 +480,20 @@ class DirectHost:
         async with lock:
             refused = self._refusal(gid, rid, request.function_name)
             if refused is None:
+                with self._lock:
+                    claims = self._grants.get(gid)
+                    if claims is not None and claims["rid"] != rid:
+                        refused = GRANT_ENDED
+                    elif claims is None and (gid in self._ended or self._revoked):
+                        refused = GRANT_ENDED
+                    else:
+                        tag = claims.get("_reservation_tag") if claims else None
+                        blocked_tags = claims.get("_blocked_tags", ()) if claims else ()
+            if refused is None:
                 try:
                     from ..common.grpc import grpc_pb2
                     tagged = grpc_pb2.GenericRPCRequest()
                     tagged.CopyFrom(request)
-                    with self._lock:
-                        claims = self._grants.get(gid)
-                        tag = claims.get("_reservation_tag") if claims else None
-                        blocked_tags = claims.get("_blocked_tags", ()) if claims else ()
                     tagged.args.pop("__rrf_reservation_tag", None)
                     tagged.args.pop("__rrf_blocked_tags", None)
                     tagged.args.pop("__rrf_master_bypass", None)

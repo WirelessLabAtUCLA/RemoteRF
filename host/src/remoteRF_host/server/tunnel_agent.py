@@ -54,7 +54,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Iterable, List, Tuple, NoReturn
 
-from remoterf_device_core.idl.tags import HOST_FUNCTION_TAGS_CAPABILITY
+from remoterf_device_core.idl.tags import BLOCK_ALL_TAG, HOST_FUNCTION_TAGS_CAPABILITY
 
 from ..common.utils import device_name_key, get_devices_config_path, get_host_config_dir
 from ..common.utils.host_logging import error, exception, info, status, warn
@@ -1011,15 +1011,23 @@ class HostTunnelAgent:
                 if not isinstance(tag, str):
                     raise ValueError("tag is not a string")
                 resync = payload.get("resync", False) is True
-                raw_tags = payload.get("blocked_tags", ())
-                if raw_tags != () and not isinstance(raw_tags, list):
-                    raise ValueError("blocked_tags is not a list")
-                if any(not isinstance(item, str) or not item.strip() for item in raw_tags):
-                    raise ValueError("blocked_tags contains an invalid entry")
-                blocked_tags = tuple(item.strip() for item in raw_tags)
             except Exception as exc:
                 warn(f"Invalid {kind} payload: {exc}", component="hostrf.tunnel_agent")
-                bypass, tag, resync, blocked_tags = False, "", False, ()
+                bypass, tag, resync, blocked_tags = False, "", False, (BLOCK_ALL_TAG,)
+            else:
+                blocked_tags = ()
+                if "blocked_tags" in payload:
+                    raw_tags = payload["blocked_tags"]
+                    if isinstance(raw_tags, list) and all(
+                        isinstance(item, str) and item.strip() for item in raw_tags
+                    ):
+                        blocked_tags = tuple(item.strip() for item in raw_tags)
+                    else:
+                        warn(
+                            f"Invalid {kind} blocked_tags: {raw_tags!r}",
+                            component="hostrf.tunnel_agent",
+                        )
+                        blocked_tags = (BLOCK_ALL_TAG,)
             if blocked_tags:
                 prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync, blocked_tags=blocked_tags)
             else:

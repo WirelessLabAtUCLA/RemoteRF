@@ -573,6 +573,9 @@ class DeviceSession:
     cleanup_error: bool = False
     retired_handles: list = field(default_factory=list)
     created_monotonic: float = field(default_factory=time.monotonic)
+    blocked_tags: tuple[str, ...] = ()
+    epoch: int | None = None
+    reservation_tag: str | None = None
 
 
 class SessionManager:
@@ -673,6 +676,9 @@ class SessionManager:
         inventory_schema = context["schema"]
         if inventory_schema is not admitted_schema:
             raise RemoteRFReservationError("device inventory changed; retry open")
+        session_blocked_tags = tuple(context.get("blocked_tags", ()) or ())
+        session_epoch = context.get("epoch")
+        session_reservation_tag = context.get("reservation_tag") if session_epoch is not None else None
         schema_v2 = self.schema_for_token(token)
         if requested_schema_hash and requested_schema_hash != schema_v2["schema_hash"]:
             raise RemoteRFProtocolError(
@@ -764,6 +770,9 @@ class SessionManager:
             schema_v2=schema_v2,
             root_handle=root_handle,
             capabilities=capabilities,
+            blocked_tags=session_blocked_tags,
+            epoch=session_epoch,
+            reservation_tag=session_reservation_tag,
         )
         session.handles[root_handle] = HandleEntry(
             handle=root_handle,
@@ -776,6 +785,13 @@ class SessionManager:
         # callbacks advance the epoch even though bridge tokens are long-lived.
         try:
             valid = resolve_gid_for_token(token) == gid
+            if valid and session_epoch is not None:
+                cur_context = get_local_device_context(gid)
+                valid = (
+                    cur_context is not None
+                    and cur_context.get("epoch") == session_epoch
+                    and cur_context.get("reservation_tag") == session_reservation_tag
+                )
         except Exception:
             valid = False
         with self._lock:
@@ -798,11 +814,20 @@ class SessionManager:
             session = self._sessions.get(session_id)
         if session is None or session.closed:
             raise RemoteRFSessionExpiredError("unknown or closed device session")
-        if validate_reservation and not token_matches_device(session.token, session.gid):
-            self.close(session_id)
-            raise RemoteRFSessionExpiredError(
-                "reservation ended; the device session and all handles are stale"
-            )
+        if validate_reservation:
+            still_valid = token_matches_device(session.token, session.gid)
+            if still_valid and session.epoch is not None:
+                cur_context = get_local_device_context(session.gid)
+                still_valid = (
+                    cur_context is not None
+                    and cur_context.get("epoch") == session.epoch
+                    and cur_context.get("reservation_tag") == session.reservation_tag
+                )
+            if not still_valid:
+                self.close(session_id)
+                raise RemoteRFSessionExpiredError(
+                    "reservation ended; the device session and all handles are stale"
+                )
         return session
 
     def get_handle(
@@ -1246,10 +1271,19 @@ class SessionManager:
         owner: str,
         method_name: str,
     ) -> None:
+        if session.epoch is not None:
+            cur_context = get_local_device_context(session.gid)
+            if (
+                cur_context is None
+                or cur_context.get("epoch") != session.epoch
+                or cur_context.get("reservation_tag") != session.reservation_tag
+            ):
+                raise RemoteRFSessionExpiredError(
+                    "reservation ended; the device session and all handles are stale"
+                )
         if GRANT_MASTER_BYPASS.get():
             return
-        context = get_local_device_context(session.gid) or {}
-        blocked_tags = tuple(context.get("blocked_tags", ()) or ()) + tuple(
+        blocked_tags = tuple(session.blocked_tags or ()) + tuple(
             GRANT_BLOCKED_TAGS.get() or ()
         )
         if not blocked_tags:

@@ -16,7 +16,8 @@
 """Server- and host-side function policy tag helpers."""
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 BLOCK_ALL_TAG = "*"
 HOST_FUNCTION_TAGS_CAPABILITY = "function_tags"
@@ -56,20 +57,32 @@ def normalize_tags(tag: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+def clean_blocked_tags(blocked_tags: Any) -> tuple[str, ...]:
+    """Normalize a blocked-tag collection, failing closed to (BLOCK_ALL_TAG,) if malformed."""
+    if blocked_tags is None:
+        return ()
+    if isinstance(blocked_tags, (str, bytes, Mapping)) or not isinstance(blocked_tags, Iterable):
+        return (BLOCK_ALL_TAG,)
+    items = tuple(blocked_tags)
+    if not items:
+        return ()
+    try:
+        return normalize_tags(items)
+    except (TypeError, ValueError):
+        return (BLOCK_ALL_TAG,)
+
+
 def find_blocked_tag(
     method_tags: Iterable[str],
     blocked_tags: Iterable[str],
 ) -> str | None:
     """Return the first matching method tag (display text) blocked by policy."""
-    if not method_tags or not blocked_tags:
+    if not method_tags or blocked_tags is None:
         return None
-    blocked = {
-        cleaned.casefold()
-        for item in blocked_tags
-        if isinstance(item, str) and (cleaned := item.strip())
-    }
-    if not blocked:
+    cleaned_blocked = clean_blocked_tags(blocked_tags)
+    if not cleaned_blocked:
         return None
+    blocked = {item.casefold() for item in cleaned_blocked}
     block_all = BLOCK_ALL_TAG in blocked
     for item in method_tags:
         if not isinstance(item, str):

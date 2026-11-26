@@ -414,7 +414,8 @@ def test_handover_after_admission_cannot_elevate_rpc_bypass(monkeypatch, state):
     state.schema.dispatch.side_effect = lambda *a: observed.append(state.schema.lockout_bypass)
     out = rpc.RpcManager().run_rpc(function_name="fake:tx:CALL0", args={
         "g": map_arg(7), "__rrf_reservation_tag": map_arg("holder-a")})
-    assert "Error" not in out and observed == [False]
+    assert unmap_arg(out["Error"]) == MESSAGE and observed == []
+    assert state.schema.lockout_bypass is False
     assert state.lockout_bypass
 
 

@@ -38,7 +38,54 @@ import sys
 
 def whitelist_allows(whitelist, device_id) -> bool:
     """An empty whitelist is unrestricted: the group may use every device."""
+    if whitelist is None:
+        return False
     return not whitelist or device_id in whitelist
+
+
+def _parse_devices_whitelist(raw) -> Optional[list[int]]:
+    """Parse a stored devices_whitelist value, returning None if malformed."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            if "," not in text:
+                return None
+            parts = [p.strip() for p in text.split(",")]
+            if not parts or any(not p for p in parts):
+                return None
+            try:
+                return [int(p) for p in parts]
+            except ValueError:
+                return None
+    elif isinstance(raw, (list, tuple)):
+        parsed = list(raw)
+    else:
+        return None
+
+    if not isinstance(parsed, list):
+        return None
+
+    out: list[int] = []
+    for item in parsed:
+        if isinstance(item, bool):
+            return None
+        if isinstance(item, int):
+            out.append(item)
+        elif isinstance(item, str):
+            stripped = item.strip()
+            if not stripped:
+                return None
+            try:
+                out.append(int(stripped))
+            except ValueError:
+                return None
+        else:
+            return None
+    return out
 
 
 def _parse_blacklisted_tags(raw) -> list[str]:
@@ -916,30 +963,16 @@ class UserGroupHandler:
 
             out_set: set[int] = set()
             for (wl_str,) in rows:
-                if wl_str is None:
+                whitelist = _parse_devices_whitelist(wl_str)
+                if whitelist is None:
                     continue
-                try:
-                    parsed = json.loads(wl_str) if isinstance(wl_str, str) else []
-                    if isinstance(parsed, list):
-                        if not parsed:
-                            # Resolved now, not at group creation, so devices
-                            # added later are covered too.
-                            from .device_manager import get_all_devices_str
+                if not whitelist:
+                    # Resolved now, not at group creation, so devices
+                    # added later are covered too.
+                    from .device_manager import get_all_devices_str
 
-                            return sorted(int(k) for k in get_all_devices_str())
-                        for x in parsed:
-                            try:
-                                out_set.add(int(x))
-                            except Exception:
-                                pass
-                except Exception:
-                    try:
-                        parts = [p.strip() for p in str(wl_str).split(",")]
-                        for p in parts:
-                            if p != "":
-                                out_set.add(int(p))
-                    except Exception:
-                        pass
+                    return sorted(int(k) for k in get_all_devices_str())
+                out_set.update(whitelist)
 
             return sorted(out_set)
         except Exception:
@@ -979,19 +1012,7 @@ class UserGroupHandler:
             best = 0
 
             for wl_str, max_time in rows:
-                # parse whitelist (JSON array preferred, tolerate fallback)
-                whitelist: list[int] = []
-                if wl_str is not None:
-                    try:
-                        parsed = json.loads(wl_str) if isinstance(wl_str, str) else []
-                        if isinstance(parsed, list):
-                            whitelist = [int(x) for x in parsed if str(x).strip() != ""]
-                    except Exception:
-                        try:
-                            whitelist = [int(p.strip()) for p in str(wl_str).split(",") if p.strip() != ""]
-                        except Exception:
-                            whitelist = []
-
+                whitelist = _parse_devices_whitelist(wl_str)
                 if whitelist_allows(whitelist, device_id):
                     allowed = True
                     try:
@@ -1019,10 +1040,7 @@ class UserGroupHandler:
             )
             best = None
             for wl_str, horizon in self.cursor.fetchall():
-                try:
-                    whitelist = [int(x) for x in json.loads(wl_str or "[]")]
-                except Exception:
-                    whitelist = []
+                whitelist = _parse_devices_whitelist(wl_str)
                 if whitelist_allows(whitelist, int(device_id)):
                     horizon = int(horizon or 0)
                     best = horizon if best is None or horizon == 0 or (best and horizon > best) else best
@@ -1063,17 +1081,7 @@ class UserGroupHandler:
             for group_name, wl_str, tags_raw in rows:
                 if group_name == ADMIN_GROUP:
                     return (True, [])
-                whitelist: list[int] = []
-                if wl_str is not None:
-                    try:
-                        parsed = json.loads(wl_str) if isinstance(wl_str, str) else []
-                        if isinstance(parsed, list):
-                            whitelist = [int(x) for x in parsed if str(x).strip() != ""]
-                    except Exception:
-                        try:
-                            whitelist = [int(p.strip()) for p in str(wl_str).split(",") if p.strip() != ""]
-                        except Exception:
-                            whitelist = []
+                whitelist = _parse_devices_whitelist(wl_str)
                 if not whitelist_allows(whitelist, device_id):
                     continue
                 allowed = True
@@ -1133,19 +1141,7 @@ class UserGroupHandler:
             best = 0
 
             for wl_str, max_res in rows:
-                # parse whitelist (JSON array preferred, tolerate fallback)
-                whitelist: list[int] = []
-                if wl_str is not None:
-                    try:
-                        parsed = json.loads(wl_str) if isinstance(wl_str, str) else []
-                        if isinstance(parsed, list):
-                            whitelist = [int(x) for x in parsed if str(x).strip() != ""]
-                    except Exception:
-                        try:
-                            whitelist = [int(p.strip()) for p in str(wl_str).split(",") if p.strip() != ""]
-                        except Exception:
-                            whitelist = []
-
+                whitelist = _parse_devices_whitelist(wl_str)
                 if whitelist_allows(whitelist, device_id):
                     allowed = True
                     try:
@@ -1159,21 +1155,9 @@ class UserGroupHandler:
         except Exception:
             return (False, 0)
         
-    def _parse_whitelist(self, wl_str) -> set[int]:
-        try:
-            if wl_str is None:
-                return set()
-            if isinstance(wl_str, str):
-                parsed = json.loads(wl_str)
-                if isinstance(parsed, list):
-                    return {int(x) for x in parsed}
-            return set()
-        except Exception:
-            # tolerate old formats like "1,2,3"
-            try:
-                return {int(p.strip()) for p in str(wl_str).split(",") if p.strip() != ""}
-            except Exception:
-                return set()
+    def _parse_whitelist(self, wl_str) -> Optional[set[int]]:
+        parsed = _parse_devices_whitelist(wl_str)
+        return None if parsed is None else set(parsed)
 
     @db_connection
     def get_user_group_reservation_quota_rows(

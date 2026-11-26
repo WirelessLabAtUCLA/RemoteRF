@@ -38,6 +38,7 @@ from .tags import (
     HOST_FUNCTION_TAGS_CAPABILITY,
     OLD_HOST_TAGS_ERROR,
     blocked_tag_message,
+    clean_blocked_tags,
     find_blocked_tag,
     normalize_tags,
     v1_function_label,
