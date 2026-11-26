@@ -1,8 +1,11 @@
 # Contributed device drivers
 
-Drivers maintained here but **not** shipped or seeded by `remoteRF-server`:
-nothing in this folder is installed automatically. A deployment that has the hardware
-copies the file it needs into its drivers directory and restarts the server.
+Reference copies of contributed drivers. Only `sim_sdr_schema.py` is contrib-only
+(not shipped or seeded by `remoteRF-server`). Both `bluetooth_schema.py`
+(`remoterf-device-core >= 0.1.10`) and `gps_schema.py` (`remoterf-device-core >= 0.1.16`)
+are built into `remoterf-device-core`, so their copies here are only for older
+servers/hosts — copying them into `~/.config/remoterf/drivers/` on a newer
+server shadows future built-in upgrades.
 
 | File | `device_type` | Hardware | Host packages |
 |---|---|---|---|
@@ -15,16 +18,22 @@ the GPS reads a serial port (`/dev/ttyACM*`).
 
 ## Install
 
-Into the Python environment the server runs in:
+On a current server (`remoterf-device-core >= 0.1.10` for Bluetooth, `>= 0.1.16`
+for GPS), both drivers are already built in; only install their optional Python
+packages into the server's environment and restart the server:
 
 ```bash
-pip install bleak dbus-fast bluetooth-numbers   # Bluetooth
-pip install pynmea2 pyserial                    # GPS
+pip install 'remoteRF-server[bluetooth]'        # Bluetooth (bleak, dbus-fast, bluetooth-numbers)
+pip install 'remoteRF-server[gps]'              # GPS (pynmea2, pyserial)
 ```
 
-Then copy (or symlink) the driver and restart the server:
+Only copy a file into `~/.config/remoterf/drivers/` when running `sim_sdr_schema.py`
+or an older server/host whose `remoterf-device-core` does not yet ship that driver
+(copying a built-in driver into `drivers/` shadows future upgrades):
 
 ```bash
+cp contrib/drivers/sim_sdr_schema.py ~/.config/remoterf/drivers/
+# Older servers only (< 0.1.16 for GPS, < 0.1.10 for Bluetooth):
 cp contrib/drivers/gps_schema.py ~/.config/remoterf/drivers/
 cp contrib/drivers/bluetooth_schema.py ~/.config/remoterf/drivers/
 ```
@@ -63,18 +72,21 @@ generic USB-serial chip such as PL2303, CP210x or CH340 needs `port`), `baud`
 path** every second, so prefer a `/dev/serial/by-id/...` path: `ttyACMn` can
 change on a replug. Until a new fix arrives the last position is kept and
 reported with `stale: true` (`connected` says whether the receiver is there).
-`wait_for_fix` waits at most 120 s (it holds the device meanwhile).
+`wait_for_fix` waits at most 20 s (it holds the device meanwhile).
 
 `gps_schema.py` is the server's built-in GPS driver
 (`remoterf_device_core.drivers.gps.gps_schema`) with only the `idl` import
-changed, so a server that ships the driver does not need this copy; keep the two
-files identical.
+changed, so a server or host with `remoterf-device-core >= 0.1.16` does not need
+this copy; keep the two files identical.
 
 ## Versions
 
-GPS `driver_version` 0.2.0 (the built-in driver's version too). Bluetooth
-`driver_version` 0.1.4. remoterf-device-core ships the same driver
-built in (`remoterf_device_core.drivers.bluetooth`), so a server or host with
-remoterf-device-core 0.1.13 or newer does not need this copy. The Bluetooth
-driver wraps its lists of dicts (scan results) in `_JsonList` so that servers up to 1.3.0 send them as JSON; servers
-from 1.3.1 do that themselves, and the wrapper stays for the older ones.
+- **Bluetooth** (`driver_version` 0.1.4): built into `remoterf-device-core >= 0.1.10`
+  (`remoterf_device_core.drivers.bluetooth`), so a server or host on 0.1.10 or
+  newer does not need this copy. The driver wraps its lists of dicts (scan
+  results) in `_JsonList` so that servers up to 1.3.0 send them as JSON; servers
+  from 1.3.1 do that themselves, and the wrapper stays for the older ones.
+- **GPS** (`driver_version` 0.2.0): built into `remoterf-device-core >= 0.1.16`
+  (`remoterf_device_core.drivers.gps`), so a server or host on 0.1.16 or newer
+  does not need this copy.
+- **Sim SDR** (`sim_sdr_schema.py`): contrib-only; not shipped built in.

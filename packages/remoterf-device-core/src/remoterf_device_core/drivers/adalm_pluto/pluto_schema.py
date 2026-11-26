@@ -253,11 +253,27 @@ class PlutoSchema(DeviceSchema):
     client_class = "Pluto"
     driver_version = "0.0.5"
     _fir_rate = None  # the rate whose pyadi FIR this schema last loaded
+    _custom_filter_loaded = False
+    _initial_rx_channels = None
+    _initial_tx_channels = None
     lockout_bypass: bool = False
     _lockouts = None
     _broken = False
     _tx_flag = False
     _rf_loopback = False
+
+    def bind(self, device) -> None:
+        super().bind(device)
+        self._custom_filter_loaded = False
+        self._initial_rx_channels = None
+        self._initial_tx_channels = None
+        if device is not None and not isinstance(device, PoePluto):
+            rx_channels = getattr(device, "rx_enabled_channels", None)
+            if rx_channels is not None:
+                self._initial_rx_channels = list(rx_channels)
+            tx_channels = getattr(device, "tx_enabled_channels", None)
+            if tx_channels is not None:
+                self._initial_tx_channels = list(tx_channels)
 
     def _lockout_lock(self):
         # Device managers also hold io_lock across the entire dispatch/hook.
@@ -576,6 +592,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_filter(self, value):
         self._fir_rate = None
+        self._custom_filter_loaded = True
         self.device.filter = value
 
     @idl_expose(kind="get")
@@ -648,6 +665,7 @@ class PlutoSchema(DeviceSchema):
         self._fir_rate = None
         self.device.sample_rate = value
         self._fir_rate = value
+        self._custom_filter_loaded = False
 
     @idl_expose(kind="get")
     def get_rx_lo(self):
@@ -702,39 +720,119 @@ class PlutoSchema(DeviceSchema):
     def call_tx_destroy_buffer(self):
         self.device.tx_destroy_buffer()
 
+    def _stop_pluto_tx(self, radio, attempt):
+        attempt(radio.disable_dds)
+
+        def zero_dds_scales():
+            if hasattr(radio, "dds_scales"):
+                radio.dds_scales = [0] * len(radio.dds_scales)
+
+        attempt(zero_dds_scales)
+        attempt(radio.tx_destroy_buffer)
+
+        def clear_tx_cyclic():
+            if hasattr(radio, "tx_cyclic_buffer"):
+                radio.tx_cyclic_buffer = False
+
+        attempt(clear_tx_cyclic)
+        attempt(lambda: setattr(radio, "loopback", 0))
+
+    def _reset_fpga_filters(self, radio, attempt):
+        def reset_rx_dec8():
+            if hasattr(radio, "rx_dec8_filter_en"):
+                radio.rx_dec8_filter_en = False
+
+        def reset_tx_int8():
+            if hasattr(radio, "tx_int8_filter_en"):
+                radio.tx_int8_filter_en = False
+
+        attempt(reset_rx_dec8)
+        attempt(reset_tx_int8)
+
     def reset_for_next_holder(self):
         """A reservation ended: a PoE Pluto powers off. Otherwise stop its cyclic
         transmission, clear tx_cyclic_buffer, and drop its RX buffer so the next holder's rx_buffer_size takes effect."""
         self._fir_rate = None
+        pending = None
         if self._lockouts is not None:
             with self._lockout_lock():
-                self._lockout_hygiene(park=True)
-        if isinstance(self.device, PoePluto):
-            try:
-                if self._lockout_on():
-                    radio = self._lockout_handle()
-                    try:
-                        radio.disable_dds()
-                    finally:
-                        radio.loopback = 0
-            finally:
-                self.device.power_down()
-        elif self.device is not None and self._lockout_on():
-            radio = self._lockout_handle()
-            try:
-                radio.disable_dds()
-            finally:
                 try:
-                    radio.loopback = 0
-                finally:
-                    try:
-                        radio.tx_destroy_buffer()
-                    finally:
-                        try:
-                            if hasattr(radio, "tx_cyclic_buffer"):
-                                radio.tx_cyclic_buffer = False
-                        finally:
-                            radio.rx_destroy_buffer()
+                    self._lockout_hygiene(park=True)
+                except RemoteRFPolicyError as exc:
+                    pending = exc
+        if isinstance(self.device, PoePluto):
+            self._custom_filter_loaded = False
+            if pending is not None:
+                raise pending
+            errors = []
+
+            def attempt(step):
+                try:
+                    step()
+                except Exception as exc:
+                    # Drop traceback frames so no reference keeps adi.Pluto alive into power_down().
+                    stack = [exc]
+                    seen = set()
+                    while stack:
+                        item = stack.pop()
+                        if item is None or id(item) in seen:
+                            continue
+                        seen.add(id(item))
+                        item.with_traceback(None)
+                        stack.append(item.__cause__)
+                        stack.append(item.__context__)
+                    errors.append(exc)
+
+            if self._lockout_on():
+                self._stop_pluto_tx(self._lockout_handle(), attempt)
+            attempt(self.device.power_down)
+            if errors:
+                raise errors[0]
+        elif self.device is not None and self._lockout_on():
+            errors = []
+
+            def attempt(step):
+                try:
+                    step()
+                except Exception as exc:
+                    errors.append(exc)
+
+            radio = self._lockout_handle()
+            self._stop_pluto_tx(radio, attempt)
+            attempt(radio.rx_destroy_buffer)
+            self._reset_fpga_filters(radio, attempt)
+            if self._custom_filter_loaded:
+                def reset_fir():
+                    radio.sample_rate = int(radio.sample_rate)
+                    self._custom_filter_loaded = False
+
+                attempt(reset_fir)
+
+            def reset_output_type():
+                if hasattr(radio, "rx_output_type"):
+                    radio.rx_output_type = "raw"
+
+            def reset_annotated():
+                if hasattr(radio, "rx_annotated"):
+                    radio.rx_annotated = False
+
+            attempt(reset_output_type)
+            attempt(reset_annotated)
+            if self._initial_rx_channels is not None:
+                rx_channels = list(self._initial_rx_channels)
+                attempt(lambda: setattr(radio, "rx_enabled_channels", rx_channels))
+            if self._initial_tx_channels is not None:
+                tx_channels = list(self._initial_tx_channels)
+                if self._lockouts is not None and "tx_allowed_channels" in self._lockouts:
+                    allowed = self._lockouts["tx_allowed_channels"]
+                    tx_channels = [c for c in tx_channels if c in allowed] or list(allowed)
+                attempt(lambda: setattr(radio, "tx_enabled_channels", tx_channels))
+            if pending is not None:
+                raise pending
+            if errors:
+                raise errors[0]
+        elif pending is not None:
+            raise pending
 
     def prepare_for_holder(self):
         """A reservation started: a PoE Pluto boots now, not at the holder's first command."""
@@ -759,6 +857,7 @@ class PlutoSchema(DeviceSchema):
         """PoE Plutos: cut power; the next command powers it back up. No-op on other Plutos."""
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
+            self._custom_filter_loaded = False
             self.device.power_down()
 
     @idl_expose(kind="call")
@@ -766,6 +865,7 @@ class PlutoSchema(DeviceSchema):
         """PoE Plutos: power off, then on, and wait for boot. No-op on other Plutos."""
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
+            self._custom_filter_loaded = False
             self.device.power_cycle()
 
     # endregion
