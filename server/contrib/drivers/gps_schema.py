@@ -50,7 +50,7 @@ class GpsDevice:
     """
 
     RECONNECT_INTERVAL = 1.0
-    MAX_WAIT_FOR_FIX = 120.0
+    MAX_WAIT_FOR_FIX = 20.0
 
     def __init__(self, port: Optional[str] = None, baud: int = 9600, timeout: float = 1.0):
         resolved_port = port or find_gps_port()
@@ -277,14 +277,17 @@ class GpsDevice:
 
     def wait_for_fix(self, timeout: float = 30.0) -> bool:
         """Block until receiver acquires satellite fix, or timeout (capped at MAX_WAIT_FOR_FIX s) expires."""
-        timeout = min(max(float(timeout), 0.0), self.MAX_WAIT_FOR_FIX)
-        start = time.time()
-        while time.time() - start < timeout:
+        val = float(timeout)
+        timeout = min(val, self.MAX_WAIT_FOR_FIX) if val > 0.0 else 0.0
+        deadline = time.time() + timeout
+        while True:
             with self._lock:
                 if self.has_fix:
                     return True
-            time.sleep(0.5)
-        return False
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.5, remaining))
 
     def read_raw(self, count: int = 5) -> List[str]:
         """Return the most recent raw NMEA sentences."""

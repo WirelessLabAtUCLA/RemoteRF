@@ -1595,7 +1595,7 @@ _WIZARD_TYPES: Dict[str, Tuple[str, str]] = {
     "usrp_phaser": ("USRP driving an ADI CN0566 Phaser", "phaser"),
     "ti_mmwave": ("TI xWR68xx mmWave radar (CP2105 USB bridge)", "mmwave"),
     "gps": ("USB GPS receiver, NMEA serial", "gps"),
-    "bluetooth": ("Bluetooth adapter through BlueZ (contrib driver)", "bluetooth"),
+    "bluetooth": ("Bluetooth adapter through BlueZ", "bluetooth"),
 }
 # The argv type names `devices add` has always taken.
 _WIZARD_ALIASES = {"pluto": "adalm_pluto", "pluto-mimo": "adalm_pluto_mimo", "rtl-sdr": "rtl_sdr",
@@ -2006,12 +2006,12 @@ def _device_add_wizard(dtype: str = "", *, yes: bool = False, gid_default: Optio
                             typed=lambda v: None if v in types or v in _WIZARD_ALIASES else f"pick 1-{len(types)}")
             extra["usrp_profile"] = _USRP_ALIAS_PROFILES.get(picked)
             dtype = _WIZARD_ALIASES.get(picked, picked)
-        if dtype == "bluetooth" and dtype not in installed:
-            from remoteRF_server.common.utils import get_drivers_dir
+        if dtype == "bluetooth":
+            import importlib.util
 
-            print(f"  Note: the {dtype} driver is not installed: copy contrib/drivers/{dtype}_schema.py into")
-            print(f"  {get_drivers_dir()} and restart the server (contrib/drivers/README.md).")
-            print("  Until then the device is listed offline.")
+            if importlib.util.find_spec("dbus_fast") is None or importlib.util.find_spec("bleak") is None:
+                print("  Note: the bluetooth extra is not installed: run pip install 'remoteRF-server[bluetooth]'")
+                print("  and restart the server. Until then the device is listed offline.")
         free = max(recs) + 1 if recs else 0
         gid = int(_wask("Device id", gid_default or free, check=lambda v: _int_check()(v) or (
             f"id {v} is taken by {recs[int(v)].get('NAME')!r}" if int(v) in recs else None)))

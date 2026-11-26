@@ -47,6 +47,15 @@ VALID_FILTER_BANDWIDTHS = (
     28_000_000,
 )
 
+# Settings every reservation starts from.
+_DEFAULT_TXVGA_GAIN = 0
+_DEFAULT_LNA_GAIN = 16
+_DEFAULT_VGA_GAIN = 16
+_DEFAULT_CENTER_FREQ_HZ = 100_000_000
+_DEFAULT_SAMPLE_RATE = 20_000_000
+_DEFAULT_FILTER_BANDWIDTH_HZ = 15_000_000
+_DEFAULT_SAMPLE_COUNT_LIMIT = 0
+
 
 def _require_hackrf():
     try:
@@ -250,6 +259,18 @@ def _tracked_property(device, public_name: str, private_name: str):
     return getattr(device, public_name)
 
 
+def _device_is_closed(device: Any) -> bool:
+    """Return True once pyhackrf2 has closed the native handle.
+
+    pyhackrf2 1.0.3 sets ``device_opened = False`` in ``close()`` while leaving
+    ``_device_opened = True``; check both spellings.
+    """
+    return (
+        getattr(device, "device_opened", True) is False
+        or getattr(device, "_device_opened", True) is False
+    )
+
+
 @idl_register("hackrf")
 class HackRFSchema(DeviceSchema):
     """PyHackRF2-compatible tuning, gain, power, and bounded IQ controls."""
@@ -264,6 +285,18 @@ class HackRFSchema(DeviceSchema):
             serial=kwargs.get("serial"),
             device_index=kwargs.get("device_index"),
         )
+
+    def dispatch(self, method_name: str, args: dict):
+        if (
+            method_name in self._exposed
+            and method_name != "call_close"
+            and self.device is not None
+            and _device_is_closed(self.device)
+        ):
+            raise RuntimeError(
+                "HackRF closed after a device error; reload devices to reopen it"
+            )
+        return super().dispatch(method_name, args)
 
     @idl_expose(kind="get")
     def get_center_freq(self):
@@ -412,10 +445,8 @@ class HackRFSchema(DeviceSchema):
         """Stop an active HackRF transmission."""
         if not getattr(self.device, "_remoterf_tx_active", False):
             return
-        try:
-            self.device.stop_tx()
-        finally:
-            self.device._remoterf_tx_active = False
+        self.device.stop_tx()
+        self.device._remoterf_tx_active = False
 
     @idl_expose(kind="call")
     def call_clear_buffer(self):
@@ -429,8 +460,15 @@ class HackRFSchema(DeviceSchema):
     @idl_expose(kind="call")
     def call_close(self):
         """Safely end this remote TX use without closing the server-owned radio."""
-        self.call_stop_tx()
-        self.call_clear_buffer()
+        # Empty the retained payload before stopping so _tx_callback immediately
+        # returns 1 even if stop_tx() fails.
+        self.device._remoterf_tx_payload = b""
+        try:
+            if not _device_is_closed(self.device):
+                self.call_stop_tx()
+        finally:
+            self.device.buffer = bytearray()
+            self.device._remoterf_tx_payload = b""
         # Calling pyhackrf2.close() here can tear down the shared production
         # device and has been observed to crash its native libhackrf path.
         return None
@@ -440,15 +478,36 @@ class HackRFSchema(DeviceSchema):
         turn off the antenna bias tee and front-end amplifier."""
         if self.device is None:
             return
-        # Each step runs even if an earlier one fails: DC on the antenna port or
-        # a stray amp must not carry over to the next holder.
+        # Each step runs even if an earlier one fails: DC on the antenna port,
+        # a stray amp, or high TX gain must not carry over to the next holder.
+        # Stop issuing native calls once pyhackrf2 has closed the handle.
+        errors = []
         try:
             self.call_close()
-        finally:
+        except Exception as exc:
+            errors.append(exc)
+        for step in (
+            lambda: self.set_bias_tee_on(False),
+            lambda: self.set_amplifier_on(False),
+            lambda: self.set_txvga_gain(_DEFAULT_TXVGA_GAIN),
+            lambda: self.set_lna_gain(_DEFAULT_LNA_GAIN),
+            lambda: self.set_vga_gain(_DEFAULT_VGA_GAIN),
+            lambda: self.set_center_freq(_DEFAULT_CENTER_FREQ_HZ),
+            lambda: self.set_sample_rate(_DEFAULT_SAMPLE_RATE),
+            lambda: self.set_filter_bandwidth(_DEFAULT_FILTER_BANDWIDTH_HZ),
+            lambda: self.set_sample_count_limit(_DEFAULT_SAMPLE_COUNT_LIMIT),
+        ):
+            if _device_is_closed(self.device):
+                break
             try:
-                self.set_bias_tee_on(False)
-            finally:
-                self.set_amplifier_on(False)
+                step()
+            except Exception as exc:
+                errors.append(exc)
+        if _device_is_closed(self.device):
+            # Report it so the reset counts as failed: the next holder would get a dead radio.
+            errors.append(RuntimeError("HackRF closed after a device error; reload devices to reopen it"))
+        if errors:
+            raise errors[0]
 
     @idl_expose(kind="call")
     def call_enumerate(self):

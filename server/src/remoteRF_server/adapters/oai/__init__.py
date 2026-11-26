@@ -39,6 +39,7 @@ from __future__ import annotations
 import fcntl
 import ipaddress
 import json
+import math
 import mmap
 import os
 from pathlib import Path
@@ -74,6 +75,8 @@ OUTPUT_BYTES = 8192
 STAGE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 CSI_STREAMS = ("ul_pusch", "ul_srs", "dl_ssb")
 CSI_MAGIC = b"RRFCSI\0\0"
+CSI_MAX_SEQ = 1 << 63  # payloads carry signed int64
+CSI_MAX_DROPPED = 1 << 31
 CSI_VERSION = 1
 CSI_HEADER = struct.Struct("<8sIIIIQ")
 CSI_HEADER_BYTES = 64
@@ -384,20 +387,28 @@ class OAI:
                                  " and optional timeout_s (0-600]")
         path = Path(self._context.work_dir) / "shm" / f"{stream}.ring"
         try:
-            with open(path, "rb") as handle:
-                ring = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+            handle = open(path, "rb")
         except FileNotFoundError:
             # A raised action tears the operation down; stock OAI writes no ring.
             return {"ok": False, "error": "ring_missing"}
-        except (OSError, ValueError):
+        except OSError:
             return {"ok": False, "error": "ring_invalid"}
-        with ring:
+        try:
+            ring = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        except (OSError, ValueError):
+            handle.close()
+            return {"ok": False, "error": "ring_invalid"}
+        with handle, ring:
             if len(ring) < CSI_HEADER_BYTES:
                 return {"ok": False, "error": "ring_invalid"}
             magic, version, entry_bytes, n_entries, _, _ = CSI_HEADER.unpack_from(ring)
             if (magic != CSI_MAGIC or version != CSI_VERSION or entry_bytes < CSI_ENTRY.size
                     or n_entries < 1 or len(ring) < CSI_HEADER_BYTES + entry_bytes * n_entries):
                 return {"ok": False, "error": "ring_invalid"}
+            # A writer must never shrink a live ring (reading past EOF of an mmap kills the
+            # process with SIGBUS); stop as soon as the file is shorter than it was.
+            need = CSI_HEADER_BYTES + entry_bytes * n_entries
+            self._ring_intact = lambda: os.fstat(handle.fileno()).st_size >= need
             # Upper bound from entry_bytes: int16 pairs become complex64, twice the size.
             if not self._artifact_room(count * (entry_bytes - CSI_ENTRY.size) * 2):
                 return {"ok": False, "error": "artifact_limit"}
@@ -417,10 +428,14 @@ class OAI:
         files = [entry.stat().st_size for entry in directory.iterdir()] if directory.is_dir() else []
         return len(files) < MAX_ENTRIES and sum(files) + size <= QUOTA_BYTES
 
-    def _csi_entry(self, ring, entry_bytes, n_entries, seq):
+    def _csi_entry(self, ring, entry_bytes, n_entries, seq, deadline=None):
         """Copy entry seq; None if it is being written, torn, overwritten or malformed."""
+        if seq >= CSI_MAX_SEQ:
+            return None
         offset = CSI_HEADER_BYTES + (seq % n_entries) * entry_bytes
         for _ in range(CSI_RETRIES):
+            if self._context.cancelled.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                return None
             lock = struct.unpack_from("<Q", ring, offset)[0]
             if lock & 1:
                 time.sleep(CSI_POLL_S / 10)
@@ -430,24 +445,28 @@ class OAI:
                 continue
             _, got, frame, slot, rnti, snr_db, ta, *dims = CSI_ENTRY.unpack_from(data)
             size = 4 * dims[0] * dims[1] * dims[2]
-            if got != seq or CSI_ENTRY.size + size > entry_bytes:
+            if got != seq or size == 0 or CSI_ENTRY.size + size > entry_bytes:
                 return None
-            return {"seq": seq, "frame": frame, "slot": slot, "rnti": rnti, "snr_db": round(snr_db, 2),
+            return {"seq": seq, "frame": frame, "slot": slot, "rnti": rnti,
+                    "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
                     "ta": ta, "dims": tuple(dims), "timestamp_s": time.time(),
                     "iq": data[CSI_ENTRY.size:CSI_ENTRY.size + size]}
         return None
 
     def _csi_latest(self, ring, entry_bytes, n_entries, wait):
         deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
+        while True:
             if self._context.cancelled.is_set():
                 raise RuntimeError("OAI CSI read was cancelled")
+            if time.monotonic() >= deadline:
+                return None
             seq = CSI_HEADER.unpack_from(ring)[5]
-            entry = self._csi_entry(ring, entry_bytes, n_entries, seq) if seq else None
+            entry = self._csi_entry(ring, entry_bytes, n_entries, seq, deadline) if seq else None
             if entry is not None:
                 return [entry]
+            if self._context.cancelled.is_set() or time.monotonic() >= deadline:
+                continue
             time.sleep(CSI_POLL_S)
-        return None
 
     def _csi_burst(self, ring, entry_bytes, n_entries, count, wait):
         """Wait for count entries newer than now; seqs lost to the writer are dropped."""
@@ -457,9 +476,11 @@ class OAI:
         while len(entries) < count:
             if self._context.cancelled.is_set():
                 raise RuntimeError("OAI CSI capture was cancelled")
-            if time.monotonic() >= deadline:
-                return None, dropped
+            if time.monotonic() >= deadline or not self._ring_intact():
+                return None, min(dropped, CSI_MAX_DROPPED)
             newest = CSI_HEADER.unpack_from(ring)[5]
+            if newest >= CSI_MAX_SEQ:  # a corrupt header: never let it overflow dropped
+                return None, min(dropped, CSI_MAX_DROPPED)
             if newest <= last:
                 time.sleep(CSI_POLL_S)
                 continue
@@ -469,13 +490,19 @@ class OAI:
             for seq in range(first, newest + 1):
                 if len(entries) == count:
                     break
-                entry = self._csi_entry(ring, entry_bytes, n_entries, seq)
+                if self._context.cancelled.is_set():
+                    raise RuntimeError("OAI CSI capture was cancelled")
+                if time.monotonic() >= deadline:
+                    return None, min(dropped, CSI_MAX_DROPPED)
+                entry = self._csi_entry(ring, entry_bytes, n_entries, seq, deadline)
                 if entry is None:
+                    if self._context.cancelled.is_set() or time.monotonic() >= deadline:
+                        break
                     dropped += 1
                 else:
                     entries.append(entry)
             last = newest
-        return entries, dropped
+        return entries, min(dropped, CSI_MAX_DROPPED)
 
     def _publish_csi(self, stream, entries, single, dropped):
         self._csi_count += 1
@@ -503,6 +530,18 @@ class OAI:
             return
         if not self._context.processes.stop(timeout=self._bound("stop_timeout_s")):
             raise RuntimeError("OAI cleanup could not be verified")
+        work_dir = Path(self._context.work_dir)
+        if work_dir.is_absolute():
+            shm = work_dir / "shm"
+            for stream in CSI_STREAMS:
+                try:  # best effort: a stuck ring must not keep the lease from being released
+                    (shm / f"{stream}.ring").unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                shm.rmdir()
+            except OSError:
+                pass
         if self._ifname is not None and self._process_id is not None:
             deadline = time.monotonic() + UE_IFACE_GONE_S
             while interface_exists(self._ifname):
