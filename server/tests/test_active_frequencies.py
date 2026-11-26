@@ -124,6 +124,7 @@ class ActiveFrequenciesTests(_Devices):
         for patcher in (
             mock.patch.dict(dm.devices_info, clear=True),
             mock.patch.dict(dm.device_serialization, clear=True),
+            mock.patch.dict(reservation._avail_last, clear=True),
             mock.patch.object(dm, "_prepare_for_holder"),
         ):
             patcher.start()
@@ -429,3 +430,51 @@ class ActiveFrequenciesTests(_Devices):
         self.assertEqual(entry["username"], "jdoe")
         self.assertEqual(set(entry["details"]["args"]), {"un"})
         self.assertNotIn("top-secret-pw", json.dumps(entry))
+
+    def test_rate_limited_per_account_with_retry_after_skips_host_fanout(self):
+        dm._devices[HOST_PLUTO_A] = _host_state(HOST_PLUTO_A, host_id="host-a", name="Host Pluto A")
+        self._book("asmith", -5, 25, HOST_PLUTO_A)
+
+        calls = []
+
+        class _CountingRegistry:
+            def device_directory_cached(self, ttl_ms=0):
+                return {
+                    str(HOST_PLUTO_A): ("host-a", SimpleNamespace(label="Host Pluto A", serial="A", kind="adalm_pluto"), True),
+                }
+
+            def request_control(self, host_id, *, kind, device_id, payload, timeout):
+                calls.append((host_id, kind, payload))
+                return {"devices": {str(HOST_PLUTO_A): {"rx_hz": 915_000_000, "tx_active": False}}}
+
+        with mock.patch.object(dm, "_get_host_registry", return_value=_CountingRegistry()), \
+             mock.patch.object(dm, "_host_sync_last_ms", 0):
+            first = self._call(user="jdoe")
+            self.assertEqual(set(first), {"UC"})
+            self.assertEqual(len(calls), 1)
+
+            refused = self._call(user="jdoe")
+            self.assertIn("ace", refused)
+            self.assertIn("try again in", refused["ace"])
+            self.assertTrue(1 <= refused["retry_after"] <= 10, refused)
+            self.assertEqual(len(calls), 1)  # rate-limited call must not fan out to satellite hosts
+
+            # ACC:availability and ACC:active_frequencies do not throttle each other.
+            avail = {
+                k: unmap_arg(v)
+                for k, v in self.h.handle_call(
+                    function_name="availability",
+                    args={"un": map_arg("jdoe"), "pw": map_arg("password1")},
+                ).items()
+            }
+            self.assertEqual(set(avail), {"UC"})
+
+            # Another account is not throttled.
+            other = self._call(user="asmith")
+            self.assertEqual(set(other), {"UC"})
+            self.assertEqual(len(calls), 2)
+
+            with mock.patch.object(self.reservation, "_AVAIL_INTERVAL", 0):
+                after = self._call(user="jdoe")
+                self.assertEqual(set(after), {"UC"})
+                self.assertEqual(len(calls), 3)

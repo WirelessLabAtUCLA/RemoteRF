@@ -62,3 +62,56 @@ def test_hooks_run_in_order_off_the_caller_and_never_block_it() -> None:
         release.set()
         device_manager._devices.pop(gid, None)
         device_manager._reservation_hooks.pop(gid, None)
+
+
+def test_reset_before_rpc_logs_reset_failure_and_allows_next_holder_rpc() -> None:
+    from remoteRF_host.common.utils import map_arg, unmap_arg
+    from remoteRF_host.server.rpc_manager import RpcManager
+
+    gid = 7002
+    after_calls = []
+
+    class FlakyResetSchema:
+        device_type = "fake"
+        lockout_bypass = False
+
+        def reset_for_next_holder(self) -> None:
+            raise OSError("usb reset glitch")
+
+        def lockout_after_hook(self, kind: str, failed: bool = False) -> None:
+            after_calls.append((kind, failed))
+
+        def dispatch(self, method_name: str, args: dict):
+            assert method_name == "get_center_freq"
+            return 915_000_000.0
+
+    schema = FlakyResetSchema()
+    st = device_manager._DeviceState(
+        schema=schema,
+        name="flaky-dev",
+        ident="0",
+        dtype="fake",
+        init={},
+        reset_pending=True,
+        epoch=3,
+        reservation_tag="holder-b",
+    )
+    device_manager._devices[gid] = st
+    try:
+        with mock.patch("remoteRF_host.server.device_manager.warn") as warn_mock:
+            reply = RpcManager().run_rpc(
+                function_name="fake:center_freq:GET",
+                args={
+                    "g": map_arg(gid),
+                    "__rrf_reservation_tag": map_arg("holder-b"),
+                },
+                expected_epoch=3,
+            )
+        assert "Error" not in reply, reply
+        assert unmap_arg(reply["center_freq"]) == 915_000_000.0
+        assert st.reset_pending is False
+        assert after_calls == [("reset", True)]
+        warn_mock.assert_called_once()
+        assert "usb reset glitch" in warn_mock.call_args.args[0]
+    finally:
+        device_manager._devices.pop(gid, None)

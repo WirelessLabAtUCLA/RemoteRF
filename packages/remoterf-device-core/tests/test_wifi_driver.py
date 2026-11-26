@@ -18,7 +18,7 @@ import unittest
 from unittest import mock
 
 from remoterf_device_core.drivers.wifi import wifi_schema
-from remoterf_device_core.drivers.wifi.rssi import safety
+from remoterf_device_core.drivers.wifi.rssi import safety, scanner as scanner_mod
 from remoterf_device_core.drivers.wifi.rssi.scanner import AccessPoint, RSSIScanner
 
 
@@ -47,14 +47,58 @@ class BurstTests(unittest.TestCase):
     def test_absent_target_returns_within_the_cap(self):
         schema = make_schema()
         clock = [1000.0]
-        # Each scan "takes" 5 s, so the loop must stop on the cap, not on max_time.
-        schema.device.scanner._parse_iw_dump.side_effect = lambda: clock.__setitem__(0, clock[0] + 5.0) or []
+        # Each scan "takes" 5 s (bounded by its timeout), so the loop must stop at the cap.
+        schema.device.scanner._parse_iw_dump.side_effect = (
+            lambda timeout=10.0: clock.__setitem__(0, clock[0] + min(5.0, timeout)) or []
+        )
         with mock.patch.object(wifi_schema.time, "time", lambda: clock[0]), \
              mock.patch.object(wifi_schema.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
             result = schema.call_get_rssi_burst("missing", max_time=1e9)
         self.assertEqual(result["samples_collected"], 0)
-        self.assertLessEqual(result["elapsed_seconds"], wifi_schema.MAX_BURST_SECONDS + 5.0)
+        self.assertLessEqual(wifi_schema.MAX_BURST_SECONDS, 20.0)
+        self.assertLessEqual(result["elapsed_seconds"], wifi_schema.MAX_BURST_SECONDS)
         self.assertIsNone(result["linear_avg_dbm"])
+
+    def test_burst_cap_bounds_subprocess_timeouts_within_20s(self):
+        schema = make_schema()
+        scanner = RSSIScanner.__new__(RSSIScanner)
+        scanner.interface = "wlan0"
+        schema.device.scanner = scanner
+        clock = [1000.0]
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append((cmd[0], kw["timeout"]))
+            clock[0] += min(8.0, kw["timeout"])
+
+        def fake_check_output(cmd, **kw):
+            seen.append((cmd[0], kw["timeout"]))
+            clock[0] += min(7.0, kw["timeout"])
+            return ""
+
+        with mock.patch.object(wifi_schema.time, "time", lambda: clock[0]), \
+             mock.patch.object(wifi_schema.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)), \
+             mock.patch.object(scanner_mod.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(scanner_mod.subprocess, "check_output", side_effect=fake_check_output):
+            result = schema.call_get_rssi_burst("missing", max_time=30.0, rescan=True)
+
+        self.assertEqual(wifi_schema.MAX_BURST_SECONDS, 20.0)
+        self.assertLessEqual(result["elapsed_seconds"], 20.0)
+        self.assertEqual([name for name, _ in seen], ["nmcli", "iw", "nmcli"])
+        self.assertTrue(all(0 < t <= 10.0 for _, t in seen), seen)
+        self.assertAlmostEqual(seen[0][1], 10.0)
+        self.assertAlmostEqual(seen[1][1], 10.0)
+        self.assertAlmostEqual(seen[2][1], 5.0)
+
+        # Single scan() also stays within the 20 s cap across nmcli + iw + fallback.
+        seen.clear()
+        clock[0] = 2000.0
+        with mock.patch.object(wifi_schema.time, "time", lambda: clock[0]), \
+             mock.patch.object(scanner_mod.subprocess, "run", side_effect=lambda cmd, **kw: (seen.append((cmd[0], kw["timeout"])), clock.__setitem__(0, clock[0] + kw["timeout"]))), \
+             mock.patch.object(scanner_mod.subprocess, "check_output", side_effect=lambda cmd, **kw: (seen.append((cmd[0], kw["timeout"])), clock.__setitem__(0, clock[0] + kw["timeout"])) and ""):
+            self.assertEqual(schema.call_scan(rescan=True), [])
+        self.assertLessEqual(clock[0] - 2000.0, 20.0)
+        self.assertEqual([name for name, _ in seen], ["nmcli", "iw"])
 
     def test_non_positive_max_time_is_rejected(self):
         schema = make_schema()
@@ -85,6 +129,18 @@ class AutoRescanTests(unittest.TestCase):
         self.assertEqual(schema.device.scanner._trigger_rescan.call_count, 1)
         schema.call_scan(rescan=False)
         self.assertEqual(schema.device.scanner._trigger_rescan.call_count, 1)
+
+    def test_scan_summary_and_channel_distribution_honor_auto_rescan_false(self):
+        schema = make_schema([make_ap()], auto_rescan=False)
+        summary = schema.call_scan_summary()
+        self.assertEqual(summary["total_access_points"], 1)
+        schema.device.scanner._trigger_rescan.assert_not_called()
+
+        schema.reset_for_next_holder()
+        self.assertEqual(schema.device._last_results, [])
+        dist = schema.call_get_channel_distribution()
+        self.assertIn("6", dist)
+        schema.device.scanner._trigger_rescan.assert_not_called()
 
 
 class ResetTests(unittest.TestCase):

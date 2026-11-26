@@ -77,15 +77,25 @@ class KrakenSDR:
         self.set_noise_source(False)
         print(f"[KrakenSDR] Successfully opened {len(self.sdrs)} tuners (Serials: {self.active_serials}).")
 
+    @staticmethod
+    def _is_closed(sdr) -> bool:
+        return getattr(sdr, "device_opened", True) is False
+
+    def _require_open(self, sdr) -> None:
+        if self._is_closed(sdr):
+            raise RuntimeError("KrakenSDR tuner is closed")
+
     @property
     def sample_rate(self) -> float:
         return self._sample_rate
 
     @sample_rate.setter
     def sample_rate(self, rate: float):
-        self._sample_rate = rate
+        for sdr in self.sdrs:
+            self._require_open(sdr)
         for sdr in self.sdrs:
             sdr.sample_rate = rate
+        self._sample_rate = rate
 
     @property
     def center_freq(self) -> float:
@@ -93,9 +103,11 @@ class KrakenSDR:
 
     @center_freq.setter
     def center_freq(self, freq: float):
-        self._center_freq = freq
+        for sdr in self.sdrs:
+            self._require_open(sdr)
         for sdr in self.sdrs:
             sdr.center_freq = freq
+        self._center_freq = freq
 
     @property
     def gain(self):
@@ -103,9 +115,11 @@ class KrakenSDR:
 
     @gain.setter
     def gain(self, gain):
-        self._gain = gain
+        for sdr in self.sdrs:
+            self._require_open(sdr)
         for sdr in self.sdrs:
             sdr.gain = gain
+        self._gain = gain
 
     def set_noise_source(self, enable: bool):
         """
@@ -117,11 +131,48 @@ class KrakenSDR:
         """
         if not self.sdrs:
             return
+        self._require_open(self.sdrs[0])
         # Channel 0 (serial 1000) controls the noise generator switch
         self.sdrs[0].set_bias_tee(bool(enable))
         self._noise_source_active = bool(enable)
         # Brief settling time for RF switch and noise diode
         time.sleep(0.05)
+
+    def reset_defaults(self, *, sample_rate: float, center_freq: float, gain) -> None:
+        """Turn the noise source off and restore RF defaults on every open tuner."""
+        errors = []
+
+        def attempt(sdr, step):
+            if self._is_closed(sdr):
+                return
+            try:
+                step()
+            except Exception as exc:
+                errors.append(exc)
+
+        if self.sdrs:
+            attempt(self.sdrs[0], lambda: self.set_noise_source(False))
+
+        for attr, private_attr, value in (
+            ("sample_rate", "_sample_rate", sample_rate),
+            ("center_freq", "_center_freq", center_freq),
+            ("gain", "_gain", gain),
+        ):
+            failed_attr = False
+            any_open = False
+            for sdr in self.sdrs:
+                if self._is_closed(sdr):
+                    continue
+                any_open = True
+                before = len(errors)
+                attempt(sdr, lambda sdr=sdr, attr=attr, value=value: setattr(sdr, attr, value))
+                if len(errors) > before:
+                    failed_attr = True
+            if any_open and not failed_attr and all(not self._is_closed(s) for s in self.sdrs):
+                setattr(self, private_attr, value)
+
+        if errors:
+            raise errors[0]
 
     @property
     def noise_source_active(self) -> bool:
@@ -135,6 +186,8 @@ class KrakenSDR:
         :param parallel: Whether to read all channels concurrently using threads.
         :return: 2D numpy array of complex64 with shape (num_channels, num_samples).
         """
+        for sdr in self.sdrs:
+            self._require_open(sdr)
         if parallel:
             futures = [self._executor.submit(sdr.read_samples, num_samples) for sdr in self.sdrs]
             results = [f.result() for f in futures]
@@ -168,6 +221,8 @@ class KrakenSDR:
         :param max_lag_search: Optional limit on lag search range in samples.
         :return: Dictionary containing 'delays' (integer sample lags) and 'phase_offsets_deg'.
         """
+        for sdr in self.sdrs:
+            self._require_open(sdr)
         print("[KrakenSDR] Enabling noise source for calibration...")
         self.set_noise_source(True)
         try:
@@ -175,7 +230,8 @@ class KrakenSDR:
             _ = self.read_samples(8192, parallel=True)
             noise_samples = self.read_samples(num_samples, parallel=True)
         finally:
-            self.set_noise_source(False)
+            if self.sdrs and not self._is_closed(self.sdrs[0]):
+                self.set_noise_source(False)
             print("[KrakenSDR] Noise source disabled.")
 
         ref = noise_samples[0]
@@ -227,8 +283,14 @@ class KrakenSDR:
 
     def close(self):
         """Close all tuners safely."""
-        self.set_noise_source(False)
+        if self.sdrs and not self._is_closed(self.sdrs[0]):
+            try:
+                self.set_noise_source(False)
+            except Exception:
+                pass
         for sdr in self.sdrs:
+            if self._is_closed(sdr):
+                continue
             try:
                 sdr.close()
             except Exception:

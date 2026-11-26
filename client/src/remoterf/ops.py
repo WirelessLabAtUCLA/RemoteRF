@@ -625,6 +625,8 @@ def get_active_frequencies(s=None) -> list[dict]:
     args = {"un": map_arg(s.account.username), "pw": map_arg(s.account.password)}
     res = rpc_client(function_name="ACC:active_frequencies", args=args).results
     if "UC" not in res:
+        if "retry_after" in res:
+            raise _rate_limited(unmap_arg(res["retry_after"]))
         error = str(unmap_arg(res.get("ace", res.get("ACC", map_arg("Unexpected reply from the deployment.")))))
         if "No matching server function" in error:
             raise RemoteRFOpsError(
@@ -742,9 +744,14 @@ def list_reservations(s, *, mine_only=True) -> dict:
         names = {d["deployment_id"]: d["display_name"] for d in data["destinations"]
                  if d.get("display_name") != d["deployment_id"]}
         notes = _destination_notes(data)
+        now = datetime.now(timezone.utc).timestamp()
         slugs = {}
         for r in data["reservations"]:
             if mine_only and not r.get("mine"):
+                continue
+            # Older labs still send reservations that have already ended. A 2-minute grace:
+            # this is the student's clock, not the lab's, so it must never hide a live one.
+            if (r.get("end_time") or 0) <= now - 120:
                 continue
             dev = devices.get(r["device_id"], {})
             lab = dev.get("deployment_name") or names.get(r["deployment_id"])

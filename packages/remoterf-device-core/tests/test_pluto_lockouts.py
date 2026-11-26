@@ -49,9 +49,11 @@ class FakeRadio:
         self.tx_hardwaregain_chan1 = -20
         self.tx_enabled_channels = [0, 1]
         self.rx_enabled_channels = [0, 1]
+        self.dds_enabled = [0] * 8
         self.dds_scales = [.9] * 8
         self.tx_cyclic_buffer = True
         self.loopback = 2
+        self._txbuf = None
         self.events = []
         self.fail_dds = False
         self.fail_tx = False
@@ -72,21 +74,46 @@ class FakeRadio:
         self.events.append("tx_destroy_buffer")
         if self.fail_stop:
             raise RuntimeError("buffer stop failed")
+        self._txbuf = None
 
     def rx_destroy_buffer(self):
         self.events.append("rx_destroy_buffer")
 
-    def tx(self, samples):
+    def tx(self, samples=None):
         self.events.append("tx")
         self.samples = samples
         if self.fail_tx:
             raise RuntimeError("TX failed after starting")
+        if self._txbuf and getattr(self, "tx_cyclic_buffer", False):
+            raise Exception(
+                "TX buffer has been submitted in cyclic mode. "
+                "To push more data the tx buffer must be destroyed first."
+            )
+        if not self._txbuf:
+            self.disable_dds()
+        self._txbuf = True
 
     def dds_single_tone(self, frequency, scale, channel=0):
         self.tone = (frequency, scale, channel)
+        n = len(self.dds_scales) if hasattr(self, "dds_scales") else 8
+        scales = [0] * n
+        base = channel * 4
+        for idx in (base, base + 2):
+            if idx < n:
+                scales[idx] = scale
+        self.dds_scales = scales
+        self.dds_enabled = [1] * n
 
     def dds_dual_tone(self, frequency1, scale1, frequency2, scale2, channel=0):
         self.tone = (frequency1, scale1, frequency2, scale2, channel)
+        n = len(self.dds_scales) if hasattr(self, "dds_scales") else 8
+        scales = [0] * n
+        base = channel * 4
+        for idx, scale in ((base, scale1), (base + 2, scale1), (base + 1, scale2), (base + 3, scale2)):
+            if idx < n:
+                scales[idx] = scale
+        self.dds_scales = scales
+        self.dds_enabled = [1] * n
 
 
 class FakePoe(PoePluto):
@@ -772,7 +799,7 @@ def test_base_reset_without_lockouts_hygiene():
     assert obj.device.loopback == 0
     assert obj.device.tx_lo == 915e6
     assert obj.device.tx_hardwaregain_chan0 == -20
-    assert obj.device.dds_scales == [.9] * 8
+    assert obj.device.dds_scales == [0] * 8
     assert obj.device.tx_cyclic_buffer is False
 
 
@@ -783,6 +810,180 @@ def test_base_reset_without_lockouts_clears_cyclic_even_if_tx_teardown_fails():
         obj.reset_for_next_holder()
     assert obj.device.events == ["disable_dds", "tx_destroy_buffer", "rx_destroy_buffer"]
     assert obj.device.tx_cyclic_buffer is False
+
+
+def test_non_poe_reset_zeros_dds_scales_on_failure_and_restores_filters_output_and_channels():
+    radio = FakeRadio()
+    radio.rx_enabled_channels = [0]
+    radio.tx_enabled_channels = [0]
+    radio.rx_dec8_filter_en = False
+    radio.tx_int8_filter_en = False
+    radio.rx_output_type = "raw"
+    radio.rx_annotated = False
+    obj = schema({}, radio=radio)
+
+    radio.fail_dds = True
+    radio.dds_scales = [0.8] * 8
+    radio.rx_dec8_filter_en = True
+    radio.tx_int8_filter_en = True
+    radio.rx_output_type = "SI"
+    radio.rx_annotated = True
+    radio.rx_enabled_channels = []
+    radio.tx_enabled_channels = []
+
+    with pytest.raises(RuntimeError, match="DDS stop failed"):
+        obj.reset_for_next_holder()
+    assert radio.dds_scales == [0] * 8
+    assert radio.rx_dec8_filter_en is False
+    assert radio.tx_int8_filter_en is False
+    assert radio.rx_output_type == "raw"
+    assert radio.rx_annotated is False
+    assert radio.rx_enabled_channels == [0]
+    assert radio.tx_enabled_channels == [0]
+
+    rate_writes = []
+
+    class FakeMimoRadio(FakeRadio):
+        def __init__(self):
+            super().__init__()
+            self._rxadc = "rxadc"
+            self._txdac = "txdac"
+            self.rx_output_type = "raw"
+            self.rx_annotated = False
+            self.fpga_rates = {False: 30_720_000, True: 30_720_000}
+
+        def __setattr__(self, name, value):
+            if name == "sample_rate" and vars(self).get("_track_rate"):
+                rate_writes.append(value)
+            super().__setattr__(name, value)
+
+        def _get_iio_attr_str(self, channel, attr, output, dev=None):
+            return "[30720000 3840000]"
+
+        def _get_iio_attr(self, channel, attr, output, dev=None):
+            if dev in ("rxadc", "txdac"):
+                return self.fpga_rates[output]
+            return super()._get_iio_attr(channel, attr, output)
+
+        def _set_iio_attr(self, channel, attr, output, value, dev=None):
+            self.fpga_rates[output] = value
+
+    mimo_radio = FakeMimoRadio()
+    mimo = schema({}, cls=PlutoMIMOSchema, radio=mimo_radio)
+    mimo.set_rx_dec8_filter_en(True)
+    mimo.set_tx_int8_filter_en(True)
+    mimo.set_rx_output_type("SI")
+    mimo.set_rx_annotated(True)
+    mimo.set_rx_enabled_channels([0])
+    mimo.set_tx_enabled_channels([0])
+    mimo.set_filter("custom.ftr")
+    mimo_radio._track_rate = True
+
+    mimo.reset_for_next_holder()
+    assert mimo.get_rx_dec8_filter_en() is False
+    assert mimo.get_tx_int8_filter_en() is False
+    assert mimo_radio.rx_output_type == "raw"
+    assert mimo_radio.rx_annotated is False
+    assert mimo_radio.rx_enabled_channels == [0, 1]
+    assert mimo_radio.tx_enabled_channels == [0, 1]
+    assert rate_writes == [1_000_000]
+    assert mimo._custom_filter_loaded is False
+
+    # A sample_rate write after set_filter already reloads pyadi's FIR, so
+    # reset_for_next_holder must not perform a redundant sample_rate write.
+    rate_writes.clear()
+    mimo.set_filter("custom2.ftr")
+    mimo.set_sample_rate(2_000_000)
+    assert rate_writes == [2_000_000]
+    assert mimo._custom_filter_loaded is False
+    mimo.reset_for_next_holder()
+    assert rate_writes == [2_000_000]
+
+
+def test_locked_out_non_poe_reset_still_cleans_rx_state_when_hygiene_fails():
+    radio = FakeRadio()
+    radio.rx_dec8_filter_en = False
+    radio.tx_int8_filter_en = False
+    radio.rx_output_type = "raw"
+    radio.rx_annotated = False
+    obj = schema({**BAND, "tx_allowed_channels": [0]}, radio=radio)
+
+    radio.rx_dec8_filter_en = True
+    radio.tx_int8_filter_en = True
+    radio.rx_output_type = "SI"
+    radio.rx_annotated = True
+    radio.rx_enabled_channels = [0]
+    radio.tx_enabled_channels = []
+    radio.events.clear()
+    radio.fail_dds = True
+
+    with pytest.raises(RemoteRFPolicyError, match="locked until"):
+        obj.reset_for_next_holder()
+
+    assert obj._broken
+    assert "rx_destroy_buffer" in radio.events
+    assert radio.rx_dec8_filter_en is False
+    assert radio.tx_int8_filter_en is False
+    assert radio.rx_output_type == "raw"
+    assert radio.rx_annotated is False
+    assert radio.rx_enabled_channels == [0, 1]
+    assert radio.tx_enabled_channels == [0]
+
+    # Once the transient IIO error clears, the next student recovers into clean state.
+    radio.fail_dds = False
+    rpc(obj, "set_rx_lo", 915_000_000)
+    assert not obj._broken
+    assert radio.rx_dec8_filter_en is False
+    assert radio.tx_int8_filter_en is False
+    assert radio.rx_output_type == "raw"
+    assert radio.rx_annotated is False
+    assert radio.rx_enabled_channels == [0, 1]
+
+    # On a locked-out PoE Pluto whose hygiene fails, power_down is already called
+    # by _lockout_cut_power() and must not be called a second time.
+    poe_radio = FakeRadio()
+    poe_radio.fail_dds = True
+    proxy = FakePoe(poe_radio)
+    poe_obj = PlutoSchema()
+    poe_obj.bind(proxy)
+    poe_obj._lockouts = parse_lockouts(BAND)
+    poe_obj._custom_filter_loaded = True
+    with pytest.raises(RemoteRFPolicyError, match="locked until"):
+        poe_obj.reset_for_next_holder()
+    assert proxy.downs == 1
+    assert poe_obj._custom_filter_loaded is False
+
+
+def test_poe_reset_drops_radio_before_power_down_even_when_tx_stop_fails():
+    import weakref
+
+    for chained in (False, True):
+        class FailingRadio(FakeRadio):
+            def disable_dds(self):
+                self.events.append("disable_dds")
+                if chained:
+                    try:
+                        raise OSError("iio link down")
+                    except OSError as inner:
+                        raise RuntimeError("DDS stop failed") from inner
+                raise RuntimeError("DDS stop failed")
+
+        radio = FailingRadio()
+        radio_ref = weakref.ref(radio)
+        alive_at_power_down = []
+
+        class ObservingPoe(FakePoe):
+            def power_down(self):
+                vars(self)["_pluto"] = None
+                alive_at_power_down.append(radio_ref() is not None)
+
+        proxy = ObservingPoe(radio)
+        obj = schema({}, radio=proxy)
+        del radio
+
+        with pytest.raises(RuntimeError, match="DDS stop failed"):
+            obj.reset_for_next_holder()
+        assert alive_at_power_down == [False]
 
 
 def test_poe_power_off_failure_reports_fault_until_next_boot(monkeypatch):
@@ -809,6 +1010,69 @@ def test_poe_power_off_failure_reports_fault_until_next_boot(monkeypatch):
     assert pluto.power_state == "on" and pluto.fault is None
 
 
+def test_poe_power_up_after_failed_power_down_power_cycles_first(monkeypatch):
+    from remoterf_device_core.drivers.adalm_pluto import poe
+
+    events = []
+
+    def fail_off(**kw):
+        events.append(("poe", kw["on"]))
+        raise OSError("switch timeout")
+
+    monkeypatch.setattr(poe, "set_poe", fail_off)
+    monkeypatch.setattr(poe.time, "sleep", lambda s: events.append(("sleep", s)))
+    pluto = PoePluto(ip="192.0.2.1", port="ether5")
+    vars(pluto)["_pluto"] = FakeRadio()
+    with pytest.raises(OSError):
+        pluto.power_down()
+    assert vars(pluto)["_power_off_failed"] is True
+
+    events.clear()
+    monkeypatch.setattr(poe, "set_poe", lambda **kw: events.append(("poe", kw["on"])))
+    monkeypatch.setattr(poe, "_iiod_up", lambda ip: True)
+    board = types.SimpleNamespace(_ctx=types.SimpleNamespace(attrs={}))
+    monkeypatch.setattr(sys.modules["adi"], "Pluto", lambda uri: board, raising=False)
+
+    pluto.power_up()
+    assert events == [("poe", False), ("sleep", poe.OFF_S), ("poe", True)]
+    assert vars(pluto)["_power_off_failed"] is False
+    assert pluto.power_state == "on" and pluto.fault is None
+
+
+def test_poe_later_successful_power_down_clears_power_off_fault_but_keeps_boot_fault(monkeypatch):
+    from remoterf_device_core.drivers.adalm_pluto import poe
+
+    monkeypatch.setattr(poe.time, "sleep", lambda s: None)
+    pluto = PoePluto(ip="192.0.2.1", port="ether5")
+    vars(pluto)["_pluto"] = FakeRadio()
+
+    def fail_off(**kw):
+        raise OSError("switch timeout")
+
+    monkeypatch.setattr(poe, "set_poe", fail_off)
+    with pytest.raises(OSError):
+        pluto.power_down()
+    assert pluto.power_state == "fault"
+
+    monkeypatch.setattr(poe, "set_poe", lambda **kw: None)
+    pluto.power_down()
+    assert pluto.fault is None
+    assert vars(pluto)["_power_off_failed"] is False
+    assert pluto.power_state == "standby"
+
+    monkeypatch.setattr(poe, "_iiod_up", lambda ip: False)
+    monkeypatch.setattr(poe, "port_running", lambda **kw: False)
+    times = iter([0.0, poe.LINK_CHECK_S + 1.0])
+    monkeypatch.setattr(poe.time, "monotonic", lambda: next(times))
+    with pytest.raises(RuntimeError, match="no Ethernet link"):
+        pluto.power_up()
+    assert pluto.power_state == "fault" and "no Ethernet link" in pluto.fault
+    assert vars(pluto)["_power_off_failed"] is False
+
+    pluto.power_down()
+    assert pluto.power_state == "fault" and "no Ethernet link" in pluto.fault
+
+
 def test_base_reset_parks_before_poe_power_down():
     radio = FakeRadio()
     proxy = FakePoe(radio)
@@ -818,6 +1082,43 @@ def test_base_reset_parks_before_poe_power_down():
     assert radio.tx_lo == 916e6 and radio.loopback == 0
     assert radio.tx_hardwaregain_chan0 == radio.tx_hardwaregain_chan1 == -89.75
     assert proxy.downs == 1 and vars(proxy)["_pluto"] is None
+
+
+def test_non_lockout_poe_reset_destroys_tx_buffer_and_drops_radio_before_power_down():
+    import weakref
+
+    radio = FakeRadio()
+    radio.tx_cyclic_buffer = True
+    radio_ref = weakref.ref(radio)
+    alive_at_power_down = []
+
+    class ObservingPoe(FakePoe):
+        def power_down(self):
+            vars(self)["_pluto"] = None
+            alive_at_power_down.append(radio_ref() is not None)
+            if vars(self)["fail_down"]:
+                raise RuntimeError("power-off failed")
+
+    proxy = ObservingPoe(radio)
+    obj = schema({}, radio=proxy)
+    vars(proxy)["fail_down"] = True
+    del radio
+
+    with pytest.raises(RuntimeError, match="power-off failed"):
+        obj.reset_for_next_holder()
+    assert alive_at_power_down == [False]
+
+    radio2 = FakeRadio()
+    radio2.tx_cyclic_buffer = True
+    proxy2 = FakePoe(radio2)
+    obj2 = schema({}, radio=proxy2)
+    vars(proxy2)["fail_down"] = True
+    with pytest.raises(RuntimeError, match="power-off failed"):
+        obj2.reset_for_next_holder()
+    assert radio2.events == ["disable_dds", "tx_destroy_buffer"]
+    assert radio2.tx_cyclic_buffer is False
+    assert radio2.dds_scales == [0] * 8
+    assert radio2.loopback == 0
 
 
 def test_base_reset_off_poe_never_boots():
@@ -1164,3 +1465,65 @@ def test_get_temperature_reads_die_sensor_in_celsius(cls):
     assert iio[0][1:4] == ("temp0", "input", False)
     if cls is PlutoMIMOSchema:
         assert iio[0][4] == "phy"
+
+
+@pytest.mark.parametrize("stop_method", ["call_tx_destroy_buffer", "call_disable_dds"])
+def test_locked_stop_methods_after_failed_poe_power_off_require_real_power_cut(monkeypatch, stop_method):
+    from remoterf_device_core.drivers.adalm_pluto import poe
+
+    fail_off = [True]
+    poe_calls = []
+    boots = []
+
+    def fake_set_poe(*, on, **kw):
+        poe_calls.append(on)
+        if not on and fail_off[0]:
+            raise OSError("switch timeout")
+
+    monkeypatch.setattr(poe, "set_poe", fake_set_poe)
+    monkeypatch.setattr(poe.time, "sleep", lambda s: None)
+    monkeypatch.setattr(poe, "_iiod_up", lambda ip: boots.append(ip) or True)
+
+    poe_dev = PoePluto(ip="192.0.2.1", port="ether5")
+    vars(poe_dev)["_pluto"] = FakeRadio()
+    obj = schema({**BAND, "allow_rf_loopback": True}, radio=poe_dev)
+
+    rpc(obj, "set_tx_lo", 915_000_000)
+    rpc(obj, "call_tx", [1])
+    rpc(obj, "set_loopback", 2)
+    assert obj._tx_flag is True
+    assert obj._rf_loopback is True
+    assert obj.active_frequencies()["tx_active"] is True
+
+    # Power-off fails: _pluto is dropped, _power_off_failed is True, hardware stays powered & transmitting.
+    with pytest.raises(OSError, match="switch timeout"):
+        rpc(obj, "call_power_down")
+    assert vars(poe_dev)["_pluto"] is None
+    assert vars(poe_dev)["_power_off_failed"] is True
+    assert obj._tx_flag is True
+    assert obj._rf_loopback is True
+    assert obj.active_frequencies()["tx_active"] is True
+
+    # While power-off still fails, stop methods must not take the standby no-op shortcut or clear TX flags.
+    with pytest.raises(OSError, match="switch timeout"):
+        rpc(obj, stop_method)
+    assert boots == []
+    assert vars(poe_dev)["_power_off_failed"] is True
+    assert obj._tx_flag is True
+    assert obj._rf_loopback is True
+    assert obj.active_frequencies()["tx_active"] is True
+    assert obj.active_frequencies()["tx_hz"] == 915_000_000
+
+    # Once the switch recovers, the stop method cuts power without booting and clears TX state.
+    fail_off[0] = False
+    poe_calls.clear()
+    rpc(obj, stop_method)
+    assert poe_calls == [False]
+    assert boots == []
+    assert vars(poe_dev)["_pluto"] is None
+    assert vars(poe_dev)["_power_off_failed"] is False
+    assert poe_dev.power_state == "standby"
+    assert obj._tx_flag is False
+    assert obj._rf_loopback is False
+    assert obj.active_frequencies()["tx_active"] is False
+    assert obj.active_frequencies()["tx_hz"] is None

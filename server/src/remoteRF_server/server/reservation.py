@@ -139,7 +139,7 @@ def _clear_failures(key: str) -> None:
         _failures.pop(key, None)
 
 
-# ACC:availability: at most one call per interval per account.
+# ACC:availability and ACC:active_frequencies: at most one call per interval per account.
 AVAILABILITY_WINDOW_SEC = 6 * 3600
 try:
     _AVAIL_INTERVAL = float(os.getenv("REMOTERF_AVAILABILITY_INTERVAL_SEC", "10"))
@@ -408,7 +408,7 @@ class ReservationHandler:
                 password = unmap_arg(args['pw'])
                 if self.login_user(username, password) != {"UC": map_arg(f'{username}')}:
                     return {"ace": map_arg("Invalid login credentials.")}
-                wait = _avail_wait(username)
+                wait = _avail_wait(f"availability:{username}")
                 if wait:
                     return {"ace": map_arg(f"Too many availability requests; try again in {wait} s."),
                             "retry_after": map_arg(wait)}
@@ -427,6 +427,10 @@ class ReservationHandler:
                 password = unmap_arg(args['pw'])
                 if self.login_user(username, password) != {"UC": map_arg(f'{username}')}:
                     return {"ace": map_arg("Invalid login credentials.")}
+                wait = _avail_wait(f"active_frequencies:{username}")
+                if wait:
+                    return {"ace": map_arg(f"Too many active frequencies requests; try again in {wait} s."),
+                            "retry_after": map_arg(wait)}
                 devices = active_frequencies_snapshot(self.active_reserved_device_ids())
                 return {"UC": map_arg(json.dumps({"now": int(time.time()), "devices": devices}))}
             elif function_name == 'login':
@@ -1411,9 +1415,20 @@ class ReservationHandler:
         return result
         
     @db_connection
-    def grab_all_reservations(self, username:str, current_time=datetime.now()):
+    def grab_all_reservations(self, username: str):
         self.cursor.execute('SELECT * FROM Reservations')
-        reservations = self.cursor.fetchall()
+        now = datetime.now()
+        reservations = []
+        for res in self.cursor.fetchall():
+            try:
+                start = _parse_reservation_datetime(res[3])
+                end = _parse_reservation_datetime(res[4])
+            except ValueError:
+                continue
+            # Ended rows linger until someone books that device again.
+            if end <= start or end <= now:
+                continue
+            reservations.append(res)
         perm = perms.get_perms(username)[0]
         result = {}
 
