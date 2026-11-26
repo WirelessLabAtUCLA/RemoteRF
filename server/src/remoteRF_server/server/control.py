@@ -125,7 +125,10 @@ class _Bridge:
 
 
 def running(path: Path | None = None) -> bool:
-    return call(["ping"], timeout=2.0, path=path) is not None
+    try:
+        return call(["ping"], timeout=2.0, path=path) is not None
+    except (OSError, ValueError, KeyError, TypeError):
+        return True  # it accepted the connection but did not answer: running, just busy
 
 
 class ControlServer:
