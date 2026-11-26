@@ -1406,9 +1406,20 @@ class ReservationHandler:
         return result
         
     @db_connection
-    def grab_all_reservations(self, username:str, current_time=datetime.now()):
+    def grab_all_reservations(self, username: str):
         self.cursor.execute('SELECT * FROM Reservations')
-        reservations = self.cursor.fetchall()
+        now = datetime.now()
+        reservations = []
+        for res in self.cursor.fetchall():
+            try:
+                start = _parse_reservation_datetime(res[3])
+                end = _parse_reservation_datetime(res[4])
+            except ValueError:
+                continue
+            # Ended rows linger until someone books that device again.
+            if end <= start or end <= now:
+                continue
+            reservations.append(res)
         perm = perms.get_perms(username)[0]
         result = {}
 

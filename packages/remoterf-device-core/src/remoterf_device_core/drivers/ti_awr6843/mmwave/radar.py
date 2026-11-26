@@ -1,3 +1,4 @@
+import math
 import os
 import time
 from typing import Any, Dict, Generator, Optional
@@ -63,10 +64,12 @@ class Radar:
     @clutter_removal.setter
     def clutter_removal(self, value: bool):
         val = bool(value)
-        self._settings["clutter_removal"] = val
         if self.connection.cli_ser and self.connection.cli_ser.is_open:
             # clutterRemoval is a TI runtime command: -1=all subframes, 1=enable, 0=disable
-            self.connection.send_command(f"clutterRemoval -1 {1 if val else 0}")
+            resp = self.connection.send_command(f"clutterRemoval -1 {1 if val else 0}")
+            if "Error" in resp or not ("Done" in resp or "mmwDemo:/>" in resp):
+                raise RuntimeError(f"Radar did not accept clutterRemoval command: {resp!r}")
+        self._settings["clutter_removal"] = val
 
     @property
     def fps(self) -> float:
@@ -75,11 +78,7 @@ class Radar:
 
     @fps.setter
     def fps(self, value: float):
-        new_fps = float(value)
-        if new_fps <= 0:
-            raise ValueError(f"FPS must be positive, got {new_fps}")
-        self._settings["fps"] = new_fps
-        self.reconfigure(fps=new_fps)
+        self.reconfigure(fps=value)
 
     @property
     def preset(self) -> str:
@@ -88,9 +87,7 @@ class Radar:
 
     @preset.setter
     def preset(self, value: str):
-        val = str(value).lower()
-        self._settings["preset"] = val
-        self.reconfigure(preset=val)
+        self.reconfigure(preset=value)
 
     @property
     def mode(self) -> str:
@@ -99,11 +96,7 @@ class Radar:
 
     @mode.setter
     def mode(self, value: str):
-        val = str(value).lower()
-        if val not in ("3d", "2d"):
-            raise ValueError("Mode must be '3d' or '2d'")
-        self._settings["mode"] = val
-        self.reconfigure(mode=val)
+        self.reconfigure(mode=value)
 
     @property
     def sensitivity(self) -> str:
@@ -112,9 +105,7 @@ class Radar:
 
     @sensitivity.setter
     def sensitivity(self, value: str):
-        val = str(value).lower()
-        self._settings["sensitivity"] = val
-        self.reconfigure(sensitivity=val)
+        self.reconfigure(sensitivity=value)
 
     @property
     def min_range(self) -> float:
@@ -123,9 +114,7 @@ class Radar:
 
     @min_range.setter
     def min_range(self, value: float):
-        val = float(value)
-        self._settings["min_range"] = val
-        self.reconfigure(min_range=val)
+        self.reconfigure(min_range=value)
 
     @property
     def max_range(self) -> float:
@@ -134,13 +123,19 @@ class Radar:
 
     @max_range.setter
     def max_range(self, value: float):
-        val = float(value)
-        self._settings["max_range"] = val
-        self.reconfigure(max_range=val)
+        self.reconfigure(max_range=value)
 
     # -------------------------------------------------------------------------
     # Lifecycle & Control
     # -------------------------------------------------------------------------
+
+    def _record_command(self, line: str) -> None:
+        """Updates _is_running when a sensorStart or sensorStop command is acknowledged."""
+        cmd = line.split()[0]
+        if cmd == "sensorStart":
+            self._is_running = True
+        elif cmd == "sensorStop":
+            self._is_running = False
 
     def start(
         self,
@@ -156,9 +151,12 @@ class Radar:
         self.connection.connect()
 
         if config_text:
-            self.connection.send_config_text(config_text, verbose=verbose)
+            self.connection.send_config_text(
+                config_text, verbose=verbose, on_command=self._record_command,
+            )
         elif config_filepath:
             self.connection.send_config_file(config_filepath, verbose=verbose)
+            self._is_running = True
         else:
             # Build and send configuration from settings/preset
             if preset is not None:
@@ -171,9 +169,64 @@ class Radar:
                 self._settings["fps"] = float(fps)
 
             cfg = self._build_active_config()
-            self.connection.send_config_text(cfg, verbose=verbose)
+            self.connection.send_config_text(
+                cfg, verbose=verbose, on_command=self._record_command,
+            )
 
-        self._is_running = True
+    def _validate_settings(
+        self,
+        *,
+        preset: Optional[str] = None,
+        mode: Optional[str] = None,
+        clutter_removal: Optional[bool] = None,
+        fps: Optional[float] = None,
+        sensitivity: Optional[str] = None,
+        min_range: Optional[float] = None,
+        max_range: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Validate and compute candidate settings without mutating self._settings."""
+        candidate = dict(self._settings)
+        if preset is not None:
+            preset_val = str(preset).lower()
+            if preset_val not in PRESETS:
+                raise ValueError(f"Unknown preset {preset!r}; expected one of {sorted(PRESETS)}")
+            candidate.update(preset_settings(preset_val))
+            candidate["preset"] = preset_val
+        if mode is not None:
+            mode_val = str(mode).lower()
+            if mode_val not in ("3d", "2d"):
+                raise ValueError("Mode must be '3d' or '2d'")
+            candidate["mode"] = mode_val
+        if clutter_removal is not None:
+            candidate["clutter_removal"] = bool(clutter_removal)
+        if fps is not None:
+            fps_val = float(fps)
+            if not (math.isfinite(fps_val) and fps_val > 0):
+                raise ValueError(f"FPS must be a finite positive number, got {fps!r}")
+            candidate["fps"] = fps_val
+        if sensitivity is not None:
+            sens_val = str(sensitivity).lower()
+            if sens_val not in ("low", "medium", "high"):
+                raise ValueError(f"Sensitivity must be 'low', 'medium', or 'high', got {sensitivity!r}")
+            candidate["sensitivity"] = sens_val
+        if min_range is not None:
+            min_r = float(min_range)
+            if not (math.isfinite(min_r) and min_r >= 0):
+                raise ValueError(f"min_range must be a finite non-negative number, got {min_range!r}")
+            candidate["min_range"] = min_r
+        if max_range is not None:
+            max_r = float(max_range)
+            if not (math.isfinite(max_r) and max_r > 0):
+                raise ValueError(f"max_range must be a finite positive number, got {max_range!r}")
+            candidate["max_range"] = max_r
+
+        if candidate["min_range"] >= candidate["max_range"]:
+            raise ValueError(
+                f"min_range ({candidate['min_range']}) must be less than max_range ({candidate['max_range']})"
+            )
+        if candidate.get("preset") == "heatmap" and candidate.get("mode") != "3d":
+            raise ValueError("Preset 'heatmap' requires mode='3d'")
+        return candidate
 
     def reconfigure(
         self,
@@ -185,46 +238,54 @@ class Radar:
         min_range: Optional[float] = None,
         max_range: Optional[float] = None,
         start: Optional[bool] = None,
-    ):
+    ) -> str:
         """
         Updates radar settings and re-uploads full configuration to radar.
         """
-        if preset is not None:
-            self._settings["preset"] = preset
-            self._settings.update(preset_settings(preset))
-        if mode is not None:
-            self._settings["mode"] = mode
-        if clutter_removal is not None:
-            self._settings["clutter_removal"] = clutter_removal
-        if fps is not None:
-            self._settings["fps"] = float(fps)
-        if sensitivity is not None:
-            self._settings["sensitivity"] = sensitivity
-        if min_range is not None:
-            self._settings["min_range"] = float(min_range)
-        if max_range is not None:
-            self._settings["max_range"] = float(max_range)
-
-        # Only send to hardware if connection is already open
-        if self.connection.cli_ser and self.connection.cli_ser.is_open:
+        candidate = self._validate_settings(
+            preset=preset,
+            mode=mode,
+            clutter_removal=clutter_removal,
+            fps=fps,
+            sensitivity=sensitivity,
+            min_range=min_range,
+            max_range=max_range,
+        )
+        previous = self._settings
+        self._settings = candidate
+        try:
             cfg = self._build_active_config()
-            was_running = self._is_running if start is None else start
-            self.connection.send_config_text(cfg, verbose=False, start=was_running)
-            self._is_running = was_running
-            self.flush()
+            # Only send to hardware if connection is already open
+            if self.connection.cli_ser and self.connection.cli_ser.is_open:
+                was_running = self._is_running if start is None else bool(start)
+                self.connection.send_config_text(
+                    cfg,
+                    verbose=False,
+                    start=was_running,
+                    total_timeout=20.0,
+                    on_command=self._record_command,
+                )
+                self.flush()
+            return cfg
+        except Exception:
+            self._settings = previous
+            raise
 
     def _build_active_config(self) -> str:
         """Helper to generate full configuration script from current settings."""
         preset = self._settings.get("preset", "default")
+        mode = self._settings.get("mode", "3d")
+        base_config_path = None
         if preset == "heatmap":
+            if mode != "3d":
+                raise ValueError("Preset 'heatmap' requires mode='3d'")
             root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            cfg_path = os.path.join(root_dir, "configs", "awr6843_heatmap_default.cfg")
-            with open(cfg_path, "r") as f:
-                return f.read()
+            base_config_path = os.path.join(root_dir, "configs", "awr6843_heatmap_default.cfg")
 
         return build_config(
-            preset=self._settings.get("preset"),
-            mode=self._settings.get("mode", "3d"),
+            base_config_path=base_config_path,
+            preset=preset,
+            mode=mode,
             clutter_removal=self._settings.get("clutter_removal", False),
             fps=self._settings.get("fps", 10.0),
             sensitivity=self._settings.get("sensitivity", "medium"),

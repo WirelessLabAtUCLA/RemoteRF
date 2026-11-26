@@ -130,6 +130,7 @@ class PoePluto:
             _serial=str(serial or "").strip(),
             _switch={"switch": switch, "user": user, "password": password},
             _pluto=None,
+            _power_off_failed=False,
             fault=None,  # message of the last failed boot; None once a boot succeeds
             _lock=threading.RLock(),
         )
@@ -144,8 +145,14 @@ class PoePluto:
                 return set_poe(port=self._port, on=on, **self._switch)
             except OSError:
                 if attempt == 2:
+                    if not on:
+                        vars(self)["_power_off_failed"] = True
                     raise
                 time.sleep(2)
+            except Exception:
+                if not on:
+                    vars(self)["_power_off_failed"] = True
+                raise
 
     @property
     def power_state(self):
@@ -158,6 +165,10 @@ class PoePluto:
             if self._pluto is not None:
                 return
             try:
+                if vars(self).get("_power_off_failed"):
+                    self._poe(False)
+                    vars(self)["_power_off_failed"] = False
+                    time.sleep(OFF_S)
                 self._boot()
             except Exception as e:
                 vars(self)["fault"] = str(e)
@@ -206,8 +217,12 @@ class PoePluto:
                 self._poe(False)
             except Exception as e:
                 # The port may still be powered: report a fault, not standby.
+                vars(self)["_power_off_failed"] = True
                 vars(self)["fault"] = f"PoE power-off failed on {self._port}: {e}"
                 raise
+            if vars(self).get("_power_off_failed"):
+                vars(self)["_power_off_failed"] = False
+                vars(self)["fault"] = None
 
     def power_cycle(self):
         with self._lock:

@@ -187,6 +187,20 @@ class PlutoMIMOSchema(PlutoSchema):
             initial_settings=kwargs,
         )
 
+    def _reset_fpga_filters(self, radio, attempt):
+        has_rates = callable(getattr(radio, "_get_rates", None)) or callable(
+            getattr(radio, "_get_iio_attr_str", None)
+        )
+        can_set_iio = has_rates and callable(getattr(radio, "_set_iio_attr", None))
+        if can_set_iio and hasattr(radio, "_rxadc"):
+            attempt(lambda: _set_fpga_filter(radio, False, False))
+        elif hasattr(radio, "rx_dec8_filter_en"):
+            attempt(lambda: setattr(radio, "rx_dec8_filter_en", False))
+        if can_set_iio and hasattr(radio, "_txdac"):
+            attempt(lambda: _set_fpga_filter(radio, True, False))
+        elif hasattr(radio, "tx_int8_filter_en"):
+            attempt(lambda: setattr(radio, "tx_int8_filter_en", False))
+
     # region MIMO channel selection
 
     @idl_expose(kind="get")

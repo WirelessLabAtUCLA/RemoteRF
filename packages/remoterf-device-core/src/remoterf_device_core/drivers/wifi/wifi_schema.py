@@ -60,9 +60,9 @@ from remoterf_device_core.drivers.wifi.rssi.safety import verify_network_safety,
 from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
 
 
-# Upper bound on one get_rssi_burst call: it holds the dongle's I/O lock, and the
-# end-of-reservation reset waits for that lock.
-MAX_BURST_SECONDS = 30.0
+# Upper bound on one get_rssi_burst call: it holds the dongle's I/O lock, and
+# must finish within the 25 s Host tunnel timeout and 30 s Global relay budget.
+MAX_BURST_SECONDS = 20.0
 
 
 # -----------------------------------------------------------------------------
@@ -232,7 +232,7 @@ class WifiDongleDevice:
         """
         Perform a Wi-Fi scan and return all detected Access Points.
         """
-        aps = self.scanner.scan(rescan=self._rescan(rescan))
+        aps = self.scanner.scan(rescan=self._rescan(rescan), timeout=MAX_BURST_SECONDS)
         self._last_results = aps
         self._scan_count += 1
         self._last_scan_time = time.time()
@@ -322,13 +322,17 @@ class WifiDongleDevice:
         band: Optional[str] = None
 
         t0 = time.time()
+        deadline = t0 + max_time
         iterations = 0
         max_samples = max(1, min(count, 100))
 
-        while len(rssi_list) < max_samples and (time.time() - t0) < max_time:
+        while len(rssi_list) < max_samples:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
             iterations += 1
-            # Execute scan
-            aps = self.scanner.scan(rescan=do_rescan and iterations == 1)
+            # Execute scan within the remaining call budget
+            aps = self.scanner.scan(rescan=do_rescan and iterations == 1, timeout=remaining)
             self._scan_count += 1
             self._last_scan_time = time.time()
 
@@ -345,7 +349,9 @@ class WifiDongleDevice:
                     break
 
             # Small dwell before next scan, never past the deadline
-            time.sleep(max(0.0, min(0.1, max_time - (time.time() - t0))))
+            dwell = deadline - time.time()
+            if len(rssi_list) < max_samples and dwell > 0:
+                time.sleep(min(0.1, dwell))
 
         stats = compute_linear_stats(rssi_list)
         return {
@@ -453,7 +459,7 @@ class WifiDongleDevice:
     def scan_summary(self) -> Dict[str, Any]:
         """High-level summary of the surrounding RF environment."""
         if not self._last_results:
-            self.scan(rescan=True)
+            self.scan()
 
         aps = self._last_results
         total = len(aps)
@@ -482,7 +488,7 @@ class WifiDongleDevice:
         Keys are channel numbers as strings ("0" = unknown), as JSON delivers them.
         """
         if not self._last_results:
-            self.scan(rescan=True)
+            self.scan()
 
         channels: Dict[int, List[float]] = {}
         for ap in self._last_results:

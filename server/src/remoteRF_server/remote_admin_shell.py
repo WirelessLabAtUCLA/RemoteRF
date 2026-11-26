@@ -160,7 +160,17 @@ class Shell:
                 rest = [*rest, "-y"]
                 detail["argv"].append("-y")
         if name == "restart":
-            print("The server restarts and this session ends; reconnect in a few seconds.")
+            if not rest:
+                print("The server restarts and this session ends; reconnect in a few seconds.")
+            else:
+                from remoteRF_server.server import safe_restart
+
+                opts, err = safe_restart.parse_args(rest, action=name)
+                if err is None and opts is not None and not opts.help and not opts.check:
+                    if opts.safe:
+                        print("Waiting for an idle window; when the server restarts this session ends.")
+                    else:
+                        print("The server restarts and this session ends; reconnect in a few seconds.")
         self.audit("command", detail=detail)
         started = time.monotonic()
         rc = None
