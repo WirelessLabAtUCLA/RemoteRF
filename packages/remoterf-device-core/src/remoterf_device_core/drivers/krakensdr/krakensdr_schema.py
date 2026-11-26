@@ -93,6 +93,7 @@ class KrakenSDRDevice:
         sample_rate: float = 2.048e6,
         center_freq: float = 100.0e6,
         gain: float = 25.4,
+        auto_start: bool = True,
     ) -> None:
         self.serials = serials or KrakenSDR.DEFAULT_SERIALS
         self.sample_rate_init = sample_rate
@@ -102,6 +103,7 @@ class KrakenSDRDevice:
         self._default_center_freq = float(center_freq)
         self._default_sample_rate = float(sample_rate)
         self._default_gain = float(gain)
+        self._default_auto_start = bool(auto_start)
 
         self.sdr: Optional[KrakenSDR] = None
         self._is_running = False
@@ -125,11 +127,11 @@ class KrakenSDRDevice:
             )
             # Flush initial buffer
             _ = self.sdr.read_samples(8192, parallel=True)
-            self._is_running = True
+            self._is_running = self._default_auto_start
 
     def close(self) -> None:
         """Disconnect cleanly from all SDR tuners."""
-        self.stop()
+        self._is_running = False
         if self.sdr is not None:
             self.sdr.close()
             self.sdr = None
@@ -165,9 +167,9 @@ class KrakenSDRDevice:
     @center_freq.setter
     def center_freq(self, freq: float) -> None:
         val = float(freq)
-        self.center_freq_init = val
         if self.sdr is not None:
             self.sdr.center_freq = val
+        self.center_freq_init = val
 
     @property
     def sample_rate(self) -> float:
@@ -176,9 +178,9 @@ class KrakenSDRDevice:
     @sample_rate.setter
     def sample_rate(self, rate: float) -> None:
         val = float(rate)
-        self.sample_rate_init = val
         if self.sdr is not None:
             self.sdr.sample_rate = val
+        self.sample_rate_init = val
 
     @property
     def gain(self) -> float:
@@ -187,9 +189,9 @@ class KrakenSDRDevice:
     @gain.setter
     def gain(self, gain_val: float) -> None:
         val = float(gain_val)
-        self.gain_init = val
         if self.sdr is not None:
             self.sdr.gain = val
+        self.gain_init = val
 
     @property
     def noise_source_active(self) -> bool:
@@ -204,11 +206,39 @@ class KrakenSDRDevice:
 
     def reset_for_next_holder(self) -> None:
         """Noise source off and devices.yml RF settings back for the next holder."""
-        self.set_noise_source(False)
-        self.sample_rate = self._default_sample_rate
-        self.center_freq = self._default_center_freq
-        self.gain = self._default_gain
         self._smoothed_psd = None
+        self._is_running = self._default_auto_start if self.sdr is not None else False
+        if self.sdr is None:
+            self.sample_rate_init = self._default_sample_rate
+            self.center_freq_init = self._default_center_freq
+            self.gain_init = self._default_gain
+            return
+        reset_defaults = getattr(self.sdr, "reset_defaults", None)
+        if callable(reset_defaults):
+            try:
+                reset_defaults(
+                    sample_rate=self._default_sample_rate,
+                    center_freq=self._default_center_freq,
+                    gain=self._default_gain,
+                )
+            finally:
+                self.sample_rate_init = float(self.sdr.sample_rate)
+                self.center_freq_init = float(self.sdr.center_freq)
+                self.gain_init = float(self.sdr.gain)
+            return
+        errors = []
+        for step in (
+            lambda: self.set_noise_source(False),
+            lambda: setattr(self, "sample_rate", self._default_sample_rate),
+            lambda: setattr(self, "center_freq", self._default_center_freq),
+            lambda: setattr(self, "gain", self._default_gain),
+        ):
+            try:
+                step()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def get_device_info(self) -> Dict[str, Any]:
         """Query connection identity and hardware properties."""
@@ -284,7 +314,11 @@ class KrakenSDRDevice:
         fft_shifted = np.fft.fftshift(fft_raw, axes=1)
         inst_psd = (20.0 * np.log10(np.abs(fft_shifted) / window_norm + 1e-12)).astype(np.float32)
 
-        if self._smoothed_psd is None or decay <= 0.0:
+        if (
+            self._smoothed_psd is None
+            or self._smoothed_psd.shape != inst_psd.shape
+            or decay <= 0.0
+        ):
             self._smoothed_psd = inst_psd
         else:
             d = max(0.0, min(0.95, float(decay)))
@@ -390,6 +424,7 @@ class KrakenSDRSchema(DeviceSchema):
                 sample_rate=sample_rate,
                 center_freq=center_freq,
                 gain=gain,
+                auto_start=auto_start,
             )
             dev.connect()
 
