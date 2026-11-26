@@ -82,32 +82,36 @@ class RSSIScanner:
         # Run safety verification
         self.safety_status = verify_network_safety(self.interface)
 
-    def _trigger_rescan(self) -> None:
+    def _trigger_rescan(self, timeout: float = 10.0) -> None:
         """
         Trigger NetworkManager to perform an active Wi-Fi scan using standard user permissions.
         """
+        if timeout <= 0:
+            return
         try:
             subprocess.run(
                 ["nmcli", "dev", "wifi", "list", "ifname", self.interface, "--rescan", "yes"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=10,
+                timeout=min(10.0, timeout),
                 check=False
             )
         except Exception:
             pass
 
-    def _parse_iw_dump(self) -> List[AccessPoint]:
+    def _parse_iw_dump(self, timeout: float = 10.0) -> List[AccessPoint]:
         """
         Read the Linux kernel cfg80211 BSS dump cache via 'iw dev <interface> scan dump'.
         This returns exact signal strength in dBm without requiring root privileges.
         """
+        if timeout <= 0:
+            return []
         try:
             out = subprocess.check_output(
                 ["iw", "dev", self.interface, "scan", "dump"],
                 text=True,
                 errors="replace",
-                timeout=10
+                timeout=min(10.0, timeout)
             )
         except Exception as e:
             return []
@@ -177,16 +181,18 @@ class RSSIScanner:
 
         return records
 
-    def _parse_nmcli_fallback(self) -> List[AccessPoint]:
+    def _parse_nmcli_fallback(self, timeout: float = 10.0) -> List[AccessPoint]:
         """
         Fallback parser using nmcli output directly if iw scan dump returns empty.
         """
+        if timeout <= 0:
+            return []
         try:
             out = subprocess.check_output(
                 ["nmcli", "-t", "-f", "BSSID,SSID,CHAN,FREQ,SIGNAL,SECURITY", "dev", "wifi", "list", "ifname", self.interface],
                 text=True,
                 errors="replace",
-                timeout=10
+                timeout=min(10.0, timeout)
             )
         except Exception:
             return []
@@ -229,17 +235,35 @@ class RSSIScanner:
             )
         return records
 
-    def scan(self, rescan: bool = True) -> List[AccessPoint]:
+    def scan(self, rescan: bool = True, timeout: Optional[float] = None) -> List[AccessPoint]:
         """
         Perform a Wi-Fi scan and return all detected Access Points.
         Results are sorted by signal strength (highest/strongest dBm first).
         """
-        if rescan:
-            self._trigger_rescan()
+        deadline = None if timeout is None else time.time() + max(0.0, float(timeout))
 
-        results = self._parse_iw_dump()
-        if not results:
-            results = self._parse_nmcli_fallback()
+        def _budget() -> float:
+            return 10.0 if deadline is None else min(10.0, max(0.0, deadline - time.time()))
+
+        if rescan:
+            if deadline is None:
+                self._trigger_rescan()
+            else:
+                b = _budget()
+                if b > 0:
+                    self._trigger_rescan(timeout=b)
+
+        if deadline is None:
+            results = self._parse_iw_dump()
+            if not results:
+                results = self._parse_nmcli_fallback()
+        else:
+            b = _budget()
+            results = self._parse_iw_dump(timeout=b) if b > 0 else []
+            if not results:
+                b = _budget()
+                if b > 0:
+                    results = self._parse_nmcli_fallback(timeout=b)
 
         # Sort by signal strength descending
         results.sort(key=lambda ap: ap.signal_dbm, reverse=True)
