@@ -684,6 +684,71 @@ def _finite_bounds(low: float, high: float) -> tuple[float, float] | None:
     return (low, high) if low <= high else (high, low)
 
 
+def _has_nonempty_tune_args(args) -> bool:
+    if args is None:
+        return False
+    if isinstance(args, str):
+        return bool(args.strip())
+    if isinstance(args, Mapping):
+        if args.get("__uhd_type__") == "DeviceAddr":
+            if "value" in args:
+                raw = args["value"]
+            elif "items" in args:
+                raw = args["items"]
+            elif "args" in args:
+                raw = args["args"]
+            else:
+                return bool(set(args) - {"__uhd_type__"})
+            return _has_nonempty_tune_args(raw)
+        return len(args) > 0
+    to_string = getattr(args, "to_string", None)
+    keys = getattr(args, "keys", None)
+    if callable(to_string) or callable(keys):
+        try:
+            if callable(keys) and len(list(keys())) > 0:
+                return True
+            if callable(to_string) and str(to_string()).strip():
+                return True
+            return False
+        except Exception:
+            return True
+    return True
+
+
+def _time_spec_secs(value) -> float | None:
+    if isinstance(value, Mapping):
+        return _to_finite_float(value.get("secs"))
+    getter = getattr(value, "get_real_secs", None)
+    if callable(getter):
+        try:
+            return _to_finite_float(getter())
+        except Exception:
+            return None
+    if hasattr(value, "secs"):
+        return _to_finite_float(getattr(value, "secs"))
+    return None
+
+
+def _extract_explicit_channels(raw_channels) -> list[int] | None:
+    if raw_channels is None or isinstance(raw_channels, (str, bytes)):
+        return None
+    try:
+        items = list(raw_channels)
+    except TypeError:
+        return None
+    if not items:
+        return None
+    channels: list[int] = []
+    for item in items:
+        if isinstance(item, bool):
+            return None
+        try:
+            channels.append(int(item))
+        except (TypeError, ValueError):
+            return None
+    return channels
+
+
 def _extract_tune_bounds(
     tune_request,
     *,
@@ -731,6 +796,8 @@ def _extract_tune_bounds(
 
         raw_args = tune_request.get("args", ())
         legacy_constructor_args = isinstance(raw_args, (list, tuple))
+        if not legacy_constructor_args and _has_nonempty_tune_args(raw_args):
+            return None
         raw_kwargs = tune_request.get("kwargs")
         if raw_kwargs is not None and not isinstance(raw_kwargs, Mapping):
             return None
@@ -810,6 +877,10 @@ def _extract_tune_bounds(
             for attr in ("target_freq", "rf_freq_policy", "dsp_freq_policy")
         ):
             return None
+        if hasattr(tune_request, "args") and _has_nonempty_tune_args(
+            getattr(tune_request, "args", None)
+        ):
+            return None
         target_freq = _to_finite_float(getattr(tune_request, "target_freq", None))
         if hasattr(tune_request, "rf_freq_policy"):
             raw_rf_policy = getattr(tune_request, "rf_freq_policy")
@@ -828,8 +899,6 @@ def _extract_tune_bounds(
     if rf_policy is None or dsp_policy is None:
         return None
 
-    sign = 1.0 if side == "tx" else -1.0
-
     if rf_policy == "AUTO" and dsp_policy == "AUTO":
         if target_freq is None:
             return None
@@ -838,7 +907,8 @@ def _extract_tune_bounds(
     if rf_policy == "AUTO" and dsp_policy == "MANUAL":
         if target_freq is None or dsp_freq is None:
             return None
-        bounds = _finite_bounds(target_freq, target_freq + sign * dsp_freq)
+        dsp = abs(dsp_freq)
+        bounds = _finite_bounds(target_freq - dsp, target_freq + dsp)
         rf_bounds = _finite_bounds(target_freq, target_freq)
         return (bounds, rf_bounds) if bounds is not None and rf_bounds is not None else None
     if rf_policy == "AUTO" and dsp_policy == "NONE":
@@ -857,7 +927,8 @@ def _extract_tune_bounds(
     if rf_policy == "MANUAL" and dsp_policy == "MANUAL":
         if not rf_freq_set or rf_freq is None or dsp_freq is None:
             return None
-        bounds = _finite_bounds(rf_freq, rf_freq + sign * dsp_freq)
+        dsp = abs(dsp_freq)
+        bounds = _finite_bounds(rf_freq - dsp, rf_freq + dsp)
         rf_bounds = _finite_bounds(rf_freq, rf_freq)
         return (bounds, rf_bounds) if bounds is not None and rf_bounds is not None else None
     if rf_policy == "MANUAL" and dsp_policy == "NONE":
@@ -875,7 +946,8 @@ def _extract_tune_bounds(
     if rf_policy == "NONE" and dsp_policy == "MANUAL":
         if current_rf is None or dsp_freq is None:
             return None
-        bounds = _finite_bounds(current_rf, current_rf + sign * dsp_freq)
+        dsp = abs(dsp_freq)
+        bounds = _finite_bounds(current_rf - dsp, current_rf + dsp)
         return (bounds, None) if bounds is not None else None
     if rf_policy == "NONE" and dsp_policy == "NONE":
         if current_freq is None:
@@ -969,6 +1041,14 @@ def _extract_stream_channels(stream_args) -> list[int]:
     return channels or [0]
 
 
+def _stream_cmd_mode(cmd) -> str:
+    if isinstance(cmd, Mapping):
+        raw = cmd.get("stream_mode", cmd.get("mode", ""))
+    else:
+        raw = getattr(cmd, "stream_mode", getattr(cmd, "mode", ""))
+    return str("" if raw is None else raw).rsplit(".", 1)[-1].lower()
+
+
 @idl_register("usrp")
 class UsrpSchema(DeviceSchema):
     device_type = "usrp"
@@ -978,6 +1058,7 @@ class UsrpSchema(DeviceSchema):
     session_scoped = True
     lockout_bypass: bool = False
     _freq_limits: FreqLimits | None = None
+    _tx_in_flight: bool = False
 
     def __init__(self):
         super().__init__()
@@ -985,6 +1066,7 @@ class UsrpSchema(DeviceSchema):
         self._legacy_device = False
         self.lockout_bypass = False
         self._freq_limits = None
+        self._tx_in_flight = False
 
     @staticmethod
     def make_device(**kwargs):
@@ -1113,6 +1195,13 @@ class UsrpSchema(DeviceSchema):
         parsed = self._read_named_lo_freq(side, "all", chan)
         if parsed is not None:
             return parsed
+        names = self._read_device_lo_names(side, chan)
+        if names is not None:
+            non_all = list(dict.fromkeys(item for item in names if item != "all"))
+            if len(non_all) == 1:
+                parsed = self._read_named_lo_freq(side, non_all[0], chan)
+                if parsed is not None:
+                    return parsed
         return self._read_tree_frontend_freq(side, chan)
 
     def _mboard_coupling(self) -> tuple[str, bool]:
@@ -1228,6 +1317,22 @@ class UsrpSchema(DeviceSchema):
         }
         return sorted(channels) if channels else [0]
 
+    def _all_tx_channels(self) -> list[int]:
+        fn = getattr(self.device, "get_tx_num_channels", None)
+        if callable(fn):
+            try:
+                tx_count = int(fn())
+            except Exception:
+                return []
+            return list(range(tx_count)) if tx_count > 0 else []
+        channels = {
+            int(item)
+            for handle in self._streamers()
+            if handle.startswith("tx:")
+            for item in self._streamer_channels().get(handle, ())
+        }
+        return sorted(channels) if channels else [0]
+
     def _check_tx_band(
         self,
         *,
@@ -1286,6 +1391,25 @@ class UsrpSchema(DeviceSchema):
             self._freq_refuse(
                 limits.tx.format_band_error("tx", low, high, detail="tx_freq ± tx_rate/2")
             )
+        if freq_bounds is None and freq is None:
+            rf_lo = self._read_device_lo_freq("tx", chan)
+            if rf_lo is not None:
+                self._check_lo_freq("tx", rf_lo)
+
+    def _check_lo_freq(self, side: str, freq) -> None:
+        limits = self._freq_limits
+        if limits is None:
+            return
+        side_limits = limits.tx if side == "tx" else limits.rx
+        if not side_limits.is_active:
+            return
+        value = _to_finite_float(freq)
+        if value is None:
+            tag = side.upper()
+            self._freq_refuse(f"{tag} refused: {tag} LO frequency must be a finite number.")
+            return
+        if not side_limits.allows_freq(value):
+            self._freq_refuse(side_limits.format_freq_error(side, value))
 
     def _check_rx_freq(self, freq) -> None:
         limits = self._freq_limits
@@ -1388,6 +1512,15 @@ class UsrpSchema(DeviceSchema):
             return
         bounds, new_rf_bounds = extracted
         self._check_tx_band(chan=ch, freq_bounds=bounds, require_positive_rate=False)
+        lo_bounds = (
+            new_rf_bounds
+            if new_rf_bounds is not None
+            else (_finite_bounds(rf, rf) if rf is not None else None)
+        )
+        if lo_bounds is not None:
+            self._check_lo_freq("tx", lo_bounds[0])
+            if lo_bounds[1] != lo_bounds[0]:
+                self._check_lo_freq("tx", lo_bounds[1])
         if new_rf_bounds is not None:
             self._check_coupled_lo("tx", ch, new_rf_bounds)
 
@@ -1412,6 +1545,15 @@ class UsrpSchema(DeviceSchema):
             return
         bounds, new_rf_bounds = extracted
         self._check_rx_bounds(bounds)
+        lo_bounds = (
+            new_rf_bounds
+            if new_rf_bounds is not None
+            else (_finite_bounds(rf, rf) if rf is not None else None)
+        )
+        if lo_bounds is not None:
+            self._check_lo_freq("rx", lo_bounds[0])
+            if lo_bounds[1] != lo_bounds[0]:
+                self._check_lo_freq("rx", lo_bounds[1])
         if new_rf_bounds is not None:
             self._check_coupled_lo("rx", ch, new_rf_bounds)
 
@@ -1474,6 +1616,30 @@ class UsrpSchema(DeviceSchema):
         else:
             self._check_rx_tune(tune_request, ch, current_rf=current_rf)
 
+    def check_tx_metadata(self, metadata) -> None:
+        limits = self._freq_limits
+        if limits is None or not limits.tx.is_active:
+            return
+        if metadata is None:
+            return
+        if isinstance(metadata, Mapping):
+            has_time_spec = bool(metadata.get("has_time_spec", False))
+            time_spec = metadata.get("time_spec")
+        else:
+            has_time_spec = bool(getattr(metadata, "has_time_spec", False))
+            time_spec = getattr(metadata, "time_spec", None)
+        if has_time_spec:
+            self._freq_refuse(
+                "TX refused: timed TX metadata (time_spec) is not allowed while TX frequency limits are active."
+            )
+            return
+        if time_spec is not None:
+            secs = _time_spec_secs(time_spec)
+            if secs is None or secs != 0.0:
+                self._freq_refuse(
+                    "TX refused: timed TX metadata (time_spec) is not allowed while TX frequency limits are active."
+                )
+
     def check_tx_channels(self, channels) -> None:
         limits = self._freq_limits
         if limits is None or not limits.tx.is_active:
@@ -1482,7 +1648,10 @@ class UsrpSchema(DeviceSchema):
             self._freq_refuse("TX refused: stream channels are unknown.")
             return
         for chan in channels:
-            self._check_tx_band(chan=int(chan), require_positive_rate=True)
+            self._check_tx_band(
+                chan=int(chan),
+                require_positive_rate=True,
+            )
 
     def check_rx_channels(self, channels) -> None:
         limits = self._freq_limits
@@ -1492,14 +1661,39 @@ class UsrpSchema(DeviceSchema):
             self._freq_refuse("RX refused: stream channels are unknown.")
             return
         for chan in channels:
-            _, freq = self._read_device_channel_value("get_rx_freq", int(chan))
+            ch = int(chan)
+            _, freq = self._read_device_channel_value("get_rx_freq", ch)
             self._check_rx_freq(freq)
+            rf_lo = self._read_device_lo_freq("rx", ch)
+            if rf_lo is not None:
+                self._check_lo_freq("rx", rf_lo)
 
-    def check_tx_rate_change(self, rate, chan, active_channels) -> None:
+    def _has_open_v1_tx_streamer(self) -> bool:
+        streamers = getattr(self, "_usrp_streamers", None)
+        return bool(streamers and any(handle.startswith("tx:") for handle in streamers))
+
+    def mark_tx_in_flight(self) -> None:
+        self._tx_in_flight = True
+
+    def check_master_clock_rate_change(self) -> None:
         limits = self._freq_limits
         if limits is None or not limits.tx.is_active:
             return
-        if not active_channels:
+        if not (self._tx_in_flight or self._has_open_v1_tx_streamer()):
+            return
+        self._freq_refuse(
+            "Master clock rate changes are refused after TX has started while TX frequency limits are active."
+        )
+
+    def check_tx_rate_change(self, rate, chan, active_channels=None) -> None:
+        limits = self._freq_limits
+        if limits is None or not limits.tx.is_active:
+            return
+        if active_channels is None and not (
+            self._tx_in_flight or self._has_open_v1_tx_streamer()
+        ):
+            return
+        if active_channels is not None and not active_channels:
             self._freq_refuse("TX refused: active TX stream channels are unknown.")
             return
         if isinstance(chan, bool):
@@ -1510,12 +1704,24 @@ class UsrpSchema(DeviceSchema):
         except (TypeError, ValueError):
             self._freq_refuse("TX refused: TX channel must be an integer.")
             return
+        all_tx = self._all_tx_channels()
+        if active_channels is not None:
+            known_channels = sorted(
+                {int(ch) for ch in all_tx} | {int(ch) for ch in active_channels}
+            )
+        else:
+            known_channels = all_tx
         _, rate_shared = self._mboard_coupling()
         all_chans = target_ch is None or target_ch < 0 or target_ch >= (1 << 32)
         if rate_shared or all_chans:
-            channels_to_check = [int(ch) for ch in active_channels]
+            if not known_channels:
+                self._freq_refuse("TX refused: TX channels are unknown.")
+                return
+            channels_to_check = list(known_channels)
+            if not all_chans and target_ch not in channels_to_check:
+                channels_to_check.append(target_ch)
         else:
-            channels_to_check = [int(ch) for ch in active_channels if int(ch) == target_ch]
+            channels_to_check = [target_ch]
         for ch in channels_to_check:
             self._check_tx_band(chan=ch, rate=rate, require_positive_rate=True)
 
@@ -1537,6 +1743,10 @@ class UsrpSchema(DeviceSchema):
             self._check_tx_tune(_arg("tune_request", 0), _arg("chan", 1, 0))
         elif method_name == "set_rx_freq":
             self._check_rx_tune(_arg("tune_request", 0), _arg("chan", 1, 0))
+        elif method_name == "set_tx_rate":
+            self.check_tx_rate_change(_arg("rate", 0), _arg("chan", 1, None))
+        elif method_name == "set_master_clock_rate":
+            self.check_master_clock_rate_change()
         elif method_name == "set_tx_lo_freq":
             self._check_lo_freq_call("tx", _arg("freq", 0), _arg("name", 1), _arg("chan", 2, 0))
         elif method_name == "set_rx_lo_freq":
@@ -1580,7 +1790,7 @@ class UsrpSchema(DeviceSchema):
                 cmd = _arg("stream_cmd", 0)
                 if cmd is None:
                     cmd = _arg("rate", 0)
-                stream_mode = str(getattr(cmd, "mode", "")).rsplit(".", 1)[-1].lower()
+                stream_mode = _stream_cmd_mode(cmd)
                 if stream_mode not in {"stop_cont", "stop_continuous"}:
                     chan = _arg("chan", 1, None)
                     if chan is None or int(chan) >= (1 << 32):
@@ -1592,45 +1802,41 @@ class UsrpSchema(DeviceSchema):
             self.check_tx_channels(_extract_stream_channels(_arg("stream_args", 0)))
         elif method_name == "send_waveform":
             if limits.tx.is_active:
-                freq = _arg("freq", 2)
-                rate = _arg("rate", 3, 1_000_000.0)
-                raw_channels = _arg("channels", 4, [0])
-                channels = [0] if raw_channels is None else list(raw_channels)
-                if not channels:
-                    channels = [0]
-                freq_val = _to_finite_float(freq)
-                _, rate_shared = self._mboard_coupling()
-                other_rate = rate if rate_shared else None
-                for ch in channels:
-                    ch_int = int(ch)
-                    self._check_tx_band(
-                        chan=ch_int,
-                        freq=freq,
-                        rate=rate,
-                        require_positive_rate=True,
-                    )
-                    if freq_val is not None:
-                        self._check_coupled_lo(
-                            "tx",
-                            ch_int,
-                            (freq_val, freq_val),
-                            rate=other_rate,
-                            require_positive_rate=bool(rate_shared),
-                        )
+                self._freq_refuse(
+                    "TX refused: send_waveform is not allowed while TX frequency limits "
+                    f"are active ({limits.tx.describe_limits('tx')}) because UHD coerces "
+                    "TX rate and LO inside the call without readback; use set_tx_rate, "
+                    "set_tx_freq, get_tx_stream, and send instead."
+                )
         elif method_name == "recv_num_samps":
             if limits.rx.is_active:
+                if _arg("streamer", 6, None) is not None:
+                    self._freq_refuse(
+                        "RX refused: caller-supplied streamer is not allowed on "
+                        "recv_num_samps while RX frequency limits are active."
+                    )
+                    return
+                raw_channels = _arg("channels", 3, _UNSET)
+                if raw_channels is _UNSET:
+                    channels = [0]
+                else:
+                    channels = _extract_explicit_channels(raw_channels)
+                    if not channels:
+                        self._freq_refuse(
+                            "RX refused: recv_num_samps channels must be a non-empty list "
+                            "while RX frequency limits are active."
+                        )
+                        return
                 freq = _arg("freq", 1)
                 self._check_rx_freq(freq)
                 freq_val = _to_finite_float(freq)
                 if freq_val is not None:
-                    raw_channels = _arg("channels", 3, [0])
-                    channels = [0] if raw_channels is None else list(raw_channels)
-                    if not channels:
-                        channels = [0]
-                    for ch in channels:
-                        self._check_coupled_lo("rx", int(ch), (freq_val, freq_val))
+                    for ch_int in channels:
+                        self._check_coupled_lo("rx", ch_int, (freq_val, freq_val))
 
     def close_native_device(self):
+        self._legacy_device = False
+        self._tx_in_flight = False
         self.call_close_all_streams()
         device = self.device
         self.device = None
@@ -1753,19 +1959,26 @@ class UsrpSchema(DeviceSchema):
         if method_name in (
             "set_command_time",
             "clear_command_time",
+            "set_master_clock_rate",
             "set_tx_subdev_spec",
             "set_rx_subdev_spec",
             "set_tx_iq_balance",
             "set_tx_filter",
+            "send_waveform",
         ):
             self._check_native_call(method_name, args, positional_args)
             positional = [_construct(item) for item in (positional_args or ())]
             keywords = {str(key): _construct(item) for key, item in dict(args or {}).items()}
+            if method_name == "send_waveform":
+                self.mark_tx_in_flight()
             return target(*positional, **keywords)
         positional = [_construct(item) for item in (positional_args or ())]
         keywords = {str(key): _construct(item) for key, item in dict(args or {}).items()}
         self._check_native_call(method_name, keywords, positional)
-        return target(*positional, **keywords)
+        result = target(*positional, **keywords)
+        if method_name == "get_tx_stream" and result is not None:
+            self.mark_tx_in_flight()
+        return result
 
     @staticmethod
     def _version_value(*names):
@@ -2041,6 +2254,7 @@ class UsrpSchema(DeviceSchema):
 
     @idl_expose(kind="call")
     def call_set_master_clock_rate(self, rate, mboard=None):
+        self.check_master_clock_rate_change()
         if mboard is not None:
             self.device.set_master_clock_rate(rate, mboard)
         else:
@@ -2078,8 +2292,7 @@ class UsrpSchema(DeviceSchema):
                 for ch in self._streamer_channels().get(handle, [0])
             }
         )
-        if active_tx:
-            self.check_tx_rate_change(rate, chan, active_tx)
+        self.check_tx_rate_change(rate, chan, active_tx or None)
         self.device.set_tx_rate(rate, chan)
 
     @idl_expose(kind="call")
@@ -2113,9 +2326,11 @@ class UsrpSchema(DeviceSchema):
         native_args = _construct(stream_args)
         channels = _extract_stream_channels(native_args)
         self.check_tx_channels(channels)
+        streamer = self.device.get_tx_stream(native_args)
+        self.mark_tx_in_flight()
         return self._put_streamer(
             "tx",
-            self.device.get_tx_stream(native_args),
+            streamer,
             channels=channels,
         )
 
@@ -2135,7 +2350,7 @@ class UsrpSchema(DeviceSchema):
         handle = _handle(value["handle"], "stream_issue_stream_cmd")
         native_cmd = _construct(value["stream_cmd"])
         if handle.startswith("rx:"):
-            stream_mode = str(getattr(native_cmd, "mode", "")).rsplit(".", 1)[-1].lower()
+            stream_mode = _stream_cmd_mode(native_cmd)
             if stream_mode not in {"stop_cont", "stop_continuous"}:
                 self.check_rx_channels(self._streamer_channels().get(handle, [0]))
         self._get_streamer(handle).issue_stream_cmd(native_cmd)
@@ -2166,9 +2381,12 @@ class UsrpSchema(DeviceSchema):
         handle = _handle(value["handle"], "stream_send")
         self.check_tx_channels(self._streamer_channels().get(handle, [0]))
         samples = value["samples"]
-        metadata = value.get("metadata")
+        metadata = _tx_metadata(value.get("metadata"))
+        self.check_tx_metadata(metadata)
         timeout = value.get("timeout", 0.1)
-        return self._get_streamer(handle).send(samples, _tx_metadata(metadata), timeout)
+        streamer = self._get_streamer(handle)
+        self.mark_tx_in_flight()
+        return streamer.send(samples, metadata, timeout)
 
     @idl_expose(kind="call")
     def call_stream_close(self, handle):
@@ -2184,7 +2402,11 @@ class UsrpSchema(DeviceSchema):
         return count
 
     def reset_for_next_holder(self):
-        """A reservation ended: its v1 streamers are not the next holder's."""
+        """A reservation ended: drop v1 streamers and close any lazy v1 device."""
+        self._tx_in_flight = False
+        if self._legacy_device:
+            self.close_native_device()
+            return
         self._streamers().clear()
         self._streamer_channels().clear()
 

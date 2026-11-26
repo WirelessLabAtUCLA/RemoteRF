@@ -699,6 +699,25 @@ binary frame, set `REMOTERF_TI_MMWAVE_CONFIG` to a board-compatible TI `.cfg`
 file. `REMOTERF_TI_MMWAVE_FRAME_TIMEOUT` optionally changes the five-second
 frame deadline.
 
+### Per-call wait caps (GPS, Bluetooth, Wi-Fi, TI AWR6843)
+
+Single-RPC blocking waits in these built-in drivers are capped at **20 s** per
+call so every call completes within the 25 s Host tunnel timeout, the 30 s
+RemoteRF Global relay budget, and device reload's 30 s I/O lock wait:
+
+- **GPS (`gps`)**: `wait_for_fix(timeout=...)` clamps any requested timeout
+  (including the 30 s schema default) to at most 20 s (`MAX_WAIT_FOR_FIX = 20.0`).
+- **Bluetooth (`bluetooth`)**: `scan(timeout=...)` and `scan_summary(timeout=...)`
+  clamp total scan duration (including any 0.5 s adapter power-on dwell) to at
+  most 20 s (`MAX_SCAN_SECONDS = 20.0`).
+- **Wi-Fi (`wifi`)**: `get_rssi_burst(..., max_time=...)` clamps `max_time` to
+  at most 20 s (`MAX_BURST_SECONDS = 20.0`) and bounds each `nmcli`/`iw`
+  subprocess to the remaining call budget (at most 10 s per subprocess); `scan()`
+  shares the same 20 s total budget.
+- **TI AWR6843 (`ti_awr6843`)**: per-call timeouts are bounded to at most 20 s
+  (`MAX_TIMEOUT_S = 20.0`), and `apply_config()` / preset reconfiguration also
+  enforce a 20 s total deadline across all CLI commands in the upload.
+
 ### Structured USRP profiles
 
 The NI USRP-2901, Ettus Research USRP B205-mini, and USRP N210 are
@@ -893,7 +912,11 @@ After running `serverrf --serve`, you’ll enter the **RemoteRF Server Shell**. 
 * `help` / `h` / `?` — Show help
 * `clear` / `cls` — Clear the screen
 * `status` / `server status` — Show server status (start time / uptime / bind + cert ports)
+* `restart [--safe [--within MINUTES] [--max-wait MINUTES] | --check [--within MINUTES]]` — Restart the server
+* `reload devices [--safe [--within MINUTES] [--max-wait MINUTES] | --check [--within MINUTES]]` — Reload local devices
 * `quit` / `exit` / `q` — Exit the server shell
+
+For upgrades or maintenance, use `serverrf restart --safe` (or `serverrf reload devices --safe`) to wait until no reservation is live or starting within `--within` minutes (default 15, up to `--max-wait` minutes, default 360) before acting, or pass `--check` to inspect blocking reservations and the next idle window without restarting. A plain `restart` acts immediately and disrupts users mid-session—in-flight calls, Dynamic v2 sessions, and direct paths drop, and local devices reopen or PoE Plutos power-cycle—while reservations survive in the database. The same flags work at the server console prompt and in non-interactive shells without prompting.
 
 ---
 

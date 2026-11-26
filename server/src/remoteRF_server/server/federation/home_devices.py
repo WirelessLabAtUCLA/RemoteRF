@@ -263,12 +263,17 @@ class ServerHomeDevices:
         entries = self._fan_out(local_account_id, "device_reservations")
         if not entries:
             return out
+        now = int(self.clock())
         with self._write_lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._purge_expired_locked(conn)
             for result, payload in entries:
                 owner = result["deployment_id"]
                 for row in payload.get("reservations", []):
+                    start_ts = int(row["start_time"])
+                    end_ts = int(row["end_time"])
+                    if end_ts <= start_ts or end_ts <= now:
+                        continue
                     alias = self._alias_locked(
                         conn, owner, row["local_device_id"], f"device {row['local_device_id']}"
                     )
@@ -283,8 +288,8 @@ class ServerHomeDevices:
                         ).fetchone()
                         if local is not None:
                             key = str(int(local[0]))
-                    start = datetime.fromtimestamp(int(row["start_time"]))
-                    end = datetime.fromtimestamp(int(row["end_time"]))
+                    start = datetime.fromtimestamp(start_ts)
+                    end = datetime.fromtimestamp(end_ts)
                     out[key] = f"{label},{alias},{start},{end}"
             conn.commit()
         return out

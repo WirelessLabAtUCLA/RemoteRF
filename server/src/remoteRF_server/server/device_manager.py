@@ -437,7 +437,11 @@ def _connect_from_record(rec: Dict[str, Any], *, connect: bool = True):
         return (None, ident, dtype)
 
     pluto = any(cls.__name__ == "PlutoSchema" for cls in schema_cls.__mro__)
-    freq_driver = any(cls.__name__ in ("HackRFSchema", "UsrpSchema") for cls in schema_cls.__mro__)
+    freq_driver = (
+        any(cls.__name__ in ("HackRFSchema", "UsrpSchema") for cls in schema_cls.__mro__)
+        and not any(cls.__name__ == "UsrpPhaserSchema" for cls in schema_cls.__mro__)
+        and bool(getattr(schema_cls, "supports_freq_limits", True))
+    )
     cfg = None
     try:
         from remoterf_device_core.drivers.adalm_pluto.lockout_keys import LOCKOUT_KEYS

@@ -16,8 +16,10 @@
 """Host integration tests for multi-range frequency limits (v1 RPC + Dynamic v2 bridge)."""
 from __future__ import annotations
 
+import json
 import sys
 import threading
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -26,6 +28,7 @@ import numpy as np
 
 from remoterf_device_core.drivers.hackrf.hackrf_schema import HackRFSchema
 from remoterf_device_core.drivers.usrp.usrp_schema import UsrpSchema
+from remoterf_device_core.drivers.usrp_phaser.usrp_phaser_schema import UsrpPhaserSchema
 from remoterf_device_core.idl import DeviceSchema
 from remoteRF_host.common.grpc import grpc_pb2
 from remoteRF_host.common.grpc.v2_codec import decode_value, encode_value
@@ -170,8 +173,8 @@ class _FakeNativeUSRP:
     def get_tree(self):
         return self.tree
 
-    def issue_stream_cmd(self, cmd, chan=(1 << 64) - 1):
-        self.root_stream_cmds.append((cmd, chan))
+    def issue_stream_cmd(self, rate, chan=(1 << 64) - 1):
+        self.root_stream_cmds.append((rate, chan))
 
     def get_tx_lo_freq(self, name="all", chan=0):
         return self.tx_lo_freqs[int(chan)]
@@ -258,6 +261,31 @@ class _FakeNativeUSRP:
     def get_rx_stream(self, stream_args):
         return self.rx_streamer
 
+    def send_waveform(
+        self,
+        waveform_proto,
+        duration,
+        freq,
+        rate=1e6,
+        channels=(0,),
+        gain=10,
+        start_time=None,
+        streamer=None,
+    ):
+        return len(waveform_proto)
+
+    def recv_num_samps(
+        self,
+        num_samps,
+        freq,
+        rate=1e6,
+        channels=(0,),
+        gain=10,
+        start_time=None,
+        streamer=None,
+    ):
+        return np.zeros((max(len(channels), 1), num_samps), dtype=np.complex64)
+
 
 def _fake_uhd():
     return types.SimpleNamespace(
@@ -305,6 +333,7 @@ class HostDeviceManagerAndRpcFreqRangeTests(unittest.TestCase):
         drivers = {
             "hackrf": HackRFSchema,
             "usrp": UsrpSchema,
+            "usrp_phaser": UsrpPhaserSchema,
             "custom_sensor": _UnsupportedSchema,
         }
         with (
@@ -362,6 +391,24 @@ class HostDeviceManagerAndRpcFreqRangeTests(unittest.TestCase):
                 {"TYPE": "custom_sensor", "NAME": "bad", "INIT": {"rx_allow": [[88e6, 108e6]]}}
             )
             self.assertIsNone(bad_other)
+
+            # usrp_phaser rejects frequency-limit configs at connect time (R1/F1),
+            # while plain usrp_phaser configs without limit keys connect normally.
+            for bad_phaser_init in (
+                {"serial": "P1", "phaser_uri": "ip:localhost", "tx_allow": [[902e6, 928e6]]},
+                {"serial": "P1", "rx_deny": [[10.6e9, 10.7e9]]},
+                {"serial": "P1", "admin_group_override": True},
+            ):
+                bad_phaser, _, _ = device_manager._connect_from_record(
+                    {"TYPE": "usrp_phaser", "NAME": "phaser-bad", "INIT": bad_phaser_init}
+                )
+                self.assertIsNone(bad_phaser)
+            ok_phaser, _, dtype = device_manager._connect_from_record(
+                {"TYPE": "usrp_phaser", "NAME": "phaser-ok", "INIT": {"serial": "P1", "phaser_uri": "ip:localhost"}}
+            )
+            self.assertEqual(dtype, "usrp_phaser")
+            self.assertIsInstance(ok_phaser, UsrpPhaserSchema)
+            self.assertIsNone(ok_phaser._freq_limits)
 
             # Misspelled or unknown limit keys fail closed on HackRF and USRP
             for drv in ("hackrf", "usrp"):
@@ -1024,6 +1071,605 @@ class HostDynamicV2BridgeFreqRangeTests(unittest.TestCase):
         self.inventory = broken_inv
         resp = self._open()
         self.assertEqual(resp.error.code, "RemoteRFPolicyError")
+
+    def test_host_v2_empty_context_clears_bypass_and_stream_checks_hold_control_lock(self):
+        """L5 (host): empty device context drops stale bypass; stream checks serialize with retunes."""
+        opened = self._open()
+        self.assertEqual(opened.error.code, "")
+        sid, root = opened.session_id, opened.device_handle
+        session = session_manager.get(sid)
+
+        tx_resp = self._invoke(
+            sid,
+            root,
+            "get_tx_stream",
+            {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+        )
+        tx_info = decode_value(tx_resp.result)
+        tx_handle, tx_gen = tx_info["__remoterf_handle__"], int(tx_info["generation"])
+
+        rx_resp = self._invoke(
+            sid,
+            root,
+            "get_rx_stream",
+            {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+        )
+        rx_info = decode_value(rx_resp.result)
+        rx_handle, rx_gen = rx_info["__remoterf_handle__"], int(rx_info["generation"])
+
+        self.bypass = True
+        self.assertEqual(
+            self._invoke(sid, root, "set_tx_freq", {"tune_request": 2.455e9, "chan": 0}).error.code,
+            "",
+        )
+        self.assertTrue(session.schema.lockout_bypass)
+        self.native.rx_freqs[0] = 2.455e9
+        self.native.rx_lo_freqs[0] = 2.455e9
+        payload = np.zeros(4, dtype="<c8").tobytes()
+
+        with patch("remoteRF_host.server.dynamic_v2.get_local_device_context", return_value={}):
+            inv_err = self._invoke(sid, root, "set_tx_freq", {"tune_request": 2.455e9, "chan": 0})
+            self.assertEqual(inv_err.error.code, "RemoteRFPolicyError")
+            self.assertFalse(session.schema.lockout_bypass)
+
+            session.schema.lockout_bypass = True
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=tx_handle, generation=tx_gen,
+                    operation_id="host-l5-tx", sequence=0,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            tx_err = self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=tx_handle, generation=tx_gen,
+                    operation_id="host-l5-tx", sequence=1,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                    kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                    dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                    payload=payload, timeout_sec=0.1, metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(tx_err.error.code, "RemoteRFPolicyError")
+            self.assertFalse(session.schema.lockout_bypass)
+
+            session.schema.lockout_bypass = True
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-l5-rx", sequence=0,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            rx_err = self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-l5-rx", sequence=1,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                    dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                    timeout_sec=0.1, metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(rx_err.error.code, "RemoteRFPolicyError")
+            self.assertFalse(session.schema.lockout_bypass)
+
+        self.bypass = False
+        self.native.tx_freqs[0] = self.native.tx_lo_freqs[0] = 915e6
+        self.native.rx_freqs[0] = self.native.rx_lo_freqs[0] = 915e6
+
+        def probe_control_lock_held() -> bool:
+            acquired = []
+
+            def worker():
+                got = session.control_lock.acquire(blocking=False)
+                if got:
+                    session.control_lock.release()
+                acquired.append(got)
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join(timeout=2.0)
+            return acquired == [False]
+
+        observed = {}
+        orig_send = self.native.tx_streamer.send
+        orig_recv = self.native.rx_streamer.recv
+        orig_cmd = self.native.rx_streamer.issue_stream_cmd
+
+        def tracked_send(buf, meta, timeout):
+            observed["tx_send"] = probe_control_lock_held()
+            return orig_send(buf, meta, timeout)
+
+        def tracked_recv(buf, meta, timeout):
+            observed["rx_recv"] = probe_control_lock_held()
+            return orig_recv(buf, meta, timeout)
+
+        def tracked_cmd(cmd):
+            observed["rx_cmd"] = probe_control_lock_held()
+            return orig_cmd(cmd)
+
+        with (
+            patch.object(self.native.tx_streamer, "send", side_effect=tracked_send),
+            patch.object(self.native.rx_streamer, "recv", side_effect=tracked_recv),
+            patch.object(self.native.rx_streamer, "issue_stream_cmd", side_effect=tracked_cmd),
+        ):
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=tx_handle, generation=tx_gen,
+                    operation_id="host-l5-lock-tx", sequence=2,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            tx_ok = self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=tx_handle, generation=tx_gen,
+                    operation_id="host-l5-lock-tx", sequence=3,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                    kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                    dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                    payload=payload, timeout_sec=0.1, metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(tx_ok.kind, grpc_pb2.SAMPLE_FRAME_RESULT)
+
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-l5-lock-rx", sequence=2,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            rx_ok = self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-l5-lock-rx", sequence=3,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                    dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                    timeout_sec=0.1, metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            self.assertEqual(rx_ok.kind, grpc_pb2.SAMPLE_FRAME_DATA)
+
+            cmd_resp = self._invoke(
+                sid,
+                rx_handle,
+                "issue_stream_cmd",
+                {"__args__": [{"__uhd_type__": "StreamCMD", "mode": "num_done", "stream_now": True}]},
+            )
+            self.assertEqual(cmd_resp.error.code, "")
+
+        self.assertEqual(observed, {"tx_send": True, "rx_recv": True, "rx_cmd": True})
+
+    def test_host_v2_waveform_prefetch_reset_timed_tx_and_prompt_close(self):
+        """R2, R3 & R5 (host): recv_num_samps prefetch reset, timed TX refusal, stop_cont & CloseSession under long RX wait."""
+        opened = self._open()
+        self.assertEqual(opened.error.code, "")
+        sid, root = opened.session_id, opened.device_handle
+        session = session_manager.get(sid)
+
+        tx_info = decode_value(
+            self._invoke(
+                sid,
+                root,
+                "get_tx_stream",
+                {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+            ).result
+        )
+        tx_handle, tx_gen = tx_info["__remoterf_handle__"], int(tx_info["generation"])
+        rx_info = decode_value(
+            self._invoke(
+                sid,
+                root,
+                "get_rx_stream",
+                {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+            ).result
+        )
+        rx_handle, rx_gen = rx_info["__remoterf_handle__"], int(rx_info["generation"])
+        rx_entry = session.handles[rx_handle]
+
+        # R2: recv_num_samps flushes RX prefetch when RX limits are active.
+        stale = np.full((1, 4), 55 + 0j, dtype=np.complex64)
+        rx_entry.rx_prefetch.put((stale, {"error_code": "none"}))
+        rx_entry.rx_pending = (stale, {"error_code": "none"}, 0)
+        ok_rx = self._invoke(sid, root, "recv_num_samps", {"num_samps": 8, "freq": 915e6, "channels": [0]})
+        self.assertEqual(ok_rx.error.code, "")
+        self.assertTrue(rx_entry.rx_prefetch.empty())
+        self.assertIsNone(rx_entry.rx_pending)
+
+        # R3: timed TXMetadata refused on host SampleFrame TX; default untimed TimeSpec(0.0) allowed.
+        payload = np.zeros(4, dtype="<c8").tobytes()
+        self._call(
+            "SampleFrame",
+            grpc_pb2.SampleFrame(
+                session_id=sid, handle=tx_handle, generation=tx_gen,
+                operation_id="host-timed-tx", sequence=0,
+                direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+            ),
+            grpc_pb2.SampleFrame,
+        )
+        timed_err = self._call(
+            "SampleFrame",
+            grpc_pb2.SampleFrame(
+                session_id=sid, handle=tx_handle, generation=tx_gen,
+                operation_id="host-timed-tx", sequence=1,
+                direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                payload=payload, timeout_sec=0.1,
+                metadata_json=json.dumps({"has_time_spec": True, "time_spec": {"__uhd_type__": "TimeSpec", "secs": 5.0}}),
+            ),
+            grpc_pb2.SampleFrame,
+        )
+        self.assertEqual(timed_err.kind, grpc_pb2.SAMPLE_FRAME_ERROR)
+        self.assertEqual(timed_err.error.code, "RemoteRFPolicyError")
+        self.assertEqual(self.native.tx_streamer.sent, [])
+
+        # R5: CloseSession during a 30s prefetched RX wait (rx_worker alive) completes promptly on host.
+        def stalled_recv(buf, meta, timeout):
+            time.sleep(min(float(timeout), 30.0))
+            meta.error_code = "timeout"
+            return 0
+
+        with patch.object(self.native.rx_streamer, "recv", side_effect=stalled_recv):
+            start_resp = self._invoke(
+                sid,
+                rx_handle,
+                "issue_stream_cmd",
+                {"__args__": [{"__uhd_type__": "StreamCMD", "mode": "start_cont", "stream_now": True}]},
+            )
+            self.assertEqual(start_resp.error.code, "")
+            self.assertIsNotNone(rx_entry.rx_worker)
+            self.assertTrue(rx_entry.rx_worker.is_alive())
+
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-r5-prefetch", sequence=0,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+
+            def run_rx():
+                self._call(
+                    "SampleFrame",
+                    grpc_pb2.SampleFrame(
+                        session_id=sid, handle=rx_handle, generation=rx_gen,
+                        operation_id="host-r5-prefetch", sequence=1,
+                        direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                        kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                        dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                        timeout_sec=30.0, metadata_json="{}",
+                    ),
+                    grpc_pb2.SampleFrame,
+                )
+
+            t = threading.Thread(target=run_rx)
+            t.start()
+            wait_deadline = time.monotonic() + 2.0
+            while session.activity.idle() and time.monotonic() < wait_deadline:
+                time.sleep(0.005)
+            self.assertFalse(session.activity.idle())
+
+            t0 = time.monotonic()
+            close_resp = self._call(
+                "CloseSession",
+                grpc_pb2.CloseSessionRequest(session_id=sid),
+                grpc_pb2.CloseResponse,
+            )
+            elapsed = time.monotonic() - t0
+            t.join(timeout=2.0)
+            self.assertEqual(close_resp.error.code, "")
+            self.assertTrue(close_resp.closed)
+            self.assertLess(elapsed, 1.5)
+            self.assertFalse(t.is_alive())
+            deadline = time.monotonic() + 2.0
+            while session_manager.cleanup_pending(7) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(session_manager.cleanup_pending(7))
+            self.assertTrue(self.native.closed)
+
+    def test_host_v2_stream_mode_only_stop_cont_partial_rx_metadata_and_closed_tx_rate(self):
+        """R5, N2 & Hunt N1 (host): .stream_mode-only StreamCMD, root stop_cont wakes prefetch, partial RX metadata, closed TX set_tx_rate & MCR."""
+
+        class _StreamModeOnlyCMD:
+            def __init__(self, mode):
+                self.stream_mode = mode
+                self.stream_now = True
+                self.time_spec = None
+                self.num_samps = 0
+
+        class _Fake_rx_metadata(_FakeRXMetadata):
+            pass
+
+        class _Fake_time_spec(_FakeTimeSpec):
+            pass
+
+        mcr_calls = []
+        self.native.set_master_clock_rate = lambda rate, mboard=0: mcr_calls.append((rate, mboard))
+        self.fake_uhd.types.StreamCMD = _StreamModeOnlyCMD
+        self.fake_uhd.types.RXMetadata = _Fake_rx_metadata
+        self.fake_uhd.types.TimeSpec = _Fake_time_spec
+
+        opened = self._open()
+        self.assertEqual(opened.error.code, "")
+        sid, root = opened.session_id, opened.device_handle
+        session = session_manager.get(sid)
+
+        # Hunt N1 (host): set_tx_rate after closing TX handle and set_master_clock_rate refused.
+        self.assertEqual(self._invoke(sid, root, "set_tx_freq", {"tune_request": 925e6, "chan": 0}).error.code, "")
+        tx_info = decode_value(
+            self._invoke(
+                sid,
+                root,
+                "get_tx_stream",
+                {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+            ).result
+        )
+        self.assertTrue(session_manager.close_handle(sid, tx_info["__remoterf_handle__"]))
+        self.assertEqual(
+            self._invoke(sid, root, "set_tx_rate", {"rate": 40e6, "chan": 0}).error.code,
+            "RemoteRFPolicyError",
+        )
+        self.assertEqual(self.native.tx_rate, 4e6)
+        self.assertEqual(
+            self._invoke(sid, root, "set_master_clock_rate", {"rate": 192e6}).error.code,
+            "RemoteRFPolicyError",
+        )
+        self.assertEqual(mcr_calls, [])
+
+        rx_info = decode_value(
+            self._invoke(
+                sid,
+                root,
+                "get_rx_stream",
+                {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+            ).result
+        )
+        rx_handle, rx_gen = rx_info["__remoterf_handle__"], int(rx_info["generation"])
+        rx_entry = session.handles[rx_handle]
+
+        # N2 (host): sliced direct RX partial read preserves first packet metadata.
+        calls = {"n": 0}
+
+        def partial_then_timeout(buf, meta, timeout):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                buf[:2] = 5 + 0j
+                meta.error_code = "none"
+                meta.has_time_spec = True
+                meta.time_spec = _Fake_time_spec(19.25)
+                return 2
+            time.sleep(min(float(timeout), 0.1))
+            meta.error_code = "timeout"
+            meta.has_time_spec = False
+            meta.time_spec = _Fake_time_spec(0.0)
+            return 0
+
+        with patch.object(self.native.rx_streamer, "recv", side_effect=partial_then_timeout):
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-n2-partial", sequence=0,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+            data_frame = self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-n2-partial", sequence=1,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                    dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                    timeout_sec=0.25, metadata_json="{}",
+                ),
+                grpc_pb2.SampleFrame,
+            )
+        self.assertEqual(data_frame.kind, grpc_pb2.SAMPLE_FRAME_DATA)
+        self.assertEqual(data_frame.sample_count, 2)
+        self.assertEqual(data_frame.device_time_secs, 19.25)
+        meta = json.loads(data_frame.metadata_json)
+        self.assertEqual(meta["error_code"], "none")
+        self.assertEqual(meta["time_spec"]["secs"], 19.25)
+
+        # R5 (host): .stream_mode-only StreamCMD starts prefetch and root stop_cont wakes _recv_prefetched.
+        def stalled_recv(buf, meta, timeout):
+            time.sleep(min(float(timeout), 30.0))
+            meta.error_code = "timeout"
+            return 0
+
+        with patch.object(self.native.rx_streamer, "recv", side_effect=stalled_recv):
+            start_resp = self._invoke(
+                sid,
+                rx_handle,
+                "issue_stream_cmd",
+                {"__args__": [{"__uhd_type__": "StreamCMD", "mode": "start_cont", "stream_now": True}]},
+            )
+            self.assertEqual(start_resp.error.code, "")
+            self.assertIsNotNone(rx_entry.rx_worker)
+            self.assertTrue(rx_entry.rx_worker.is_alive())
+            self.assertFalse(hasattr(self.native.rx_streamer.commands[-1], "mode"))
+
+            self._call(
+                "SampleFrame",
+                grpc_pb2.SampleFrame(
+                    session_id=sid, handle=rx_handle, generation=rx_gen,
+                    operation_id="host-r5-root-stop", sequence=2,
+                    direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                    kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+                ),
+                grpc_pb2.SampleFrame,
+            )
+
+            def run_rx():
+                self._call(
+                    "SampleFrame",
+                    grpc_pb2.SampleFrame(
+                        session_id=sid, handle=rx_handle, generation=rx_gen,
+                        operation_id="host-r5-root-stop", sequence=3,
+                        direction=grpc_pb2.SAMPLE_DIRECTION_RX,
+                        kind=grpc_pb2.SAMPLE_FRAME_REQUEST,
+                        dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                        timeout_sec=30.0, metadata_json="{}",
+                    ),
+                    grpc_pb2.SampleFrame,
+                )
+
+            t = threading.Thread(target=run_rx)
+            t.start()
+            wait_deadline = time.monotonic() + 2.0
+            while session.activity.idle() and time.monotonic() < wait_deadline:
+                time.sleep(0.005)
+            self.assertFalse(session.activity.idle())
+
+            self.native.rx_freqs[0] = 2.45e9
+            self.native.rx_lo_freqs[0] = 2.45e9
+            t0 = time.monotonic()
+            stop_resp = self._invoke(
+                sid,
+                root,
+                "issue_stream_cmd",
+                {"rate": {"__uhd_type__": "StreamCMD", "mode": "stop_cont", "stream_now": True}, "chan": 0},
+            )
+            elapsed = time.monotonic() - t0
+            t.join(timeout=2.0)
+            self.assertEqual(stop_resp.error.code, "")
+            self.assertLess(elapsed, 1.0)
+            self.assertFalse(t.is_alive())
+            self.assertFalse(hasattr(self.native.root_stream_cmds[-1][0], "mode"))
+
+    def test_host_v2_fresh_session_allows_rate_and_mcr_before_tx_then_enforces_after_close(self):
+        """Fresh host v2 session with OOB default LO and wide rate can configure TX, then enforces rate/MCR once TX starts."""
+        mcr_calls = []
+        self.native.set_master_clock_rate = lambda rate, mboard=0: mcr_calls.append((rate, mboard))
+        self.native.tx_freqs = {0: 0.0, 1: 0.0}
+        self.native.tx_lo_freqs = {0: 0.0, 1: 0.0}
+        self.native.tx_rates = {0: 200e6, 1: 200e6}
+
+        opened = self._open()
+        self.assertEqual(opened.error.code, "")
+        sid, root = opened.session_id, opened.device_handle
+
+        # Tuning first fails at 200 MS/s; premature get_tx_stream fails without locking out rate/MCR.
+        self.assertEqual(
+            self._invoke(sid, root, "set_tx_freq", {"tune_request": 915e6, "chan": 0}).error.code,
+            "RemoteRFPolicyError",
+        )
+        self.assertEqual(
+            self._invoke(
+                sid,
+                root,
+                "get_tx_stream",
+                {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+            ).error.code,
+            "RemoteRFPolicyError",
+        )
+
+        # Fresh session before TX: set_master_clock_rate and set_tx_rate succeed, then set_tx_freq and streaming work.
+        self.assertEqual(self._invoke(sid, root, "set_master_clock_rate", {"rate": 32e6}).error.code, "")
+        self.assertEqual(mcr_calls, [(32e6, 0)])
+        self.assertEqual(self._invoke(sid, root, "set_tx_rate", {"rate": 1e6, "chan": (1 << 64) - 1}).error.code, "")
+        self.assertEqual(self.native.tx_rates, {0: 1e6, 1: 1e6})
+        self.assertEqual(self._invoke(sid, root, "set_tx_freq", {"tune_request": 915e6, "chan": 0}).error.code, "")
+        self.native.tx_freqs[1] = 915e6
+        self.native.tx_lo_freqs = {0: 915e6, 1: 915e6}
+
+        tx_resp = self._invoke(
+            sid,
+            root,
+            "get_tx_stream",
+            {"__args__": [{"__uhd_type__": "StreamArgs", "cpu_format": "fc32", "otw_format": "sc16", "channels": [0]}]},
+        )
+        self.assertEqual(tx_resp.error.code, "")
+        tx_info = decode_value(tx_resp.result)
+        tx_handle, tx_gen = tx_info["__remoterf_handle__"], int(tx_info["generation"])
+        self._call(
+            "SampleFrame",
+            grpc_pb2.SampleFrame(
+                session_id=sid, handle=tx_handle, generation=tx_gen,
+                operation_id="host-fresh-tx", sequence=0,
+                direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                kind=grpc_pb2.SAMPLE_FRAME_OPEN, credits=1,
+            ),
+            grpc_pb2.SampleFrame,
+        )
+        sent = self._call(
+            "SampleFrame",
+            grpc_pb2.SampleFrame(
+                session_id=sid, handle=tx_handle, generation=tx_gen,
+                operation_id="host-fresh-tx", sequence=1,
+                direction=grpc_pb2.SAMPLE_DIRECTION_TX,
+                kind=grpc_pb2.SAMPLE_FRAME_DATA,
+                dtype="<c8", shape=[4], channels=[0], sample_count=4,
+                payload=np.zeros(4, dtype="<c8").tobytes(),
+                timeout_sec=0.1, metadata_json="{}",
+            ),
+            grpc_pb2.SampleFrame,
+        )
+        self.assertEqual(sent.kind, grpc_pb2.SAMPLE_FRAME_RESULT)
+        self.assertEqual(self.native.tx_streamer.sent, [4])
+
+        # After closing TX handle, out-of-band set_tx_rate and set_master_clock_rate are refused.
+        self.assertTrue(session_manager.close_handle(sid, tx_handle))
+        self.assertEqual(
+            self._invoke(sid, root, "set_tx_rate", {"rate": 40e6, "chan": 0}).error.code,
+            "RemoteRFPolicyError",
+        )
+        self.assertEqual(
+            self._invoke(sid, root, "set_master_clock_rate", {"rate": 192e6}).error.code,
+            "RemoteRFPolicyError",
+        )
+        self.assertEqual(len(mcr_calls), 1)
+
+        # Closing session and opening a fresh session restores pre-TX rate/MCR setup.
+        close_resp = self._call(
+            "CloseSession",
+            grpc_pb2.CloseSessionRequest(session_id=sid),
+            grpc_pb2.CloseResponse,
+        )
+        self.assertEqual(close_resp.error.code, "")
+        deadline = time.monotonic() + 2.0
+        while session_manager.cleanup_pending(7) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.native.closed = False
+        self.native.tx_freqs = {0: 0.0, 1: 0.0}
+        self.native.tx_lo_freqs = {0: 0.0, 1: 0.0}
+        self.native.tx_rates = {0: 200e6, 1: 200e6}
+        opened2 = self._open()
+        self.assertEqual(opened2.error.code, "")
+        sid2, root2 = opened2.session_id, opened2.device_handle
+        self.assertEqual(self._invoke(sid2, root2, "set_master_clock_rate", {"rate": 32e6}).error.code, "")
+        self.assertEqual(self._invoke(sid2, root2, "set_tx_rate", {"rate": 1e6, "chan": 0}).error.code, "")
+        self.assertEqual(len(mcr_calls), 2)
 
 
 if __name__ == "__main__":

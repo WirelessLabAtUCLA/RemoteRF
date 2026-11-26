@@ -59,7 +59,36 @@ _LOCKOUT_METHODS = frozenset(
     | _DDS_VECTORS | _DDS_CALLS | _STOP_METHODS
 )
 _BROKEN_MESSAGE = "This device is locked until it can be reset to a safe state; try again shortly."
+_AD9363_BOUNDS = (325e6, 3.8e9)
+_AD9364_BOUNDS = (70e6, 6e9)
+_AD9361_TX_GAIN_STEP_DB = 0.25
 _log = logging.getLogger(__name__)
+
+
+def _snap_tx_gain_cap_db(cap: float) -> float:
+    """Snap a TX gain cap down onto the AD9361 0.25 dB attenuation grid."""
+    return math.floor(cap / _AD9361_TX_GAIN_STEP_DB) * _AD9361_TX_GAIN_STEP_DB
+
+
+def _quantize_tx_gain_db(gain: float) -> float:
+    """Worst-case AD9361 TX hardware gain after 0.25 dB attenuation truncation."""
+    return math.ceil(gain / _AD9361_TX_GAIN_STEP_DB) * _AD9361_TX_GAIN_STEP_DB
+
+
+def _pluto_default_park_freq(side_limits) -> float | None:
+    if side_limits.allow is not None:
+        ad9363_lo, ad9363_hi = _AD9363_BOUNDS
+        for lo, hi in side_limits.effective_allow():
+            clipped_lo = max(lo, ad9363_lo)
+            clipped_hi = min(hi, ad9363_hi)
+            if clipped_lo <= clipped_hi:
+                mid = (clipped_lo + clipped_hi) / 2.0
+                if side_limits.allows_freq(mid):
+                    return mid
+    park = side_limits.default_park_freq(fallback=915e6, bounds=_AD9363_BOUNDS)
+    if park is not None:
+        return park
+    return side_limits.default_park_freq(fallback=915e6, bounds=_AD9364_BOUNDS)
 
 
 def _config_number(key, value, low, high):
@@ -118,7 +147,7 @@ def parse_lockouts(init) -> dict | None:
         elif key == "max_sample_rate":
             cfg[key] = _config_number(key, value, 521e3, 61.44e6)
         elif key == "tx_max_gain_db":
-            cfg[key] = _config_number(key, value, -89.75, 0)
+            cfg[key] = _snap_tx_gain_cap_db(_config_number(key, value, -89.75, 0))
         elif key == "tx_max_dds_scale":
             cfg[key] = _config_number(key, value, 0, 1)
         elif key == "tx_max_buffer_samples":
@@ -167,7 +196,7 @@ def parse_lockouts(init) -> dict | None:
     tx_limits = limits.tx if limits is not None else None
     if "park_tx_lo" not in cfg:
         if tx_limits is not None and tx_limits.is_active:
-            park = tx_limits.default_park_freq(fallback=915e6, bounds=(70e6, 6e9))
+            park = _pluto_default_park_freq(tx_limits)
             if park is None:
                 if cfg["tx_enabled"]:
                     raise ValueError("no allowed TX range remains outside tx_deny for park_tx_lo")
@@ -283,11 +312,27 @@ class PlutoSchema(DeviceSchema):
     client_class = "Pluto"
     driver_version = "0.0.5"
     _fir_rate = None  # the rate whose pyadi FIR this schema last loaded
+    _custom_filter_loaded = False
+    _initial_rx_channels = None
+    _initial_tx_channels = None
     lockout_bypass: bool = False
     _lockouts = None
     _broken = False
     _tx_flag = False
     _rf_loopback = False
+
+    def bind(self, device) -> None:
+        super().bind(device)
+        self._custom_filter_loaded = False
+        self._initial_rx_channels = None
+        self._initial_tx_channels = None
+        if device is not None and not isinstance(device, PoePluto):
+            rx_channels = getattr(device, "rx_enabled_channels", None)
+            if rx_channels is not None:
+                self._initial_rx_channels = list(rx_channels)
+            tx_channels = getattr(device, "tx_enabled_channels", None)
+            if tx_channels is not None:
+                self._initial_tx_channels = list(tx_channels)
 
     def _lockout_lock(self):
         # Device managers also hold io_lock across the entire dispatch/hook.
@@ -355,12 +400,25 @@ class PlutoSchema(DeviceSchema):
             if (park or not cfg["tx_enabled"]
                     or (tx_limits is not None and not tx_limits.allows_freq(lo))):
                 radio.tx_lo = int(round(cfg["park_tx_lo"]))
-            cap = cfg.get("tx_max_gain_db", 0) if cfg["tx_enabled"] else -89.75
+            rx_limits = self._freq_limits_for("rx")
+            if rx_limits is not None:
+                rx_park = _pluto_default_park_freq(rx_limits)
+                if rx_park is not None:
+                    rx_lo = float(radio.rx_lo)
+                    if park or not rx_limits.allows_freq(rx_lo):
+                        try:
+                            radio.rx_lo = int(round(rx_park))
+                        except OSError:
+                            _log.warning(
+                                "Pluto RX LO park to %s MHz failed; leaving rx_lo unparked",
+                                _mhz(rx_park),
+                            )
+            cap = _snap_tx_gain_cap_db(cfg.get("tx_max_gain_db", 0)) if cfg["tx_enabled"] else -89.75
             for name in ("tx_hardwaregain_chan0", "tx_hardwaregain_chan1"):
                 if name == "tx_hardwaregain_chan1" and not hasattr(radio, name):
                     continue
                 gain = float(getattr(radio, name))
-                if park or not -89.75 <= gain <= cap:
+                if park or not (math.isfinite(gain) and -89.75 <= gain and _quantize_tx_gain_db(gain) <= cap):
                     setattr(radio, name, -89.75)
             if "tx_allowed_channels" in cfg:
                 allowed = cfg["tx_allowed_channels"]
@@ -435,31 +493,35 @@ class PlutoSchema(DeviceSchema):
 
     def _lockout_gain(self, gain, bypass):
         cfg = self._lockouts
-        cap = cfg.get("tx_max_gain_db", 0) if cfg["tx_enabled"] else -89.75
-        if not -89.75 <= gain <= cap:
+        cap = _snap_tx_gain_cap_db(cfg.get("tx_max_gain_db", 0)) if cfg["tx_enabled"] else -89.75
+        if not (math.isfinite(gain) and -89.75 <= gain and _quantize_tx_gain_db(gain) <= cap):
             self._lockout_refuse(f"TX gain {gain:g} dB is above this device's limit of {cap:g} dB.", bypass)
 
-    def _lockout_band(self, bypass, lo=None):
+    def _lockout_band(self, bypass, lo=None, side="tx"):
         cfg = self._lockouts
-        tx_limits = self._freq_limits_for("tx")
-        if tx_limits is None and "max_sample_rate" not in cfg:
+        side_limits = self._freq_limits_for(side)
+        if side_limits is None and (side != "tx" or "max_sample_rate" not in cfg):
             return
         radio = self._lockout_handle()
-        lo = float(radio.tx_lo) if lo is None else lo
+        lo = float(getattr(radio, f"{side}_lo")) if lo is None else lo
         # sample_rate reads only RX; the TX FPGA interpolation rate can differ.
-        rates = [float(radio._get_iio_attr("voltage0", "sampling_frequency", output)) for output in (False, True)]
+        outputs = (False, True) if side == "tx" else (False,)
+        rates = [float(radio._get_iio_attr("voltage0", "sampling_frequency", output)) for output in outputs]
         if not all(math.isfinite(rate) and rate > 0 for rate in rates) or not math.isfinite(lo):
-            self._lockout_refuse("TX refused: live LO and sample rates must be finite numbers.", bypass)
+            self._lockout_refuse(f"{side.upper()} refused: live LO and sample rates must be finite numbers.", bypass)
             return
         rate = max(rates)
-        if "max_sample_rate" in cfg and rate > cfg["max_sample_rate"]:
+        if side == "tx" and "max_sample_rate" in cfg and rate > cfg["max_sample_rate"]:
             self._lockout_refuse(
                 f"Sample rate {_mhz(rate)} MS/s is above this device's limit of {_mhz(cfg['max_sample_rate'])} MS/s.", bypass)
-        if tx_limits is None:
+        if side_limits is None:
             return
         a, b = lo - rate / 2, lo + rate / 2
-        if not tx_limits.allows_band(a, b):
-            self._lockout_refuse(tx_limits.format_band_error("tx", a, b), bypass)
+        if not side_limits.allows_band(a, b):
+            self._lockout_refuse(
+                side_limits.format_band_error(side, a, b, detail=f"{side}_lo ± sample_rate/2"),
+                bypass,
+            )
 
     def _lockout_checks(self, name, args, bypass):
         cfg = self._lockouts
@@ -511,6 +573,8 @@ class PlutoSchema(DeviceSchema):
             for scale in scales:
                 if not 0 <= scale <= cfg["tx_max_dds_scale"]:
                     refuse(f"DDS scale {scale:g} is above this device's limit of {cfg['tx_max_dds_scale']:g}.")
+        if name == "call_rx":
+            self._lockout_band(bypass, side="rx")
         if name == "call_tx" and "tx_max_buffer_samples" in cfg:
             samples = np.asarray(value)
             n = samples.shape[-1]
@@ -614,6 +678,7 @@ class PlutoSchema(DeviceSchema):
     @idl_expose(kind="set")
     def set_filter(self, value):
         self._fir_rate = None
+        self._custom_filter_loaded = True
         self.device.filter = value
 
     @idl_expose(kind="get")
@@ -686,6 +751,7 @@ class PlutoSchema(DeviceSchema):
         self._fir_rate = None
         self.device.sample_rate = value
         self._fir_rate = value
+        self._custom_filter_loaded = False
 
     @idl_expose(kind="get")
     def get_rx_lo(self):
@@ -740,39 +806,119 @@ class PlutoSchema(DeviceSchema):
     def call_tx_destroy_buffer(self):
         self.device.tx_destroy_buffer()
 
+    def _stop_pluto_tx(self, radio, attempt):
+        attempt(radio.disable_dds)
+
+        def zero_dds_scales():
+            if hasattr(radio, "dds_scales"):
+                radio.dds_scales = [0] * len(radio.dds_scales)
+
+        attempt(zero_dds_scales)
+        attempt(radio.tx_destroy_buffer)
+
+        def clear_tx_cyclic():
+            if hasattr(radio, "tx_cyclic_buffer"):
+                radio.tx_cyclic_buffer = False
+
+        attempt(clear_tx_cyclic)
+        attempt(lambda: setattr(radio, "loopback", 0))
+
+    def _reset_fpga_filters(self, radio, attempt):
+        def reset_rx_dec8():
+            if hasattr(radio, "rx_dec8_filter_en"):
+                radio.rx_dec8_filter_en = False
+
+        def reset_tx_int8():
+            if hasattr(radio, "tx_int8_filter_en"):
+                radio.tx_int8_filter_en = False
+
+        attempt(reset_rx_dec8)
+        attempt(reset_tx_int8)
+
     def reset_for_next_holder(self):
         """A reservation ended: a PoE Pluto powers off. Otherwise stop its cyclic
         transmission, clear tx_cyclic_buffer, and drop its RX buffer so the next holder's rx_buffer_size takes effect."""
         self._fir_rate = None
+        pending = None
         if self._lockouts is not None:
             with self._lockout_lock():
-                self._lockout_hygiene(park=True)
-        if isinstance(self.device, PoePluto):
-            try:
-                if self._lockout_on():
-                    radio = self._lockout_handle()
-                    try:
-                        radio.disable_dds()
-                    finally:
-                        radio.loopback = 0
-            finally:
-                self.device.power_down()
-        elif self.device is not None and self._lockout_on():
-            radio = self._lockout_handle()
-            try:
-                radio.disable_dds()
-            finally:
                 try:
-                    radio.loopback = 0
-                finally:
-                    try:
-                        radio.tx_destroy_buffer()
-                    finally:
-                        try:
-                            if hasattr(radio, "tx_cyclic_buffer"):
-                                radio.tx_cyclic_buffer = False
-                        finally:
-                            radio.rx_destroy_buffer()
+                    self._lockout_hygiene(park=True)
+                except RemoteRFPolicyError as exc:
+                    pending = exc
+        if isinstance(self.device, PoePluto):
+            self._custom_filter_loaded = False
+            if pending is not None:
+                raise pending
+            errors = []
+
+            def attempt(step):
+                try:
+                    step()
+                except Exception as exc:
+                    # Drop traceback frames so no reference keeps adi.Pluto alive into power_down().
+                    stack = [exc]
+                    seen = set()
+                    while stack:
+                        item = stack.pop()
+                        if item is None or id(item) in seen:
+                            continue
+                        seen.add(id(item))
+                        item.with_traceback(None)
+                        stack.append(item.__cause__)
+                        stack.append(item.__context__)
+                    errors.append(exc)
+
+            if self._lockout_on():
+                self._stop_pluto_tx(self._lockout_handle(), attempt)
+            attempt(self.device.power_down)
+            if errors:
+                raise errors[0]
+        elif self.device is not None and self._lockout_on():
+            errors = []
+
+            def attempt(step):
+                try:
+                    step()
+                except Exception as exc:
+                    errors.append(exc)
+
+            radio = self._lockout_handle()
+            self._stop_pluto_tx(radio, attempt)
+            attempt(radio.rx_destroy_buffer)
+            self._reset_fpga_filters(radio, attempt)
+            if self._custom_filter_loaded:
+                def reset_fir():
+                    radio.sample_rate = int(radio.sample_rate)
+                    self._custom_filter_loaded = False
+
+                attempt(reset_fir)
+
+            def reset_output_type():
+                if hasattr(radio, "rx_output_type"):
+                    radio.rx_output_type = "raw"
+
+            def reset_annotated():
+                if hasattr(radio, "rx_annotated"):
+                    radio.rx_annotated = False
+
+            attempt(reset_output_type)
+            attempt(reset_annotated)
+            if self._initial_rx_channels is not None:
+                rx_channels = list(self._initial_rx_channels)
+                attempt(lambda: setattr(radio, "rx_enabled_channels", rx_channels))
+            if self._initial_tx_channels is not None:
+                tx_channels = list(self._initial_tx_channels)
+                if self._lockouts is not None and "tx_allowed_channels" in self._lockouts:
+                    allowed = self._lockouts["tx_allowed_channels"]
+                    tx_channels = [c for c in tx_channels if c in allowed] or list(allowed)
+                attempt(lambda: setattr(radio, "tx_enabled_channels", tx_channels))
+            if pending is not None:
+                raise pending
+            if errors:
+                raise errors[0]
+        elif pending is not None:
+            raise pending
 
     def prepare_for_holder(self):
         """A reservation started: a PoE Pluto boots now, not at the holder's first command."""
@@ -797,6 +943,7 @@ class PlutoSchema(DeviceSchema):
         """PoE Plutos: cut power; the next command powers it back up. No-op on other Plutos."""
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
+            self._custom_filter_loaded = False
             self.device.power_down()
 
     @idl_expose(kind="call")
@@ -804,6 +951,7 @@ class PlutoSchema(DeviceSchema):
         """PoE Plutos: power off, then on, and wait for boot. No-op on other Plutos."""
         self._fir_rate = None
         if isinstance(self.device, PoePluto):
+            self._custom_filter_loaded = False
             self.device.power_cycle()
 
     # endregion

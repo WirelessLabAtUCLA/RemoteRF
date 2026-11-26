@@ -183,7 +183,11 @@ def _connect_from_record(rec: Dict[str, Any]):
         return (None, ident, dtype)
 
     pluto = any(cls.__name__ == "PlutoSchema" for cls in schema_cls.__mro__)
-    freq_driver = any(cls.__name__ in ("HackRFSchema", "UsrpSchema") for cls in schema_cls.__mro__)
+    freq_driver = (
+        any(cls.__name__ in ("HackRFSchema", "UsrpSchema") for cls in schema_cls.__mro__)
+        and not any(cls.__name__ == "UsrpPhaserSchema" for cls in schema_cls.__mro__)
+        and bool(getattr(schema_cls, "supports_freq_limits", True))
+    )
     cfg = None
     try:
         from remoterf_device_core.drivers.adalm_pluto.lockout_keys import LOCKOUT_KEYS
@@ -699,9 +703,30 @@ def _invoke_hook(st: _DeviceState, kind: str) -> None:
 
 
 def _reset_locked(st: _DeviceState) -> None:
-    if st.reset_pending:
-        st.reset_pending = False
-        _invoke_hook(st, "reset")
+    if not st.reset_pending:
+        return
+    st.reset_pending = False
+    reset = getattr(st.schema, "reset_for_next_holder", None)
+    failed = True
+    try:
+        if callable(reset):
+            reset()
+        failed = False
+    except Exception as exc:
+        warn(
+            f"resetting {st.name or st.ident} for its next reservation failed: {exc}",
+            component="hostrf.device_manager",
+        )
+    finally:
+        after = getattr(st.schema, "lockout_after_hook", None)
+        if callable(after):
+            try:
+                after("reset", failed=failed)
+            except Exception as exc:
+                warn(
+                    f"lockout cleanup failed for {st.name or st.ident}: {exc}",
+                    component="hostrf.device_manager",
+                )
 
 
 def reset_before_rpc(gid: int, epoch: int, schema: object, tag: str | None = None, reset: bool = True) -> None:

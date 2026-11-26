@@ -209,11 +209,19 @@ class UsrpPhaserSchema(UsrpSchema):
     device_type = "usrp_phaser"
     client_class = "MultiUSRPPhaser"
     driver_version = "0.1.2"
+    supports_freq_limits = False
 
     def __init__(self):
         super().__init__()
         self.phaser = None
         self._phaser_uri = "ip:localhost"
+
+    def _check_phaser_limits(self, action: str) -> None:
+        limits = self._freq_limits
+        if limits is not None and limits.is_active:
+            self._freq_refuse(
+                f"{action} is refused while frequency limits are active on usrp_phaser."
+            )
 
     # ------------------------------------------------------------------
     # Inventory / session lifecycle
@@ -340,6 +348,7 @@ class UsrpPhaserSchema(UsrpSchema):
     @idl_expose(kind="call")
     def call_phaser_init(self, uri=None):
         """Open/re-open the CN0566 controller."""
+        self._check_phaser_limits("phaser_init")
         if uri is not None:
             self._phaser_uri = str(uri)
             self.phaser = None
@@ -359,6 +368,7 @@ class UsrpPhaserSchema(UsrpSchema):
     @idl_expose(kind="call")
     def call_phaser_set_lo_freq(self, signal_freq, if_freq, offset=0.0):
         """Configure the CN0566 PLL frequency."""
+        self._check_phaser_limits("phaser_set_lo_freq")
         phaser = self._get_phaser()
 
         signal_freq = float(signal_freq)
@@ -506,6 +516,7 @@ class UsrpPhaserSchema(UsrpSchema):
     @idl_expose(kind="call")
     def call_phaser_set_tx_switch(self, value):
         """Set the CN0566 TX output switch directly."""
+        self._check_phaser_limits("phaser_set_tx_switch")
         value = int(value)
         if value not in (0, 1):
             raise ValueError("Phaser TX switch must be 0 or 1")
@@ -517,6 +528,7 @@ class UsrpPhaserSchema(UsrpSchema):
     @idl_expose(kind="call")
     def call_phaser_set_tx_path(self, enabled):
         """Route the CN0566 LO to the TX circuitry."""
+        self._check_phaser_limits("phaser_set_tx_path")
         enabled = bool(enabled)
         phaser = self._get_phaser()
         phaser._gpios.gpio_vctrl_1 = int(enabled)

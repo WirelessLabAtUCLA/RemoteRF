@@ -3,6 +3,7 @@
 import enum
 import importlib.util
 import sys
+import time
 import types
 
 import pytest
@@ -156,7 +157,7 @@ def test_bus_is_disconnected_when_a_call_raises(bt, sysfs):
     assert FakeBus.disconnects == 4
 
 
-@pytest.mark.parametrize("timeout, reported", [(100, 30.0), (0.2, 1.0), (5, 5.0)])
+@pytest.mark.parametrize("timeout, reported", [(100, 20.0), (0.2, 1.0), (5, 5.0)])
 def test_scan_summary_reports_the_clamped_duration(bt, timeout, reported):
     durations = []
 
@@ -170,6 +171,42 @@ def test_scan_summary_reports_the_clamped_duration(bt, timeout, reported):
     assert summary["scan_duration_sec"] == reported
     assert durations == [reported]
     assert summary["total_devices"] == 1
+
+
+def test_scan_caps_total_wait_at_20s_including_power_on_dwell(bt, sysfs, monkeypatch):
+    plug, _ = sysfs
+    plug("hci1", "0a12", "0001", "CSR8510 A10")
+    dev = bt.BluetoothSchema.make_device()
+    FakeBus.adapters["hci1"]["Powered"] = False
+
+    clock = [100.0]
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    class FakeScanner:
+        def __init__(self, **_):
+            pass
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(bt, "BleakScanner", FakeScanner)
+    monkeypatch.setattr(bt.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(bt, "time", types.SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+
+    schema = bt.BluetoothSchema()
+    schema.bind(dev)
+    assert bt.MAX_SCAN_SECONDS == 20.0
+    assert schema.call_scan(timeout=60.0) == []
+    assert sleeps == [0.5, 19.5]
+    assert sum(sleeps) <= 20.0
+    assert FakeBus.adapters["hci1"]["Powered"] is True
 
 
 def test_reset_for_next_holder_clears_the_cache_and_powers_on(bt, sysfs):

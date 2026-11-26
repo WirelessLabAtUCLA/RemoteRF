@@ -163,8 +163,10 @@ _SAMPLE_BRIDGE = SampleTunnelBridge()
 
 def close_all_bridge_sessions() -> int:
     """Release host hardware whenever the authenticated server tunnel ends."""
-    _SAMPLE_BRIDGE.close_all()
-    return session_manager.close_all()
+    try:
+        return session_manager.close_all()
+    finally:
+        _SAMPLE_BRIDGE.close_all()
 
 
 def run_bridge(*, operation: str, args: dict, gid: int) -> dict:
@@ -208,8 +210,10 @@ def _dispatch(operation: str, wire: bytes, gid: int):
     elif operation == "CloseSession":
         request = grpc_pb2.CloseSessionRequest.FromString(wire)
         _assert_session_gid(request.session_id, gid)
-        _SAMPLE_BRIDGE.close_session(request.session_id)
-        response = _CONTROL.CloseSession(request, None)
+        try:
+            response = _CONTROL.CloseSession(request, None)
+        finally:
+            _SAMPLE_BRIDGE.close_session(request.session_id)
     elif operation == "SampleFrame":
         request = grpc_pb2.SampleFrame.FromString(wire)
         response = _SAMPLE_BRIDGE.process(request, gid=gid)

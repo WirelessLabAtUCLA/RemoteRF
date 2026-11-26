@@ -54,6 +54,18 @@ VALID_FILTER_BANDWIDTHS = (
     28_000_000,
 )
 
+# Settings every reservation starts from.
+_DEFAULT_TXVGA_GAIN = 0
+_DEFAULT_LNA_GAIN = 16
+_DEFAULT_VGA_GAIN = 16
+_DEFAULT_CENTER_FREQ_HZ = 100_000_000
+_DEFAULT_SAMPLE_RATE = 20_000_000
+_DEFAULT_FILTER_BANDWIDTH_HZ = 15_000_000
+_DEFAULT_SAMPLE_COUNT_LIMIT = 0
+_MAX_CENTER_FREQ_HZ = 7_250_000_000
+_MAX_SAMPLE_RATE_HZ = 20_000_000
+_MAX_FILTER_BANDWIDTH_HZ = VALID_FILTER_BANDWIDTHS[-1]
+
 
 def _require_hackrf():
     try:
@@ -269,6 +281,27 @@ def _finite_hz(value: Any, label: str) -> float:
     return number
 
 
+def _bounded_hz(value: Any, label: str, *, max_hz: float) -> float:
+    number = _finite_hz(value, label)
+    if number <= 0 or number > max_hz or int(number) <= 0:
+        raise RemoteRFPolicyError(
+            f"{label} must be > 0 and <= {format_mhz(max_hz)} MHz."
+        )
+    return number
+
+
+def _device_is_closed(device: Any) -> bool:
+    """Return True once pyhackrf2 has closed the native handle.
+
+    pyhackrf2 1.0.3 sets ``device_opened = False`` in ``close()`` while leaving
+    ``_device_opened = True``; check both spellings.
+    """
+    return (
+        getattr(device, "device_opened", True) is False
+        or getattr(device, "_device_opened", True) is False
+    )
+
+
 @idl_register("hackrf")
 class HackRFSchema(DeviceSchema):
     """PyHackRF2-compatible tuning, gain, power, and bounded IQ controls."""
@@ -278,6 +311,7 @@ class HackRFSchema(DeviceSchema):
     driver_version = "0.1.2"
     lockout_bypass: bool = False
     _freq_limits: FreqLimits | None = None
+    _in_reset: bool = False
 
     def configure_lockouts(self, cfg: FreqLimits | None) -> None:
         self._freq_limits = cfg
@@ -320,14 +354,15 @@ class HackRFSchema(DeviceSchema):
         )
         if not (
             math.isfinite(center_freq)
+            and 0 < center_freq <= _MAX_CENTER_FREQ_HZ
             and math.isfinite(sample_rate)
-            and sample_rate > 0
+            and 0 < sample_rate <= _MAX_SAMPLE_RATE_HZ
             and math.isfinite(bw)
-            and bw > 0
+            and 0 < bw <= _MAX_FILTER_BANDWIDTH_HZ
         ):
             self._freq_refuse(
                 "TX refused: center frequency, sample rate, and filter bandwidth "
-                "must be finite positive numbers."
+                "must be finite positive numbers within HackRF hardware limits."
             )
             return
         span = max(sample_rate, bw)
@@ -346,8 +381,11 @@ class HackRFSchema(DeviceSchema):
         limits = self._freq_limits
         if limits is None or not limits.rx.is_active:
             return
-        if not math.isfinite(center_freq):
-            self._freq_refuse("RX refused: center frequency must be a finite number.")
+        if not (math.isfinite(center_freq) and 0 < center_freq <= _MAX_CENTER_FREQ_HZ):
+            self._freq_refuse(
+                "RX refused: center frequency must be a finite positive number "
+                "within HackRF hardware limits."
+            )
             return
         if not limits.rx.allows_freq(center_freq):
             self._freq_refuse(
@@ -361,6 +399,18 @@ class HackRFSchema(DeviceSchema):
             device_index=kwargs.get("device_index"),
         )
 
+    def dispatch(self, method_name: str, args: dict):
+        if (
+            method_name in self._exposed
+            and method_name != "call_close"
+            and self.device is not None
+            and _device_is_closed(self.device)
+        ):
+            raise RuntimeError(
+                "HackRF closed after a device error; reload devices to reopen it"
+            )
+        return super().dispatch(method_name, args)
+
     @idl_expose(kind="get")
     def get_center_freq(self):
         """Center frequency in Hz."""
@@ -368,8 +418,10 @@ class HackRFSchema(DeviceSchema):
 
     @idl_expose(kind="set")
     def set_center_freq(self, value):
-        if self._freq_limits is not None and self._freq_limits.is_active:
-            target = int(_finite_hz(value, "Center frequency"))
+        if not self._in_reset and self._freq_limits is not None and self._freq_limits.is_active:
+            target = int(
+                _bounded_hz(value, "Center frequency", max_hz=_MAX_CENTER_FREQ_HZ)
+            )
             if getattr(self.device, "_remoterf_tx_active", False):
                 self._check_tx_band(float(target), self._device_float("sample_rate"))
             else:
@@ -398,13 +450,10 @@ class HackRFSchema(DeviceSchema):
 
     @idl_expose(kind="set")
     def set_sample_rate(self, value):
-        if (
-            self._freq_limits is not None
-            and self._freq_limits.tx.is_active
-            and getattr(self.device, "_remoterf_tx_active", False)
-        ):
-            rate = int(_finite_hz(value, "Sample rate"))
-            self._check_tx_band(self._device_float("center_freq"), float(rate))
+        if not self._in_reset and self._freq_limits is not None and self._freq_limits.is_active:
+            rate = int(_bounded_hz(value, "Sample rate", max_hz=_MAX_SAMPLE_RATE_HZ))
+            if self._freq_limits.tx.is_active and getattr(self.device, "_remoterf_tx_active", False):
+                self._check_tx_band(self._device_float("center_freq"), float(rate))
             self.device.sample_rate = rate
             return
         self.device.sample_rate = int(float(value))
@@ -416,17 +465,16 @@ class HackRFSchema(DeviceSchema):
 
     @idl_expose(kind="set")
     def set_filter_bandwidth(self, value):
-        if (
-            self._freq_limits is not None
-            and self._freq_limits.tx.is_active
-            and getattr(self.device, "_remoterf_tx_active", False)
-        ):
-            bw = _nearest_filter_bandwidth(_finite_hz(value, "Filter bandwidth"))
-            self._check_tx_band(
-                self._device_float("center_freq"),
-                self._device_float("sample_rate"),
-                float(bw),
+        if not self._in_reset and self._freq_limits is not None and self._freq_limits.is_active:
+            bw = _nearest_filter_bandwidth(
+                _bounded_hz(value, "Filter bandwidth", max_hz=_MAX_FILTER_BANDWIDTH_HZ)
             )
+            if self._freq_limits.tx.is_active and getattr(self.device, "_remoterf_tx_active", False):
+                self._check_tx_band(
+                    self._device_float("center_freq"),
+                    self._device_float("sample_rate"),
+                    float(bw),
+                )
             self.device.filter_bandwidth = bw
             return
         self.device.filter_bandwidth = _nearest_filter_bandwidth(value)
@@ -556,10 +604,8 @@ class HackRFSchema(DeviceSchema):
         """Stop an active HackRF transmission."""
         if not getattr(self.device, "_remoterf_tx_active", False):
             return
-        try:
-            self.device.stop_tx()
-        finally:
-            self.device._remoterf_tx_active = False
+        self.device.stop_tx()
+        self.device._remoterf_tx_active = False
 
     @idl_expose(kind="call")
     def call_clear_buffer(self):
@@ -573,26 +619,79 @@ class HackRFSchema(DeviceSchema):
     @idl_expose(kind="call")
     def call_close(self):
         """Safely end this remote TX use without closing the server-owned radio."""
-        self.call_stop_tx()
-        self.call_clear_buffer()
+        # Empty the retained payload before stopping so _tx_callback immediately
+        # returns 1 even if stop_tx() fails.
+        self.device._remoterf_tx_payload = b""
+        try:
+            if not _device_is_closed(self.device):
+                self.call_stop_tx()
+        finally:
+            self.device.buffer = bytearray()
+            self.device._remoterf_tx_payload = b""
         # Calling pyhackrf2.close() here can tear down the shared production
         # device and has been observed to crash its native libhackrf path.
         return None
+
+    def _reset_center_freq_hz(self) -> int:
+        limits = self._freq_limits
+        if limits is None or not limits.is_active:
+            return _DEFAULT_CENTER_FREQ_HZ
+        if limits.tx.is_active:
+            park = limits.tx.default_park_freq(
+                fallback=_DEFAULT_CENTER_FREQ_HZ,
+                bounds=(1e6, 6e9),
+            )
+            if park is not None:
+                return int(round(park))
+        if limits.rx.is_active:
+            park = limits.rx.default_park_freq(
+                fallback=_DEFAULT_CENTER_FREQ_HZ,
+                bounds=(1e6, 6e9),
+            )
+            if park is not None:
+                return int(round(park))
+        return _DEFAULT_CENTER_FREQ_HZ
 
     def reset_for_next_holder(self):
         """A reservation ended: stop its transmission, drop its IQ bytes, and
         turn off the antenna bias tee and front-end amplifier."""
         if self.device is None:
             return
-        # Each step runs even if an earlier one fails: DC on the antenna port or
-        # a stray amp must not carry over to the next holder.
+        # Each step runs even if an earlier one fails: DC on the antenna port,
+        # a stray amp, or high TX gain must not carry over to the next holder.
+        # Stop issuing native calls once pyhackrf2 has closed the handle.
+        errors = []
         try:
             self.call_close()
+        except Exception as exc:
+            errors.append(exc)
+        reset_freq = self._reset_center_freq_hz()
+        self._in_reset = True
+        try:
+            for step in (
+                lambda: self.set_bias_tee_on(False),
+                lambda: self.set_amplifier_on(False),
+                lambda: self.set_txvga_gain(_DEFAULT_TXVGA_GAIN),
+                lambda: self.set_lna_gain(_DEFAULT_LNA_GAIN),
+                lambda: self.set_vga_gain(_DEFAULT_VGA_GAIN),
+                lambda: self.set_center_freq(reset_freq),
+                lambda: self.set_sample_rate(_DEFAULT_SAMPLE_RATE),
+                lambda: self.set_filter_bandwidth(_DEFAULT_FILTER_BANDWIDTH_HZ),
+                lambda: self.set_sample_count_limit(_DEFAULT_SAMPLE_COUNT_LIMIT),
+            ):
+                if _device_is_closed(self.device):
+                    break
+                try:
+                    step()
+                except Exception as exc:
+                    errors.append(exc)
         finally:
-            try:
-                self.set_bias_tee_on(False)
-            finally:
-                self.set_amplifier_on(False)
+            self._in_reset = False
+        if _device_is_closed(self.device):
+            # Report it so the reset counts as failed: the next holder would get a dead radio.
+            errors.append(RuntimeError("HackRF closed after a device error; reload devices to reopen it"))
+        if errors:
+            raise errors[0]
 
     @idl_expose(kind="call")
     def call_enumerate(self):

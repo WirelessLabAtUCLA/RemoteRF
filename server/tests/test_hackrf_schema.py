@@ -95,6 +95,130 @@ class FakeHackRF:
         self.tx_stop_count += 1
 
 
+class PyHackRF2LikeFake(FakeHackRF):
+    """Mirrors pyhackrf2 1.0.3: _check_error() calls close(), which frees
+    the handle and sets misspelled device_opened = False while leaving
+    _device_opened = True."""
+
+    def __init__(self):
+        super().__init__()
+        self._device_opened = True
+        self.closed_handle = False
+        self.close_calls = 0
+        self.native_calls = []
+        self.fail_on = None
+
+    def close(self):
+        if not self._device_opened:
+            return
+        self.close_calls += 1
+        self.closed_handle = True
+        self.device_opened = False
+
+    def _libhackrf(self, op):
+        self.native_calls.append(op)
+        assert not self.closed_handle, f"libhackrf call {op} on freed handle"
+        if self.fail_on == op:
+            self.close()
+            raise RuntimeError(f"libhackrf error in {op}")
+
+    def read_samples(self, count):
+        self._libhackrf("read_samples")
+        return super().read_samples(count)
+
+    def get_serial_no(self):
+        self._libhackrf("get_serial_no")
+        return super().get_serial_no()
+
+    def start_tx(self):
+        self._libhackrf("start_tx")
+        super().start_tx()
+
+    def stop_tx(self):
+        self._libhackrf("stop_tx")
+        super().stop_tx()
+
+    @property
+    def bias_tee_on(self):
+        return self._bias_tee_on
+
+    @bias_tee_on.setter
+    def bias_tee_on(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("bias_tee_on")
+        self._bias_tee_on = value
+
+    @property
+    def amplifier_on(self):
+        return self._amplifier_on
+
+    @amplifier_on.setter
+    def amplifier_on(self, _value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("amplifier_on")
+
+    @property
+    def txvga_gain(self):
+        return self._txvga_gain
+
+    @txvga_gain.setter
+    def txvga_gain(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("txvga_gain")
+        self._txvga_gain = value
+
+    @property
+    def lna_gain(self):
+        raise RecursionError("mirrors the broken pyhackrf2 1.0.3 getter")
+
+    @lna_gain.setter
+    def lna_gain(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("lna_gain")
+        value = min(max(int(value), 0), 40)
+        self._lna_gain = value - (value % 8)
+
+    @property
+    def vga_gain(self):
+        return self._vga_gain
+
+    @vga_gain.setter
+    def vga_gain(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("vga_gain")
+        self._vga_gain = value
+
+    @property
+    def center_freq(self):
+        return self._center_freq
+
+    @center_freq.setter
+    def center_freq(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("center_freq")
+        self._center_freq = value
+
+    @property
+    def sample_rate(self):
+        return self._sample_rate
+
+    @sample_rate.setter
+    def sample_rate(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("sample_rate")
+        self._sample_rate = value
+
+    @property
+    def filter_bandwidth(self):
+        return self._filter_bandwidth
+
+    @filter_bandwidth.setter
+    def filter_bandwidth(self, value):
+        if "native_calls" in self.__dict__:
+            self._libhackrf("filter_bandwidth")
+        self._filter_bandwidth = value
+
+
 def _bound_schema():
     native = FakeHackRF()
     schema = HackRFSchema()
@@ -287,6 +411,226 @@ class HackRFSchemaTests(unittest.TestCase):
                 schema.reset_for_next_holder()
 
         self.assertFalse(native._amplifier_on)
+
+    def test_stop_tx_failure_empties_payload_keeps_tx_active_and_runs_remaining_reset(self):
+        schema, native = _bound_schema()
+        schema.dispatch("set_bias_tee_on", {"value": True})
+        schema.dispatch("set_amplifier_on", {"value": True})
+        schema.dispatch("set_txvga_gain", {"value": 47})
+        schema.dispatch("set_sample_count_limit", {"value": 65_536})
+        schema.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema.dispatch("call_start_tx", {})
+
+        with patch.object(native, "stop_tx", side_effect=OSError("usb stop_tx failed")):
+            with self.assertRaisesRegex(OSError, "usb stop_tx failed"):
+                schema.reset_for_next_holder()
+
+        self.assertEqual(native._remoterf_tx_payload, b"")
+        self.assertEqual(native.buffer, bytearray())
+        transfer_buffer = (ctypes.c_byte * 8)()
+        transfer = _FakeTransfer(
+            ctypes.cast(transfer_buffer, ctypes.POINTER(ctypes.c_byte)),
+            8,
+            0,
+        )
+        self.assertEqual(native._cfunc_tx_callback(ctypes.byref(transfer)), 1)
+        self.assertEqual(transfer.valid_length, 0)
+
+        self.assertTrue(native._remoterf_tx_active)
+        self.assertFalse(native.bias_tee_on)
+        self.assertFalse(native._amplifier_on)
+        self.assertEqual(native.txvga_gain, 0)
+        self.assertEqual(native.sample_count_limit, 0)
+        with self.assertRaisesRegex(RuntimeError, "stop HackRF TX before reading"):
+            schema.dispatch("call_read_samples", {"num_samples": 16})
+
+        schema.dispatch("call_stop_tx", {})
+        self.assertFalse(native._remoterf_tx_active)
+        self.assertEqual(native.tx_stop_count, 1)
+
+    def test_reset_for_next_holder_restores_gains_tuning_filter_and_sample_limit_with_tx_gain_first(self):
+        schema, _native = _bound_schema()
+        schema.dispatch("set_txvga_gain", {"value": 47})
+        schema.dispatch("set_lna_gain", {"value": 40})
+        schema.dispatch("set_vga_gain", {"value": 62})
+        schema.dispatch("set_center_freq", {"value": 2_450_000_000})
+        schema.dispatch("set_sample_rate", {"value": 2_000_000})
+        schema.dispatch("set_filter_bandwidth", {"value": 1_750_000})
+        schema.dispatch("set_sample_count_limit", {"value": 65_536})
+
+        order = []
+        orig_txvga = schema.set_txvga_gain
+        orig_lna = schema.set_lna_gain
+        orig_freq = schema.set_center_freq
+        orig_rate = schema.set_sample_rate
+        orig_bw = schema.set_filter_bandwidth
+
+        def record(name, fn):
+            def wrapped(value):
+                order.append(name)
+                return fn(value)
+            return wrapped
+
+        with (
+            patch.object(schema, "set_txvga_gain", side_effect=record("txvga", orig_txvga)),
+            patch.object(schema, "set_lna_gain", side_effect=record("lna", orig_lna)),
+            patch.object(schema, "set_center_freq", side_effect=record("freq", orig_freq)),
+            patch.object(schema, "set_sample_rate", side_effect=record("rate", orig_rate)),
+            patch.object(schema, "set_filter_bandwidth", side_effect=record("bw", orig_bw)),
+        ):
+            schema.reset_for_next_holder()
+
+        self.assertEqual(order[0], "txvga")
+        self.assertLess(order.index("rate"), order.index("bw"))
+        self.assertEqual(schema.dispatch("get_txvga_gain", {}), 0)
+        self.assertEqual(schema.dispatch("get_lna_gain", {}), 16)
+        self.assertEqual(schema.dispatch("get_vga_gain", {}), 16)
+        self.assertEqual(schema.dispatch("get_center_freq", {}), 100_000_000)
+        self.assertEqual(schema.dispatch("get_sample_rate", {}), 20_000_000)
+        self.assertEqual(schema.dispatch("get_filter_bandwidth", {}), 15_000_000)
+        self.assertEqual(schema.dispatch("get_sample_count_limit", {}), 0)
+
+    def test_reset_for_next_holder_stops_calling_libhackrf_once_pyhackrf2_closes_device(self):
+        # (a) Mid-reset error in bias_tee_on closes handle via device_opened=False.
+        native = PyHackRF2LikeFake()
+        schema = HackRFSchema()
+        schema.bind(native)
+        native.fail_on = "bias_tee_on"
+        with self.assertRaisesRegex(RuntimeError, "bias_tee_on"):
+            schema.reset_for_next_holder()
+        self.assertEqual(native.native_calls, ["bias_tee_on"])
+        self.assertEqual(native.close_calls, 1)
+        self.assertIs(native.device_opened, False)
+        self.assertIs(native._device_opened, True)
+
+        # (b) Mid-reset error in stop_tx closes handle; no further setters run.
+        native_tx = PyHackRF2LikeFake()
+        schema_tx = HackRFSchema()
+        schema_tx.bind(native_tx)
+        schema_tx.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema_tx.dispatch("call_start_tx", {})
+        native_tx.native_calls.clear()
+        native_tx.fail_on = "stop_tx"
+        with self.assertRaisesRegex(RuntimeError, "stop_tx"):
+            schema_tx.reset_for_next_holder()
+        self.assertEqual(native_tx.native_calls, ["stop_tx"])
+        self.assertEqual(native_tx.close_calls, 1)
+        self.assertEqual(native_tx.buffer, bytearray())
+        self.assertEqual(native_tx._remoterf_tx_payload, b"")
+
+        # (c) Earlier student RPC closed the handle before reset_for_next_holder().
+        native_pre = PyHackRF2LikeFake()
+        schema_pre = HackRFSchema()
+        schema_pre.bind(native_pre)
+        schema_pre.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema_pre.dispatch("call_start_tx", {})
+        native_pre.fail_on = "center_freq"
+        with self.assertRaisesRegex(RuntimeError, "center_freq"):
+            schema_pre.dispatch("set_center_freq", {"value": 9_999_999_999})
+        native_pre.native_calls.clear()
+        with self.assertRaisesRegex(RuntimeError, "HackRF closed after a device error"):
+            schema_pre.reset_for_next_holder()
+        self.assertEqual(native_pre.native_calls, [])
+        self.assertEqual(native_pre.buffer, bytearray())
+        self.assertEqual(native_pre._remoterf_tx_payload, b"")
+
+        # (d) Fixed pyhackrf2 setting _device_opened = False is also honored by call_close().
+        native_fixed = PyHackRF2LikeFake()
+        schema_fixed = HackRFSchema()
+        schema_fixed.bind(native_fixed)
+        schema_fixed.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema_fixed.dispatch("call_start_tx", {})
+        native_fixed.closed_handle = True
+        native_fixed._device_opened = False
+        native_fixed.native_calls.clear()
+        schema_fixed.call_close()
+        self.assertEqual(native_fixed.native_calls, [])
+        self.assertEqual(native_fixed.buffer, bytearray())
+        self.assertEqual(native_fixed._remoterf_tx_payload, b"")
+
+    def test_student_rpcs_refused_after_pyhackrf2_error_closes_device(self):
+        # (a) libhackrf error in a setter closes the handle (device_opened=False,
+        # _device_opened still True); subsequent student RPCs must never touch
+        # the freed pointer.
+        native = PyHackRF2LikeFake()
+        schema = HackRFSchema()
+        schema.bind(native)
+        schema.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        native.fail_on = "center_freq"
+        with self.assertRaisesRegex(RuntimeError, "center_freq"):
+            schema.dispatch("set_center_freq", {"value": 9_999_999_999})
+        self.assertIs(native.device_opened, False)
+        self.assertIs(native._device_opened, True)
+        native.native_calls.clear()
+
+        for method, args in (
+            ("set_center_freq", {"value": 100_000_000}),
+            ("set_sample_rate", {"value": 20_000_000}),
+            ("set_filter_bandwidth", {"value": 15_000_000}),
+            ("set_lna_gain", {"value": 16}),
+            ("set_vga_gain", {"value": 16}),
+            ("set_txvga_gain", {"value": 0}),
+            ("set_amplifier_on", {"value": False}),
+            ("set_bias_tee_on", {"value": False}),
+            ("set_sample_count_limit", {"value": 0}),
+            ("call_set_freq", {"value": 100_000_000}),
+            ("call_set_sample_rate", {"value": 20_000_000}),
+            ("call_read_samples", {"num_samples": 16}),
+            ("call_start_tx", {}),
+            ("call_get_serial_no", {}),
+            ("get_center_freq", {}),
+        ):
+            with self.subTest(method=method):
+                with self.assertRaisesRegex(RuntimeError, "HackRF closed"):
+                    schema.dispatch(method, args)
+        self.assertEqual(native.native_calls, [])
+
+        # Unknown methods still report KeyError rather than a closed-device error.
+        with self.assertRaises(KeyError):
+            schema.dispatch("not_a_method", {})
+
+        # (b) While TX is active, a closing error must also block student stop_tx,
+        # while call_close stays safe for finally-block cleanup without touching libhackrf.
+        native_tx = PyHackRF2LikeFake()
+        schema_tx = HackRFSchema()
+        schema_tx.bind(native_tx)
+        schema_tx.dispatch("call_load_tx_iq", {"samples": np.ones(4, dtype=np.complex64)})
+        schema_tx.dispatch("call_start_tx", {})
+        native_tx.fail_on = "center_freq"
+        with self.assertRaisesRegex(RuntimeError, "center_freq"):
+            schema_tx.dispatch("set_center_freq", {"value": 9_999_999_999})
+        native_tx.native_calls.clear()
+
+        with self.assertRaisesRegex(RuntimeError, "HackRF closed"):
+            schema_tx.dispatch("call_stop_tx", {})
+        self.assertEqual(native_tx.native_calls, [])
+        self.assertIsNone(schema_tx.dispatch("call_close", {}))
+        self.assertEqual(native_tx.native_calls, [])
+        self.assertEqual(native_tx.buffer, bytearray())
+        self.assertEqual(native_tx._remoterf_tx_payload, b"")
+
+        # (c) Error during read_samples closes the handle and blocks follow-up calls.
+        native_rx = PyHackRF2LikeFake()
+        schema_rx = HackRFSchema()
+        schema_rx.bind(native_rx)
+        native_rx.fail_on = "read_samples"
+        with self.assertRaisesRegex(RuntimeError, "read_samples"):
+            schema_rx.dispatch("call_read_samples", {"num_samples": 16})
+        native_rx.native_calls.clear()
+        with self.assertRaisesRegex(RuntimeError, "HackRF closed"):
+            schema_rx.dispatch("call_read_samples", {"num_samples": 16})
+        self.assertEqual(native_rx.native_calls, [])
+
+        # (d) Fixed pyhackrf2 setting _device_opened = False is also refused.
+        native_fixed = PyHackRF2LikeFake()
+        schema_fixed = HackRFSchema()
+        schema_fixed.bind(native_fixed)
+        native_fixed.closed_handle = True
+        native_fixed._device_opened = False
+        native_fixed.native_calls.clear()
+        with self.assertRaisesRegex(RuntimeError, "HackRF closed"):
+            schema_fixed.dispatch("call_read_samples", {"num_samples": 16})
+        self.assertEqual(native_fixed.native_calls, [])
 
     def test_read_samples_refused_while_tx_active(self):
         schema, native = _bound_schema()
