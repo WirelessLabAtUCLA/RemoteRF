@@ -151,6 +151,7 @@ class RadarFrame:
     adc_data: Optional[RadarADCData] = None
     fft_data: Optional[RadarFFTData] = None
     bytes_read: int = 0
+    packet_mask: int = 0
 
     @property
     def all_targets(self) -> List[RadarTarget]:
@@ -749,6 +750,12 @@ class KMD7Radar:
     # Acquisition Commands (RDOT, GNFD) & Frame Decoding (RADC, RFFT, PDAT, TDAT, DONE)
     # -------------------------------------------------------------------------
 
+    def flush(self) -> None:
+        """Flush host serial input buffer and internal receive buffer."""
+        if self.serial is not None and self.serial.is_open:
+            self.serial.reset_input_buffer()
+        self._rx_buf.clear()
+
     def start_streaming(
         self,
         raw_targets: bool = True,
@@ -774,6 +781,10 @@ class KMD7Radar:
             self.stop_streaming()
             return
 
+        if self.is_streaming and self.active_stream_mask != mask:
+            self.stop_streaming()
+
+        self.flush()
         self._send_command("RDOT", bytes([mask]))
         self._check_resp("RDOT", timeout=1.5)
         self.is_streaming = True
@@ -786,8 +797,10 @@ class KMD7Radar:
             self.active_stream_mask = 0
             return
 
+        self.flush()
         self._send_command("RDOT", b"\x00")
         self._check_resp("RDOT", timeout=1.5)
+        self.flush()
         self.is_streaming = False
         self.active_stream_mask = 0
 
@@ -830,6 +843,7 @@ class KMD7Radar:
         tracked_targets: List[RadarTarget] = []
         adc_data: Optional[RadarADCData] = None
         fft_data: Optional[RadarFFTData] = None
+        packet_mask = 0
         frame_bytes = 0
         frame_num: int = -1
         deadline = time.monotonic() + max(timeout, 0.0)
@@ -845,13 +859,18 @@ class KMD7Radar:
 
             if header == "RADC":
                 adc_data = self._decode_radc(payload)
+                packet_mask |= FLAG_RADC
             elif header == "RFFT":
                 fft_data = self._decode_rfft(payload)
+                packet_mask |= FLAG_RFFT
             elif header == "PDAT":
                 raw_targets = self._decode_pdat(payload)
+                packet_mask |= FLAG_PDAT
             elif header == "TDAT":
                 tracked_targets = self._decode_tdat(payload)
+                packet_mask |= FLAG_TDAT
             elif header == "DONE":
+                packet_mask |= FLAG_DONE
                 if len(payload) >= 4:
                     frame_num = struct.unpack("<I", payload[0:4])[0]
                 return RadarFrame(
@@ -862,6 +881,7 @@ class KMD7Radar:
                     adc_data=adc_data,
                     fft_data=fft_data,
                     bytes_read=frame_bytes,
+                    packet_mask=packet_mask,
                 )
 
         return None

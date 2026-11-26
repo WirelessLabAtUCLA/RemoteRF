@@ -42,6 +42,7 @@ Hardware note:
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import Any, Dict, List, Optional
@@ -50,10 +51,13 @@ import numpy as np
 
 from remoterf_device_core.idl import DeviceSchema, idl_expose, idl_register
 
+logger = logging.getLogger(__name__)
+
 # -----------------------------------------------------------------------------
 # Device Controller Implementation
 # -----------------------------------------------------------------------------
 from remoterf_device_core.drivers.rfbeam_kmd7.kmd7 import (
+    FLAG_ALL,
     FLAG_DONE,
     FLAG_PDAT,
     FLAG_RADC,
@@ -155,11 +159,19 @@ class RFBeamKMD7Device:
 
     def _restore_baseline(self) -> None:
         """Ensure connection and restore radar to lab baseline (mode, baudrate, overrides)."""
-        self._ensure_connected(target_baudrate=self._init_baudrate)
+        self._ensure_connected(target_baudrate=115200)
 
         self.stop()
+        if self.radar.baudrate != 115200:
+            self.radar.set_baudrate(115200)
+            self.baudrate = self.radar.baudrate
+
         self.radar.restore_factory_settings()
         self._mode = "traffic"
+
+        if self.radar.baudrate != self._init_baudrate:
+            self.radar.set_baudrate(self._init_baudrate)
+        self.baudrate = self.radar.baudrate
 
         if self._init_mode in ("indoor", "traffic"):
             self.radar.configure_mode(self._init_mode)
@@ -174,10 +186,6 @@ class RFBeamKMD7Device:
             self.radar.set_speed_range(_speed_kmh_to_code(overrides["max_speed"]))
         if "threshold_offset" in overrides:
             self.radar.set_threshold_offset(overrides["threshold_offset"])
-
-        if self.radar.baudrate != self._init_baudrate:
-            self.radar.set_baudrate(self._init_baudrate)
-            self.baudrate = self.radar.baudrate
 
         self.flush()
         self._params = self.radar.get_parameters()
@@ -575,9 +583,7 @@ class RFBeamKMD7Device:
 
     def flush(self) -> None:
         """Flush internal receive buffers."""
-        if self.radar.serial and self.radar.serial.is_open:
-            self.radar.serial.reset_input_buffer()
-            self.radar._rx_buf.clear()
+        self.radar.flush()
 
     def _record_frame_stats(self, frame: Optional[RadarFrame]) -> None:
         now = time.time()
@@ -598,7 +604,7 @@ class RFBeamKMD7Device:
         self,
         *,
         timeout: float,
-        required_flag: int = 0,
+        required_flag: Optional[int] = None,
         use_handshake: bool = False,
         raw_adc: bool = False,
         raw_fft: bool = False,
@@ -634,18 +640,36 @@ class RFBeamKMD7Device:
             return frame
 
         # Streaming mode
+        req = required_flag or 0
         if not self.is_running:
             self.start(
                 raw_targets=raw_targets,
                 tracked_targets=tracked_targets,
-                raw_adc=raw_adc or bool(required_flag & FLAG_RADC),
-                raw_fft=raw_fft or bool(required_flag & FLAG_RFFT),
+                raw_adc=raw_adc or bool(req & FLAG_RADC),
+                raw_fft=raw_fft or bool(req & FLAG_RFFT),
             )
-        elif required_flag and (self.radar.active_stream_mask & required_flag) != required_flag:
-            new_mask = self.radar.active_stream_mask | required_flag | FLAG_DONE
-            self.start(bitmask=new_mask)
+        elif required_flag is not None:
+            desired_mask = required_flag | FLAG_DONE
+            if self.radar.active_stream_mask != desired_mask:
+                self.start(bitmask=desired_mask)
 
-        frame = self.radar.read_frame(timeout=t)
+        active_mask = self.radar.active_stream_mask
+        allowed_mask = (active_mask & FLAG_ALL) | req | FLAG_DONE
+        # PDAT/TDAT may be absent in an empty scene; RADC/RFFT/DONE are always sent when enabled.
+        required_headers = (allowed_mask & (FLAG_RADC | FLAG_RFFT)) | FLAG_DONE
+        deadline = time.monotonic() + t
+        frame: Optional[RadarFrame] = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            candidate = self.radar.read_frame(timeout=remaining)
+            if candidate is None:
+                break
+            if candidate.packet_mask & ~allowed_mask or (candidate.packet_mask & required_headers) != required_headers:
+                continue  # a stale frame from the previous stream mask
+            frame = candidate
+            break
         self._record_frame_stats(frame)
         return frame
 
@@ -788,6 +812,8 @@ class RFBeamKMD7Device:
             timeout=timeout,
             required_flag=required_flag,
             use_handshake=False,
+            raw_targets=include_raw,
+            tracked_targets=include_tracked,
         )
         if not frame:
             return np.empty((0, 6), dtype=np.float32)
@@ -812,6 +838,8 @@ class RFBeamKMD7Device:
             timeout=timeout,
             required_flag=FLAG_TDAT,
             use_handshake=False,
+            raw_targets=False,
+            tracked_targets=True,
         )
         if not frame or not frame.tracked_targets:
             return []
@@ -1370,7 +1398,7 @@ class RFBeamKMD7Schema(DeviceSchema):
         dev = self.device
         try:
             dev._restore_baseline()
-        except Exception:
+        except Exception as first_exc:
             dev._params = None
             dev._is_running = False
             try:
@@ -1388,7 +1416,11 @@ class RFBeamKMD7Schema(DeviceSchema):
                     dev.radar.disconnect()
                 except Exception:
                     pass
-            raise
+                raise first_exc
+            logger.warning(
+                "[rfbeam_kmd7] Reset failed (%s); recovered baseline after reconnect.",
+                first_exc,
+            )
         finally:
             dev._total_frames = 0
             dev._dropped_frames = 0

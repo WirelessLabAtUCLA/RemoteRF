@@ -743,7 +743,7 @@ class TestRFBeamKMD7Schema(unittest.TestCase):
         self.assertEqual(targets[0]["id"], 7)
         self.assertEqual(self.schema.dispatch("get_stream_mask", {}) & FLAG_TDAT, FLAG_TDAT)
 
-        # Stream has RADC|TDAT|DONE (missing PDAT); capture_points(raw+tracked) must also enable PDAT
+        # Stream has TDAT|DONE (missing PDAT); capture_points(raw+tracked) must also enable PDAT
         pts = self.schema.dispatch("call_capture_points", {"timeout": 1.0, "include_raw": True, "include_tracked": True})
         self.assertEqual(pts.shape, (3, 6))
         self.assertEqual(
@@ -886,11 +886,12 @@ class TestRFBeamKMD7Schema(unittest.TestCase):
             })
             schema.dispatch("call_start", {})
 
-            # Transient error during reset: recovery reconnects and restores baseline,
-            # while still re-raising the original error for caller logging.
+            # Transient error during reset: recovery reconnects, restores baseline,
+            # logs the recovered error, and returns without failing the next holder.
             ser.forced_error = 4
-            with self.assertRaises(KMD7Error):
+            with self.assertLogs("remoterf_device_core.drivers.rfbeam_kmd7.rfbeam_kmd7_schema", level="WARNING") as logs:
                 schema.reset_for_next_holder()
+            self.assertTrue(any("recovered" in msg.lower() for msg in logs.output))
 
             self.assertTrue(ser.is_open)
             self.assertFalse(schema.dispatch("get_is_running", {}))
@@ -1061,6 +1062,354 @@ class TestRFBeamKMD7Schema(unittest.TestCase):
         self.assertFalse(ser.is_open)
         self.assertEqual(ser.sensor_baudrate, 115200)
         self.assertIn("GBYE", [c[0] for c in ser.commands_log])
+
+    def test_reset_for_next_holder_orders_baudrate_and_rfse_before_config(self):
+        class StrictHardwareSerial(MockKMD7Serial):
+            """Simulates hardware where RFSE drops baud to 115200 and GBYE clears volatile params."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.mismatched_writes: list[tuple[int, int, bytes]] = []
+                self.command_bauds: list[tuple[str, int]] = []
+
+            def write(self, data: bytes) -> int:
+                if self.baudrate != self.sensor_baudrate:
+                    self.mismatched_writes.append((self.baudrate, self.sensor_baudrate, data))
+                return super().write(data)
+
+            def _handle_command(self, hdr: str, payload: bytes) -> None:
+                self.command_bauds.append((hdr, self.baudrate))
+                super()._handle_command(hdr, payload)
+                if hdr == "RFSE":
+                    self.sensor_baudrate = 115200
+                elif hdr == "GBYE":
+                    self.params = self._factory_params()
+
+        for init_baud in (115200, 921600):
+            with self.subTest(init_baud=init_baud):
+                ser = StrictHardwareSerial()
+
+                def _reopen(baudrate: int = 115200):
+                    ser.is_open = True
+                    ser.baudrate = baudrate
+                    return ser
+
+                with patch.object(KMD7Radar, "_open_serial", side_effect=_reopen):
+                    dev = RFBeamKMD7Schema.make_device(
+                        port="/dev/mockFT230X",
+                        baudrate=init_baud,
+                        mode="indoor",
+                        frequency_channel=2,
+                        max_range=300,
+                        max_speed=200,
+                        threshold_offset=35,
+                        auto_start=False,
+                    )
+                    self.assertIsNotNone(dev)
+                    schema = RFBeamKMD7Schema()
+                    schema.bind(dev)
+
+                    # Holder switches to 3 Mbps, mutates settings, and starts streaming
+                    schema.dispatch("set_baudrate", {"value": 3000000})
+                    schema.dispatch("call_configure", {
+                        "mode": "traffic",
+                        "frequency_channel": 0,
+                        "max_range": 100,
+                        "max_speed": 50,
+                        "threshold_offset": 5,
+                    })
+                    schema.dispatch("call_start", {})
+
+                    ser.mismatched_writes.clear()
+                    ser.command_bauds.clear()
+
+                    schema.reset_for_next_holder()
+
+                    self.assertEqual(ser.mismatched_writes, [])
+                    rfse_bauds = [b for cmd, b in ser.command_bauds if cmd == "RFSE"]
+                    self.assertEqual(rfse_bauds, [115200])
+                    cmd_names = [cmd for cmd, _ in ser.command_bauds]
+                    last_init_idx = max(i for i, cmd in enumerate(cmd_names) if cmd == "INIT")
+                    first_override_idx = min(
+                        i for i, cmd in enumerate(cmd_names) if cmd in ("RBFR", "THOF", "TRFT")
+                    )
+                    self.assertLess(last_init_idx, first_override_idx)
+
+                    self.assertFalse(schema.dispatch("get_is_running", {}))
+                    self.assertEqual(schema.dispatch("get_baudrate", {}), init_baud)
+                    self.assertEqual(schema.dispatch("get_mode", {}), "indoor")
+                    self.assertEqual(schema.dispatch("get_frequency_channel", {}), 2)
+                    self.assertEqual(schema.dispatch("get_max_range", {}), 300.0)
+                    self.assertEqual(schema.dispatch("get_max_speed", {}), 200.0)
+                    self.assertEqual(schema.dispatch("get_threshold_offset", {}), 35)
+                    self.assertEqual(schema.dispatch("get_tracking_filter", {}), 1)
+                    self.assertEqual(schema.dispatch("get_min_speed_filter", {}), 0)
+                    dev.close()
+
+    def test_streaming_switch_flushes_stale_packets_and_drops_unused_flags(self):
+        class InFlightStreamSerial(MockKMD7Serial):
+            """Models in-flight stale frames arriving after RDOT(0) and RDOT(new_mask) RESP."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.flush_count = 0
+                self._last_nonzero_mask = 0
+                self.stop_stale_frames_queued = 0
+                self.switch_stale_frames_queued = 0
+                self.last_stale_frame_number = -1
+                self.last_fresh_frame_number = -1
+
+            def reset_input_buffer(self) -> None:
+                self.flush_count += 1
+                super().reset_input_buffer()
+
+            def _handle_command(self, hdr: str, payload: bytes) -> None:
+                if hdr == "RDOT":
+                    old_mask = self.stream_mask
+                    new_mask = payload[0]
+                    self.stream_mask = new_mask
+                    self._enqueue_resp(0)
+                    if old_mask and new_mask == 0:
+                        # An in-flight frame from old_mask finishes right after RDOT(0)'s RESP
+                        self._queue_frame(old_mask)
+                        self.stop_stale_frames_queued += 1
+                    elif new_mask != 0:
+                        if self._last_nonzero_mask and self._last_nonzero_mask != new_mask:
+                            # A late frame from the previous active mask arrives after RDOT(new_mask)'s RESP
+                            self._queue_frame(self._last_nonzero_mask)
+                            self.switch_stale_frames_queued += 1
+                            self.last_stale_frame_number = self.frame_counter
+                        self._last_nonzero_mask = new_mask
+                        self._queue_frame(new_mask)
+                        self.last_fresh_frame_number = self.frame_counter
+                    return
+                super()._handle_command(hdr, payload)
+
+        ser = InFlightStreamSerial()
+        dev = RFBeamKMD7Device(port="/dev/mockFT230X", baudrate=115200, mode="indoor")
+
+        def _reopen(baudrate: int = 115200):
+            ser.is_open = True
+            ser.baudrate = baudrate
+            return ser
+
+        with patch.object(dev.radar, "_open_serial", side_effect=_reopen):
+            dev.connect()
+        schema = RFBeamKMD7Schema()
+        schema.bind(dev)
+
+        try:
+            # Start with PDAT|TDAT|DONE, then stop: post-RESP flush must drain the in-flight frame
+            schema.dispatch("call_start", {})
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_PDAT | FLAG_TDAT | FLAG_DONE)
+            schema.dispatch("call_stop", {})
+            self.assertEqual(ser.stop_stale_frames_queued, 1)
+            self.assertEqual(bytes(dev.radar._rx_buf), b"")
+            self.assertEqual(bytes(ser._tx_to_host), b"")
+            self.assertIsNone(dev.radar.read_frame(timeout=0.05))
+
+            # Restart streaming and verify flush() clears stale frames in both _rx_buf and serial buffer
+            schema.dispatch("call_start", {})
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_PDAT | FLAG_TDAT | FLAG_DONE)
+            stale_rx_frame = (
+                _pack_packet("PDAT", _build_test_pdat_payload())
+                + _pack_packet("TDAT", _build_test_tdat_payload())
+                + _pack_packet("DONE", struct.pack("<I", 9999))
+            )
+            stale_tx_frame = (
+                _pack_packet("PDAT", _build_test_pdat_payload())
+                + _pack_packet("TDAT", _build_test_tdat_payload())
+                + _pack_packet("DONE", struct.pack("<I", 9998))
+            )
+            dev.radar._rx_buf.extend(stale_rx_frame)
+            ser._tx_to_host.extend(stale_tx_frame)
+            schema.dispatch("call_flush_frames", {})
+            self.assertEqual(bytes(dev.radar._rx_buf), b"")
+            self.assertEqual(bytes(ser._tx_to_host), b"")
+            flushed_cloud = schema.dispatch("call_capture_point_cloud", {"timeout": 1.0})
+            self.assertNotIn(flushed_cloud["frame_number"], (9998, 9999))
+            flushes_before = ser.flush_count
+
+            # Switching to RADC with use_handshake=False must flush, drop stale PDAT|TDAT frame,
+            # and return the fresh RADC|DONE frame
+            adc = schema.dispatch("call_capture_raw_adc", {"timeout": 2.0, "use_handshake": False})
+            self.assertTrue(adc["valid"])
+            self.assertEqual(adc["num_samples"], RADC_NUM_SAMPLES)
+            self.assertEqual(adc["frame_number"], ser.last_fresh_frame_number)
+            self.assertNotEqual(adc["frame_number"], ser.last_stale_frame_number)
+            self.assertGreater(ser.flush_count, flushes_before)
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_RADC | FLAG_DONE)
+
+            # Switching back to point cloud must disable RADC and skip stale RADC|DONE frame
+            cloud = schema.dispatch("call_capture_point_cloud", {"timeout": 1.0})
+            self.assertEqual(cloud["frame_number"], ser.last_fresh_frame_number)
+            self.assertNotEqual(cloud["frame_number"], ser.last_stale_frame_number)
+            self.assertEqual(cloud["num_raw_points"], 2)
+            self.assertEqual(cloud["num_tracked_targets"], 1)
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_PDAT | FLAG_TDAT | FLAG_DONE)
+            self.assertEqual(schema.dispatch("get_stream_mask", {}) & FLAG_RADC, 0)
+
+            # Full frame (FLAG_ALL) followed by capture_targets must shrink mask to TDAT|DONE
+            # and reject stale frames on both switches
+            full = schema.dispatch("call_capture_full_frame", {"timeout": 2.0, "use_handshake": False})
+            self.assertEqual(full["frame_number"], ser.last_fresh_frame_number)
+            self.assertTrue(full["adc"]["valid"])
+            self.assertTrue(full["fft"]["valid"])
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_ALL)
+
+            targets = schema.dispatch("call_capture_targets", {"timeout": 1.0})
+            self.assertEqual(len(targets), 1)
+            self.assertEqual(targets[0]["id"], 7)
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_TDAT | FLAG_DONE)
+            self.assertEqual(schema.dispatch("get_stream_mask", {}) & (FLAG_RADC | FLAG_RFFT), 0)
+
+            self.assertGreaterEqual(ser.stop_stale_frames_queued, 5)
+            self.assertGreaterEqual(ser.switch_stale_frames_queued, 4)
+        finally:
+            dev.close()
+
+    def test_zero_required_flag_switches_stream_off_radc_and_returns_empty(self):
+        # Start with FLAG_ALL active
+        self.schema.dispatch("call_start", {"bitmask": FLAG_ALL})
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_ALL)
+
+        # call_read_frame (required_flag=None) preserves the active stream mask
+        summary = self.schema.dispatch("call_read_frame", {"timeout": 1.0})
+        self.assertTrue(summary["has_adc"])
+        self.assertTrue(summary["has_fft"])
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_ALL)
+
+        # call_capture_full_frame with all flags False must switch mask to FLAG_DONE and return no data
+        empty_full = self.schema.dispatch(
+            "call_capture_full_frame",
+            {
+                "timeout": 1.0,
+                "raw_adc": False,
+                "raw_fft": False,
+                "raw_targets": False,
+                "tracked_targets": False,
+                "use_handshake": False,
+            },
+        )
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_DONE)
+        self.assertIsNone(empty_full["adc"])
+        self.assertIsNone(empty_full["fft"])
+        self.assertEqual(empty_full["num_raw_points"], 0)
+        self.assertEqual(empty_full["num_tracked_targets"], 0)
+        self.assertGreater(empty_full["frame_number"], 0)
+
+        # call_capture_points with include_raw=False, include_tracked=False must also disable RADC
+        self.schema.dispatch("call_start", {"bitmask": FLAG_RADC | FLAG_DONE})
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_RADC | FLAG_DONE)
+        pts = self.schema.dispatch(
+            "call_capture_points",
+            {"timeout": 1.0, "include_raw": False, "include_tracked": False},
+        )
+        self.assertEqual(pts.shape, (0, 6))
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}), FLAG_DONE)
+        self.assertEqual(self.schema.dispatch("get_stream_mask", {}) & FLAG_RADC, 0)
+
+    def test_stale_frame_filter_rejects_mismatched_pdat_tdat_packets(self):
+        class StaleTargetMaskSerial(MockKMD7Serial):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.pending_stale_mask: int | None = None
+                self.last_stale_frame_number = -1
+                self.last_fresh_frame_number = -1
+
+            def _handle_command(self, hdr: str, payload: bytes) -> None:
+                if hdr == "RDOT":
+                    new_mask = payload[0]
+                    self.stream_mask = new_mask
+                    self._enqueue_resp(0)
+                    if new_mask != 0:
+                        if self.pending_stale_mask is not None:
+                            self._queue_frame(self.pending_stale_mask)
+                            self.last_stale_frame_number = self.frame_counter
+                            self.pending_stale_mask = None
+                        self._queue_frame(new_mask)
+                        self.last_fresh_frame_number = self.frame_counter
+                    return
+                super()._handle_command(hdr, payload)
+
+        ser = StaleTargetMaskSerial()
+        dev = RFBeamKMD7Device(port="/dev/mockFT230X", baudrate=115200, mode="indoor")
+
+        def _reopen(baudrate: int = 115200):
+            ser.is_open = True
+            ser.baudrate = baudrate
+            return ser
+
+        with patch.object(dev.radar, "_open_serial", side_effect=_reopen):
+            dev.connect()
+        schema = RFBeamKMD7Schema()
+        schema.bind(dev)
+
+        try:
+            # Start with PDAT|DONE, then switch to capture_targets (TDAT|DONE) with a stale PDAT|DONE frame
+            pts = schema.dispatch(
+                "call_capture_points",
+                {"timeout": 1.0, "include_raw": True, "include_tracked": False},
+            )
+            self.assertEqual(pts.shape, (2, 6))
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_PDAT | FLAG_DONE)
+
+            ser.pending_stale_mask = FLAG_PDAT | FLAG_DONE
+            targets = schema.dispatch("call_capture_targets", {"timeout": 1.0})
+            self.assertEqual(len(targets), 1)
+            self.assertEqual(targets[0]["id"], 7)
+            self.assertEqual(schema.dispatch("get_stream_mask", {}), FLAG_TDAT | FLAG_DONE)
+
+            # Start with FLAG_ALL, then switch to RADC|RFFT|DONE with a stale FLAG_ALL frame
+            schema.dispatch("call_start", {"bitmask": FLAG_ALL})
+            ser.pending_stale_mask = FLAG_ALL
+            full = schema.dispatch(
+                "call_capture_full_frame",
+                {
+                    "timeout": 2.0,
+                    "raw_adc": True,
+                    "raw_fft": True,
+                    "raw_targets": False,
+                    "tracked_targets": False,
+                    "use_handshake": False,
+                },
+            )
+            self.assertEqual(full["frame_number"], ser.last_fresh_frame_number)
+            self.assertNotEqual(full["frame_number"], ser.last_stale_frame_number)
+            self.assertTrue(full["adc"]["valid"])
+            self.assertTrue(full["fft"]["valid"])
+            self.assertEqual(full["num_raw_points"], 0)
+            self.assertEqual(full["num_tracked_targets"], 0)
+
+            # call_read_frame on FLAG_ALL also rejects a stale subset frame (PDAT|DONE)
+            ser.pending_stale_mask = FLAG_PDAT | FLAG_DONE
+            schema.dispatch("call_start", {"bitmask": FLAG_ALL})
+            summary = schema.dispatch("call_read_frame", {"timeout": 1.0})
+            self.assertEqual(summary["frame_number"], ser.last_fresh_frame_number)
+            self.assertTrue(summary["has_adc"])
+            self.assertTrue(summary["has_fft"])
+
+            # Empty 0-byte PDAT and TDAT payloads still carry their headers and are accepted
+            schema.dispatch("call_start", {"raw_targets": True, "tracked_targets": True})
+            dev.radar.flush()
+            ser._tx_to_host.extend(
+                _pack_packet("PDAT", b"")
+                + _pack_packet("TDAT", b"")
+                + _pack_packet("DONE", struct.pack("<I", 555))
+            )
+            empty_scene = schema.dispatch("call_capture_point_cloud", {"timeout": 1.0})
+            self.assertEqual(empty_scene["frame_number"], 555)
+            self.assertEqual(empty_scene["num_raw_points"], 0)
+            self.assertEqual(empty_scene["num_tracked_targets"], 0)
+
+            # Firmware that omits empty PDAT/TDAT packets entirely: a DONE-only frame is still accepted
+            dev.radar.flush()
+            ser._tx_to_host.extend(_pack_packet("DONE", struct.pack("<I", 556)))
+            no_headers = schema.dispatch("call_capture_point_cloud", {"timeout": 1.0})
+            self.assertEqual(no_headers["frame_number"], 556)
+            self.assertEqual(no_headers["num_raw_points"], 0)
+        finally:
+            dev.close()
 
 
 if __name__ == "__main__":
