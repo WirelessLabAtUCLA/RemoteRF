@@ -38,9 +38,10 @@ from remoterf_federation_core import (
 from .device_manager import (
     device_inventory_snapshot,
     diag_blocks,
-    find_device_id_by_handle,
     get_all_devices,
+    is_passthrough_token,
     reservation_bridge_token,
+    resolve_device_handle,
     get_registered_devices,
     set_device,
     get_all_devices_str,
@@ -140,6 +141,10 @@ def _clear_failures(key: str) -> None:
 
 # ACC:availability: at most one call per interval per account.
 AVAILABILITY_WINDOW_SEC = 6 * 3600
+# Retired reservation tokens stay recognizable to ACC:device_token for a week so
+# expired or cancelled raw <token>@<lab> tokens reach the device plane instead of
+# looking like unknown handles.
+RETIRED_TOKEN_RETENTION_SEC = 7 * 86400
 try:
     _AVAIL_INTERVAL = float(os.getenv("REMOTERF_AVAILABILITY_INTERVAL_SEC", "10"))
 except ValueError:
@@ -353,6 +358,24 @@ class ReservationHandler:
             created_at TIMESTAMP NOT NULL,
             last_used_at TIMESTAMP NOT NULL
         )
+        ''')
+
+        # Recently expired or cancelled reservation tokens: kept briefly so
+        # ACC:device_token lets the device plane reject them as expired/invalid
+        # instead of reporting them as unknown device handles.
+        self.cursor.executescript('''
+        CREATE TABLE IF NOT EXISTS RetiredTokens (
+            salt TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            retired_at INTEGER NOT NULL,
+            PRIMARY KEY (salt, hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_retired_tokens_retired_at ON RetiredTokens(retired_at);
+        CREATE TRIGGER IF NOT EXISTS retired_tokens_del AFTER DELETE ON Reservations
+        WHEN OLD.salt != '' AND OLD.hash != '' BEGIN
+            INSERT OR REPLACE INTO RetiredTokens (salt, hash, retired_at)
+            VALUES (OLD.salt, OLD.hash, CAST(strftime('%s', 'now') AS INTEGER));
+        END;
         ''')
         
         self.cursor.close()
@@ -953,6 +976,7 @@ class ReservationHandler:
                 self.cursor.execute('DROP TABLE IF EXISTS Accounts')
                 self.cursor.execute('DROP TABLE IF EXISTS Reservations')
                 self.cursor.execute('DROP TABLE IF EXISTS ClientSessions')
+                self.cursor.execute('DROP TABLE IF EXISTS RetiredTokens')
                 perms.rm_db()
                 sys.exit()
     
@@ -1609,15 +1633,57 @@ class ReservationHandler:
         ).fetchone()
         return row is not None
 
+    def _is_passthrough_token(self, handle: str) -> bool:
+        """True when `handle` is a known device-plane token (bridge, super,
+        reservation bearer, or partner HOME token) that should pass through
+        unchanged."""
+        if not isinstance(handle, str) or not handle:
+            return False
+        if is_passthrough_token(handle):
+            return True
+        if self.federation_devices is not None:
+            try:
+                if self.federation_devices.resolve_token(handle) is not None:
+                    return True
+            except Exception:
+                pass
+        cutoff = int(time.time()) - RETIRED_TOKEN_RETENTION_SEC
+        rows = self.cursor.execute(
+            "SELECT salt, hash FROM Reservations "
+            "UNION ALL "
+            "SELECT salt, hash FROM RetiredTokens WHERE retired_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        for salt, hsh in rows:
+            if not (salt and hsh):
+                continue
+            try:
+                if validate_token(salt, hsh, handle):
+                    return True
+            except ValueError:
+                continue
+        return False
+
     @db_connection
     def device_token(self, username, handle):
         """`handle` (which may be a raw token: never log it) as a token for the
         caller's own live reservation on that device: a bridge token bound to
-        it. Anything that is not a handle comes back unchanged, for the device
-        plane to judge. The refusal never says who holds the device."""
-        gid = find_device_id_by_handle(handle)
+        it. Known device-plane tokens come back unchanged, for the device plane
+        to judge; unknown or ambiguous handles report why. The refusal never
+        says who holds the device."""
+        gid, ambiguous = resolve_device_handle(handle)
         if gid is None:
-            return {"Token": map_arg(handle)}
+            if ambiguous:
+                return {
+                    "Token": map_arg(handle),
+                    "error": map_arg("ambiguous_handle"),
+                }
+            if self._is_passthrough_token(handle):
+                return {"Token": map_arg(handle)}
+            return {
+                "Token": map_arg(handle),
+                "error": map_arg("unknown_handle"),
+            }
         why = {"Token": map_arg(handle), "why": map_arg(f"no active reservation of yours on {handle} right now")}
         # update_devices() applied the federated/incoherent filters to the live
         # pair, but leaves an offline device's pair and expired rows alone:
@@ -2035,6 +2101,10 @@ class ReservationHandler:
         # Clean expired reservations for devices we actually know locally
         for k in list(devices.keys()):
             self._clean_expired_reservations(str(k).strip())
+        self.cursor.execute(
+            "DELETE FROM RetiredTokens WHERE retired_at < ?",
+            (int(time.time()) - RETIRED_TOKEN_RETENTION_SEC,),
+        )
 
         self.cursor.execute("SELECT * FROM Reservations")
         reservations = self.cursor.fetchall()

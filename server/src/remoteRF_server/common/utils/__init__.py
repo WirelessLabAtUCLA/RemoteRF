@@ -32,3 +32,8 @@ def device_name_key(name: str) -> str:
 def handle_fold(name: str) -> str:
     """A handle typed loosely: also '-' as '_' and any case ('rtl_sdr_00' is RTL-SDR_00)."""
     return device_name_key(name.replace("-", "_")).casefold()
+
+
+def handle_compact(name: str) -> str:
+    """A handle with separators ('-', '_', whitespace) dropped and case folded ('RTLSDR_00' is RTL-SDR_00)."""
+    return handle_fold(name).replace("_", "")

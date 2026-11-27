@@ -236,23 +236,57 @@ softmodem environment adds `OAI_SHM_DIR=<work_dir>/shm` and
 | `run_xapp` | `code`, `duration_s` (1–600) | Runs the code with the server's `python -I`, env `OAI_SHM_DIR` and `XAPP_OUTPUT=<work_dir>/artifacts/xapp-<n>.json`; SIGALRM ends it at `duration_s`. Returns `returncode`, output and `{"artifact": {"name", "format": "json"}}` when the file exists. |
 | `read_csi` | `stream` (`ul_pusch`, `ul_srs` or `dl_ssb`) | Newest consistent entry of `<OAI_SHM_DIR>/<stream>.ring`, published as `csi-<stream>-<n>.c8`: `{"ok": true, "artifact": {"name", "dtype": "<c8", "shape": [d0, d1, d2]}, "metadata", "dropped": 0}`. |
 | `capture_csi_burst` | `stream`, `count` (1–256), optional `timeout_s` (≤ 600) | Waits for `count` entries newer than the call, as one artifact of shape `[count, d0, d1, d2]`. `dropped` counts sequence numbers lost to gaps, overwrites or entries still being written. |
+| `get_cell_config` | none | Read-only, in-process: parses the operator's gNB conf (`REMOTERF_OAI_GNB_CONF[_<SERIAL>]`) with `REMOTERF_OAI_GNB_ARGS` overrides applied (or parses `REMOTERF_OAI_UE_ARGS` on UE). Returns band, frequencies in Hz (3GPP TS 38.104 ARFCN conversion), numerology/SCS, `prb_count`, OAI-derived `fft_size`, `tdd_pattern` and `mimo_mode` (`null` for unknown fields). |
+| `get_link_stats` | none | Read-only, in-process: parses `nrMAC_stats.log` and `nrL1_stats.log` from `work_dir` tolerantly (missing fields are `null`), returning cell summary (PRACH I0, avg I0, blacklisted PRB count), per-UE table and file ages. On UE returns any UE-side stats file or `not_available_on_ue`. |
+| `get_ue_mac_table` | none | Read-only, in-process: returns the per-UE table (`rnti`, CQI/RI/PMI, UL-RI/TPMI, PH/PCMAX, DLSCH/ULSCH rounds and errors, BLER, MCS, Qm, NPRB, SNR, RSSI, DL/UL goodput Mbps) plus file ages. On UE returns any UE-side stats or `not_available_on_ue`. |
+| `read_ofdm_grid` | optional `timeout_s` (≤ 600) | Read-only, in-process: newest 14-symbol slot resource grid (`dims[1] == 14`) from `<OAI_SHM_DIR>/ofdm_grid.ring`, published as `ofdm_grid-<n>.c8` (`<c8`) plus metadata. Requires a patched OAI; stock OAI gets `ring_missing`. |
+| `read_constellation` | optional `timeout_s` (≤ 600) | Read-only, in-process: newest equalized IQ entry from `<OAI_SHM_DIR>/constellation.ring`, published as `constellation-<n>.c8` (`<c8`) plus metadata with `evm_pct`, `evm_db` and `evm_source`. Requires a patched OAI; stock OAI gets `ring_missing`. |
+| `throughput_test` | optional `duration_s` (1–60), `direction` (`ul`\|`dl`), `protocol` (`tcp`\|`udp`), `bitrate_mbps`, `parallel` (1–8) | UE only, spends 1 job: runs `iperf3 -J` bound to the UE tunnel IP against operator-configured `REMOTERF_OAI_DN_IP` and returns Mbps, jitter and loss. Fails cleanly with `dn_ip_missing` or `iperf3_missing` when unconfigured. |
+| `start_traffic` | optional `duration_s` (1–600), `direction`, `protocol`, `bitrate_mbps`, `parallel` | UE only, at most 1 background run per operation, spends 1 job: launches supervised background `iperf3 -J` against `REMOTERF_OAI_DN_IP` and returns immediately. |
+| `stop_traffic` | none | In-process (0 jobs): signals the background `iperf3` job via `work_dir/traffic.stop`, waits briefly for clean JSON flush and returns parsed Mbps, jitter and loss. |
+| `capture_air_pcap` | optional `duration_s` (1–60), `max_bytes` (1024–67108864), `snaplen` (0 or 64–65535) | Spends 1 job, gated by `REMOTERF_OAI_ALLOW_PCAP=1` (off by default) and `CAP_NET_RAW`. Runs bounded `tcpdump` on `oaitun_ue1` (UE) or `REMOTERF_OAI_GNB_PCAP_IFNAME` (gNB) and publishes `{"artifact": {"name": "capture-<n>.pcap", "format": "pcap"}}`. |
+| `set_live_control` | subset of `mcs_range` `[min, max]`, `ul_prb_blacklist`, `dl_prb_blacklist`, `max_ldpc_iterations` (1–20), `tpmi`, `ri` | gNB only, in-process (0 jobs): validates strictly against cell config PRB count, MIMO antenna ports and 3GPP limits, then sends commands over a persistent short-timeout loopback socket to OAI's telnet server when `--telnetsrv` is set in `REMOTERF_OAI_GNB_ARGS`. Never alters RF frequency, bandwidth or power. |
 
-The CSI actions run in the server process: no job, no `user_code`. `metadata`
-holds per-entry lists `seq`, `frame`, `slot`, `snr_db`, `rnti`, `ta` and
-`timestamps_s` (server read time). `dl_ssb` covers only the SSB band, not
-CSI-RS. A missing ring (stock OAI) returns `{"ok": false, "error":
-"ring_missing"}`; a wrong magic, version or size `ring_invalid`; a result that
-would exceed the artifact bounds (256 entries, 256 MiB) `artifact_limit`; no
-data before the wait ends `timeout`. These leave the cell running. Waits end
-5 s before `action_timeout_s`.
+The read-only telemetry (`get_cell_config`, `get_link_stats`, `get_ue_mac_table`),
+ring readers (`read_csi`, `capture_csi_burst`, `read_ofdm_grid`,
+`read_constellation`) and live control (`set_live_control`) run in the server
+process with no job budget and no `user_code`. Any failure in the expansion
+actions returns `{"ok": false, "error": ...}` so the cell is never torn down.
+`metadata` for ring streams holds per-entry lists `seq`, `frame`, `slot`,
+`snr_db`, `rnti`, `ta` (for CSI and `ofdm_grid`) and `timestamps_s` (server
+read time); `read_constellation` also includes `evm_pct`, `evm_db` and
+`evm_source`. `dl_ssb` covers only the SSB band, not CSI-RS. A missing ring
+(stock OAI) returns `{"ok": false, "error": "ring_missing"}`; a wrong magic,
+version, size or non-14-symbol grid `ring_invalid`; a result that would exceed
+the artifact bounds (256 entries, 256 MiB) `artifact_limit`; no data before the
+wait ends `timeout`. These leave the cell running. Waits end 5 s before
+`action_timeout_s`.
+
+Traffic and capture operator settings:
+- `REMOTERF_OAI_DN_IP` must be set explicitly for `throughput_test` and
+  `start_traffic` (the DN host must run `iperf3 -s`; override binary/port via
+  `REMOTERF_OAI_IPERF3` and `REMOTERF_OAI_IPERF3_PORT`, default `5201`).
+- `REMOTERF_OAI_ALLOW_PCAP=1` enables `capture_air_pcap` (off by default);
+  grant `CAP_NET_RAW` via systemd `AmbientCapabilities=CAP_NET_RAW` or
+  `setcap cap_net_raw=ep /usr/bin/tcpdump` (override binary via
+  `REMOTERF_OAI_TCPDUMP`), and set `REMOTERF_OAI_GNB_PCAP_IFNAME` for gNB-side
+  captures.
+- Add `--telnetsrv` (plus optional `--telnetsrv.listenaddr 127.0.0.1` and
+  `--telnetsrv.listenport 9090`) to `REMOTERF_OAI_GNB_ARGS` to enable
+  `set_live_control`; the adapter sends `mac dl_min_mcs`, `mac dl_max_mcs`,
+  `mac ul_min_mcs`, `mac ul_max_mcs`, `mac ul_prb_blacklist`,
+  `mac dl_prb_blacklist`, `phy max_ldpc_iterations`, `mac ri` and `mac tpmi`
+  over a persistent loopback TCP socket.
 
 The three code actions fail unless `user_code` enables `org.remoterf.oai`. Like
 any failed action, a refusal or a job past its wait fails the operation and its
 cgroup cleanup stops the cell. Readiness, compile and stop waits end 5 s before
 the configured `start_timeout_s`, `action_timeout_s` and `stop_timeout_s`; keep
-`duration_s` below `action_timeout_s`. Each
-process scope retains at most 4 launches, so one operation allows 3 ping, compile
-or xApp jobs; past that they return `{"ok": false, "error": "job_budget_exhausted"}`.
+`duration_s` below `action_timeout_s` for blocking actions (`run_xapp`,
+`throughput_test`, `capture_air_pcap`). Each process scope retains at most 4
+launches, so one operation allows 3 jobs in total across ping, traffic, packet
+capture, compile and xApp; past that they return `{"ok": false, "error":
+"job_budget_exhausted"}`.
 
 **Control-file protocol (what a patched OAI must read).** `OAI_PLUGIN_CTRL` is
 replaced atomically (`os.replace`) on every change. `{"seq": n, "stage": s,
@@ -262,14 +296,20 @@ a `seq` newer than the last one applied. Each load uses a new `.so` path. Stock
 OAI ignores the file; the patch and stage names must be verified against the
 pinned OAI build.
 
-**CSI ring format (what a patched OAI must write).** One file per stream,
-`$OAI_SHM_DIR/ul_pusch.ring`, `ul_srs.ring` and `dl_ssb.ring`, sized once and
-mmapped; all fields little-endian:
+**Ring-buffer format (what a patched OAI must write).** One file per stream in
+`$OAI_SHM_DIR`: `ul_pusch.ring`, `ul_srs.ring`, `dl_ssb.ring`, `ofdm_grid.ring`
+and `constellation.ring`, sized once and mmapped; all fields little-endian.
+Stock OAI writes none of these rings; a patched OAI must write them:
 
 | Part | Layout |
 |---|---|
 | Header (64 B) | `magic` 8 B `RRFCSI\0\0`, u32 `version` (1), u32 `entry_bytes`, u32 `n_entries`, u32 reserved, u64 `write_seq` (last complete entry; 0 = none), zero padding |
 | Entry `s` at `64 + (s % n_entries) * entry_bytes` | u64 `lock` (seqlock), u64 `seq`, u32 `frame`, u32 `slot`, u32 `rnti`, f32 `snr_db`, i32 `ta`, u32 `dims[3]`, then `dims[0]*dims[1]*dims[2]` interleaved int16 I/Q pairs; `48 + 4 * product <= entry_bytes` |
+
+Stream layouts:
+- `ul_pusch.ring`, `ul_srs.ring`, `dl_ssb.ring`: channel-estimate tensors `[d0, d1, d2]` with `snr_db` and timing advance `ta`.
+- `ofdm_grid.ring`: full 14-symbol NR slot resource grid with `dims = [n_ant, 14, n_sc]` (`dims[1]` must be `14`), `snr_db` and `ta`.
+- `constellation.ring`: equalized IQ symbols with `dims = [n_layers, n_sym, n_re]`; `f32` stores `snr_db`, and the `i32` (`ta`) slot stores RMS EVM in thousandths of a percent (`evm_x1000`, e.g. `4250` for `4.25%`; `<= 0` means unset and the adapter derives `evm_pct = 100 * 10^(-snr_db/20)` and `evm_db = -snr_db`).
 
 For each entry the writer increments `lock` (odd), copies the fields and I/Q,
 increments `lock` again (even), then stores `write_seq = seq`, with release

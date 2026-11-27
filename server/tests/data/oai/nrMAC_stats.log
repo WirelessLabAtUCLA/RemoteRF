@@ -1,0 +1,7 @@
+=== Cell 0 ===
+UE RNTI 4eca PCI 0 CellID 12345678 CU-UE-ID 1 in-sync PH 7 dB PCMAX 20 dBm
+UE 4eca: CSI [CQI 0 RI 1 PMI (0,0)] SRS [UL-RI 1, TPMI 0]
+UE 4eca: dlsch_rounds 69/46/34/28/17/15/13/10, dlsch_errors 10, pucch0_DTX 69 (SNR 14.3-7.7) RSSI -49.4, BLER 0.89600 MCS (0) 4 (Qm 2) CCE fail 10
+UE 4eca: ulsch_rounds 255/49/42/42/41/41/41/41, ulsch_errors 41, ulsch_DTX 331, BLER 0.98670 MCS (0) 4 (Qm 2 deltaMCS 0) NPRB 5 SNR 25.8 (-0.2) RSSI -33.2 CCE fail 307
+UE 4eca: LCID 1,2,4, goodput DL    0.00 UL    0.01 Mbps
+
