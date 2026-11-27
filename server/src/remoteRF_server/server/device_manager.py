@@ -44,6 +44,7 @@ from ..host import host_tunnel_server as hts
 logger = logging.getLogger(__name__)
 
 from remoterf_device_core.hardware_access import AccessTable
+from remoterf_device_core.idl.tags import clean_blocked_tags
 hardware_access = AccessTable()
 
 _state_lock = threading.RLock()
@@ -61,6 +62,8 @@ class VirtualDevice:
     serial: str = ""
     kind: str = ""
     reservation_tag: str = ""
+    blocked_tags: Tuple[str, ...] = ()
+    is_master: bool = False
 
     def __repr__(self) -> str:
         return f"<VirtualDevice gid={self.gid} host={self.host_id} device_id={self.device_id}>"
@@ -73,12 +76,12 @@ def resync_host_reservations(host_id: str) -> None:
     """Restore holder state on a new tunnel without preparing the radios again."""
     with _host_reservation_lock:
         with _state_lock:
-            held = [(st.dev, reservation_tag(st.salt, st.hsh), st.lockout_bypass)
+            held = [(st.dev, reservation_tag(st.salt, st.hsh), st.lockout_bypass, st.blocked_tags)
                     for st in _devices.values() if st.origin == "host"
                     and isinstance(st.dev, VirtualDevice) and st.dev.host_id == host_id
                     and st.salt and st.hsh]
-        for device, tag, bypass in held:
-            _start_host_reservation(device, bypass=bypass, tag=tag, resync=True)
+        for device, tag, bypass, blocked_tags in held:
+            _start_host_reservation(device, bypass=bypass, blocked_tags=blocked_tags, tag=tag, resync=True)
 
 
 def is_virtual(dev: object) -> bool:
@@ -98,6 +101,7 @@ class _DeviceState:
     # The last reservation ended; see _reset_locked().
     reset_pending: bool = False
     lockout_bypass: bool = False
+    blocked_tags: Tuple[str, ...] = ()
     # _name_handle(name); _handle_owners() decides who keeps a duplicate.
     handle: str = ""
 
@@ -214,6 +218,7 @@ def _sync_host_devices(*, force: bool = False) -> None:
                 dtype=dtype,
                 io_lock=lock,
                 lockout_bypass=prev.lockout_bypass if prev else False,
+                blocked_tags=prev.blocked_tags if prev else (),
                 handle=_name_handle(name),
             )
 
@@ -919,12 +924,16 @@ def get_all_devices_str(power_state: bool = True) -> Dict[int, str]:
 
     return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
 
-def set_device(device_id: int, salt: str, hash: str, bypass: bool = False):
+def _clean_blocked_tags(blocked_tags) -> Tuple[str, ...]:
+    return clean_blocked_tags(blocked_tags)
+
+
+def set_device(device_id: int, salt: str, hash: str, bypass: bool = False, blocked_tags=()):
     with _host_reservation_lock:
-        _set_device(device_id, salt, hash, bypass)
+        _set_device(device_id, salt, hash, bypass, blocked_tags)
 
 
-def _set_device(device_id: int, salt: str, hash: str, bypass: bool):
+def _set_device(device_id: int, salt: str, hash: str, bypass: bool, blocked_tags=()):
     # ensure host devices are upserted so reservations can apply to them too
     _sync_host_devices()
 
@@ -940,6 +949,7 @@ def _set_device(device_id: int, salt: str, hash: str, bypass: bool):
 
     notify_end = False
     host_start = None
+    clean_tags = _clean_blocked_tags(blocked_tags)
     with _state_lock:
         st = _devices.get(int(device_id))
         if not st:
@@ -949,6 +959,7 @@ def _set_device(device_id: int, salt: str, hash: str, bypass: bool):
         st.hsh = str(hash or "")
         held = (st.salt, st.hsh)
         st.lockout_bypass = bool(bypass and all(held))
+        st.blocked_tags = clean_tags if all(held) else ()
         if st.origin == "local" and hasattr(st.dev, "__dict__"):
             if previous != held or not st.lockout_bypass:
                 st.dev.lockout_bypass = False
@@ -965,6 +976,7 @@ def _set_device(device_id: int, salt: str, hash: str, bypass: bool):
             st.reset_pending = True
             for token in [t for t, bound in _bridge_tokens.items() if bound[0] == int(device_id)]:
                 del _bridge_tokens[token]
+        host_blocked_tags = st.blocked_tags
 
     if notify_end:
         for callback in tuple(_reservation_end_callbacks):
@@ -976,17 +988,35 @@ def _set_device(device_id: int, salt: str, hash: str, bypass: bool):
         # even when nobody reserves the device next.
         threading.Thread(target=_reset_if_pending, args=(int(device_id),), daemon=True).start()
     if host_start is not None:
-        _start_host_reservation(host_start, bypass=bool(bypass), tag=reservation_tag(*held))
+        _start_host_reservation(
+            host_start, bypass=bool(bypass), blocked_tags=host_blocked_tags, tag=reservation_tag(*held)
+        )
     if prepare:
         threading.Thread(target=_prepare_for_holder, args=(int(device_id), held), daemon=True).start()
 
 
-def _start_host_reservation(device: VirtualDevice, bypass: bool = False, *, tag: str = "", resync: bool = False) -> None:
+def _start_host_reservation(
+    device: VirtualDevice,
+    bypass: bool = False,
+    *,
+    blocked_tags: Tuple[str, ...] = (),
+    tag: str = "",
+    resync: bool = False,
+) -> None:
     try:
         registry = hts.get_tunnel_registry(create=False)
+        clean_tags = _clean_blocked_tags(blocked_tags)
+        payload = {
+            "at": time.time(),
+            "lockout_bypass": bool(bypass),
+            "tag": tag,
+            "resync": resync,
+        }
+        if clean_tags:
+            payload["blocked_tags"] = list(clean_tags)
         if registry is None or not registry.send_control(
             device.host_id, kind="reservation_start", device_id=device.device_id,
-            payload={"at": time.time(), "lockout_bypass": bool(bypass), "tag": tag, "resync": resync}, drop_on_failure=True,
+            payload=payload, drop_on_failure=True,
         ):
             logger.warning("host reservation start unavailable for %s", device.host_id)
     except Exception as exc:
@@ -1132,6 +1162,47 @@ def register_reservation_end_callback(callback) -> None:
             _reservation_end_callbacks.append(callback)
 
 
+def verify_device_reservation(
+    device_id: int,
+    expected_reservation: Tuple[str, str],
+) -> None:
+    """Require ``device_id`` to stay connected on ``expected_reservation`` under ``_state_lock``."""
+    with _state_lock:
+        st = _devices.get(int(device_id))
+        if st is None or not _is_connected(st) or (st.salt, st.hsh) != tuple(expected_reservation):
+            raise ReservationChangedError()
+
+
+def get_device_blocked_tags(
+    device_id: int,
+    *,
+    expected_reservation: Tuple[str, str] | None = None,
+) -> Tuple[str, ...]:
+    """Return the current reservation holder's blocked function tags for ``device_id``.
+
+    When ``expected_reservation`` is given, require ``(st.salt, st.hsh)`` to
+    match under ``_state_lock`` and raise ``ReservationChangedError`` otherwise,
+    so callers cannot read another holder's tags.
+    """
+    with _state_lock:
+        st = _devices.get(int(device_id))
+        if expected_reservation is not None:
+            if st is None or (st.salt, st.hsh) != tuple(expected_reservation):
+                raise ReservationChangedError()
+            return st.blocked_tags
+        return st.blocked_tags if st is not None else ()
+
+
+def is_master_token(api_token: str) -> bool:
+    """Return True when ``api_token`` is a server admin master token."""
+    if not api_token:
+        return False
+    configured_token = _get_master_token()
+    if configured_token and api_token == configured_token:
+        return True
+    return parse_mastertoken(api_token, configured_token=configured_token) is not None
+
+
 def get_local_device_context(device_id: int) -> dict[str, Any] | None:
     """Return a read-only local inventory/session view for Dynamic v2."""
     with _state_lock:
@@ -1145,6 +1216,8 @@ def get_local_device_context(device_id: int) -> dict[str, Any] | None:
             "ident": st.ident,
             "name": st.name,
             "reserved": bool(st.salt or st.hsh),
+            "reservation": (st.salt, st.hsh),
+            "blocked_tags": st.blocked_tags,
             "io_lock": st.io_lock,
             "prepare": lambda: _reset_if_pending(int(device_id)),
         }
@@ -1516,7 +1589,63 @@ class ReservationChangedError(RuntimeError):
 
 
 @contextmanager
-def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
+def _acquire_device_locked(
+    gid: int,
+    expected_reservation: Tuple[str, str] | None = None,
+    *,
+    is_master: bool = False,
+    include_policy: bool = False,
+):
+    did = int(gid)
+    with _state_lock:
+        st = _devices.get(did)
+        if not st or not _is_connected(st) or st.dev is None:
+            raise RuntimeError("device disappeared / not connected")
+        lock = st.io_lock
+        reservation = (st.salt, st.hsh)
+        if expected_reservation is not None and reservation != expected_reservation:
+            raise ReservationChangedError()
+
+    lock.acquire()
+    try:
+        with _state_lock:
+            cur = _devices.get(did)
+            if cur is None or cur.io_lock is not lock or not _is_connected(cur) or (cur.salt, cur.hsh) != reservation:
+                raise ReservationChangedError()
+            st = cur
+            dev = st.dev
+            effective_blocked = () if is_master else st.blocked_tags
+            if isinstance(dev, VirtualDevice):
+                dev = replace(
+                    dev,
+                    reservation_tag=reservation_tag(*reservation),
+                    blocked_tags=effective_blocked,
+                    is_master=is_master,
+                )
+            if st.origin == "local" and hasattr(dev, "__dict__"):
+                dev.lockout_bypass = st.lockout_bypass
+        with hardware_access.native(did):
+            if _native_cleanup_pending(did):
+                raise RuntimeError("previous native cleanup is still in progress")
+            _reset_locked(st)
+            with _state_lock:
+                cur = _devices.get(did)
+                # A host sync may swap in a new state object that keeps the same lock and reservation.
+                if cur is None or cur.io_lock is not lock or not _is_connected(cur) or (cur.salt, cur.hsh) != reservation:
+                    raise ReservationChangedError()
+                st = cur
+                if st.origin == "local" and hasattr(dev, "__dict__"):
+                    dev.lockout_bypass = st.lockout_bypass
+            if include_policy:
+                yield did, dev, effective_blocked, reservation
+            else:
+                yield did, dev
+    finally:
+        lock.release()
+
+
+@contextmanager
+def acquire_device(api_token: str, *, include_policy: bool = False):
     if not api_token:
         raise RuntimeError("missing api_token")
 
@@ -1524,6 +1653,7 @@ def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
 
     gid: Optional[int] = None
     authorized_reservation = None
+    is_master = False
     configured_token = _get_master_token()
 
     with _state_lock:
@@ -1535,6 +1665,7 @@ def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
         gid = bound[0] if live else None
         authorized_reservation = bound[1:]
     elif configured_token and api_token == configured_token:
+        is_master = True
         with _state_lock:
             # prefer local first
             for k, st in _devices.items():
@@ -1551,6 +1682,7 @@ def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
     else:
         parsed = parse_mastertoken(api_token, configured_token=configured_token)
         if parsed:
+            is_master = True
             cand, force = parsed
             with _state_lock:
                 st = _devices.get(int(cand))
@@ -1571,37 +1703,21 @@ def acquire_device(api_token: str) -> Iterator[Tuple[int, object]]:
         raise RuntimeError("no device available / invalid token")
     _refuse_if_diag(gid)
 
-    with _state_lock:
-        st = _devices.get(int(gid))
-        if not st or not _is_connected(st) or st.dev is None:
-            raise RuntimeError("device disappeared / not connected")
-        lock = st.io_lock
-        reservation = (st.salt, st.hsh)
-        if authorized_reservation is not None and reservation != authorized_reservation:
-            raise ReservationChangedError()
-
-    lock.acquire()
-    try:
-        with _state_lock:
-            cur = _devices.get(int(gid))
-            if cur is None or cur.io_lock is not lock or (cur.salt, cur.hsh) != reservation:
-                raise ReservationChangedError()
-            st = cur
-            dev = st.dev
-            if isinstance(dev, VirtualDevice):
-                dev = replace(dev, reservation_tag=reservation_tag(*reservation))
-            if st.origin == "local" and hasattr(dev, "__dict__"):
-                dev.lockout_bypass = st.lockout_bypass
-        with hardware_access.native(gid):
-            if _native_cleanup_pending(gid):
-                raise RuntimeError("previous native cleanup is still in progress")
-            _reset_locked(st)
-            yield int(gid), dev
-    finally:
-        lock.release()
+    with _acquire_device_locked(
+        gid,
+        authorized_reservation,
+        is_master=is_master,
+        include_policy=include_policy,
+    ) as acquired:
+        yield acquired
 
 @contextmanager
-def acquire_device_by_gid(gid: int, expected_reservation: Tuple[str, str] | None = None) -> Iterator[Tuple[int, object]]:
+def acquire_device_by_gid(
+    gid: int,
+    expected_reservation: Tuple[str, str] | None = None,
+    *,
+    include_policy: bool = False,
+):
     """Acquire an already-authorized device by its local id.
 
     This performs NO authorization: the caller must already have established
@@ -1614,34 +1730,12 @@ def acquire_device_by_gid(gid: int, expected_reservation: Tuple[str, str] | None
     _sync_host_devices()
     _refuse_if_diag(int(gid))
 
-    with _state_lock:
-        st = _devices.get(int(gid))
-        if not st or not _is_connected(st) or st.dev is None:
-            raise RuntimeError("device disappeared / not connected")
-        lock = st.io_lock
-        reservation = (st.salt, st.hsh)
-        if expected_reservation is not None and reservation != expected_reservation:
-            raise ReservationChangedError()
-
-    lock.acquire()
-    try:
-        with _state_lock:
-            cur = _devices.get(int(gid))
-            if cur is None or cur.io_lock is not lock or (cur.salt, cur.hsh) != reservation:
-                raise ReservationChangedError()
-            st = cur
-            dev = st.dev
-            if isinstance(dev, VirtualDevice):
-                dev = replace(dev, reservation_tag=reservation_tag(*reservation))
-            if st.origin == "local" and hasattr(dev, "__dict__"):
-                dev.lockout_bypass = st.lockout_bypass
-        with hardware_access.native(gid):
-            if _native_cleanup_pending(gid):
-                raise RuntimeError("previous native cleanup is still in progress")
-            _reset_locked(st)
-            yield int(gid), dev
-    finally:
-        lock.release()
+    with _acquire_device_locked(
+        gid,
+        expected_reservation,
+        include_policy=include_policy,
+    ) as acquired:
+        yield acquired
 
 
 def schema_served(device_type: str) -> Dict[str, Any]:
@@ -1736,7 +1830,7 @@ def _reload_devices_unfenced(on_device=None) -> None:
     _sync_host_devices()  # ensure host entries exist before snapshot
 
     with _state_lock:
-        prev_auth = {gid: (st.salt, st.hsh, st.lockout_bypass) for gid, st in _devices.items()}
+        prev_auth = {gid: (st.salt, st.hsh, st.lockout_bypass, st.blocked_tags) for gid, st in _devices.items()}
         prev_host = {gid: st for gid, st in _devices.items() if st.origin == "host"}
         prev_local = [st for st in _devices.values() if st.origin == "local" and st.dev is not None]
 
@@ -1772,7 +1866,7 @@ def _reload_devices_unfenced(on_device=None) -> None:
         if ident:
             tmp_ser[int(gid)] = ident
 
-        salt, hsh, bypass = prev_auth.get(int(gid), ("", "", False))
+        salt, hsh, bypass, blocked_tags = prev_auth.get(int(gid), ("", "", False, ()))
         tmp_local[int(gid)] = _DeviceState(
             dev=dev,
             origin="local",
@@ -1780,6 +1874,7 @@ def _reload_devices_unfenced(on_device=None) -> None:
             salt=salt,
             hsh=hsh,
             lockout_bypass=bypass,
+            blocked_tags=blocked_tags,
             name=name,
             ident=ident2,
             dtype=dtype2,

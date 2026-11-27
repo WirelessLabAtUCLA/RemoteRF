@@ -15,12 +15,24 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 
 import numpy as np
 
+from remoterf_device_core.idl.tags import (
+    blocked_tag_message,
+    find_blocked_tag,
+    v1_function_label,
+    v1_method_name,
+)
+
 from ..common.utils import map_arg, unmap_arg
 from .device_manager import find_device_id_by_name, get_device, get_device_schema
+
+_ADMITTED_RESERVATION: contextvars.ContextVar[
+    tuple[int, int, object, str | None, tuple[str, ...]] | None
+] = contextvars.ContextVar("remoterf_host_admitted_reservation", default=None)
 
 
 def _normalize_device_rpc_type(value: str) -> str:
@@ -83,32 +95,83 @@ class RpcManager:
         from .device_manager import hardware_access, get_local_device_context, reset_before_rpc
         args = dict(args)
         tag_arg = args.pop("__rrf_reservation_tag", None)
+        blocked_arg = args.pop("__rrf_blocked_tags", None)
+        master_arg = args.pop("__rrf_master_bypass", None)
         try:
             tag = None if tag_arg is None else unmap_arg(tag_arg)
         except Exception:
             tag = None
         if tag_arg is not None and not isinstance(tag, str):
             return {"Error": map_arg("The reservation on this device changed; call again.")}
+        try:
+            master_bypass = (master_arg is not None) and (unmap_arg(master_arg) is True)
+        except Exception:
+            master_bypass = False
+        grant_policy_tags: tuple[str, ...] = ()
+        if blocked_arg is not None:
+            try:
+                raw_blocked = unmap_arg(blocked_arg)
+                parsed_blocked = json.loads(raw_blocked) if isinstance(raw_blocked, str) else raw_blocked
+                if not isinstance(parsed_blocked, list) or any(
+                    not isinstance(item, str) or not item.strip() for item in parsed_blocked
+                ):
+                    raise ValueError("invalid blocked_tags")
+                grant_policy_tags = tuple(item.strip() for item in parsed_blocked)
+            except Exception:
+                return {"Error": map_arg("Invalid blocked tags metadata.")}
+
+        def _call_admitted(admitted_state=None) -> dict:
+            snapshot_blocked = admitted_state[4] if admitted_state is not None else ()
+            combined_policy_tags = tuple(snapshot_blocked) + tuple(grant_policy_tags)
+            ctx_token = _ADMITTED_RESERVATION.set(admitted_state)
+            try:
+                if combined_policy_tags or master_bypass:
+                    return self._run_admitted(
+                        function_name=function_name,
+                        args=args,
+                        policy_tags=combined_policy_tags,
+                        master_bypass=master_bypass,
+                    )
+                return self._run_admitted(function_name=function_name, args=args)
+            finally:
+                _ADMITTED_RESERVATION.reset(ctx_token)
+
         gid = self._resolve_gid(args)
         if (gid is None or function_name.startswith("IDL:") or function_name == "echo"
                 or (function_name.startswith("DynamicV2:") and tag is None)):
-            return self._run_admitted(function_name=function_name, args=args)
+            return _call_admitted()
         try:
             context = get_local_device_context(gid) or {}
             dynamic_v2 = function_name.startswith("DynamicV2:")
             # v2 ops run after admission, as at HEAD; OpenSession stays in one hold so a stale open can't land after the next holder's.
             run_after = dynamic_v2 and function_name != "DynamicV2:OpenSession"
             access = nullcontext() if dynamic_v2 else hardware_access.native(gid)
+            admitted_state = None
             with access, context.get("io_lock", nullcontext()):
                 if "epoch" in context:
-                    reset_before_rpc(gid, context["epoch"] if expected_epoch is None else expected_epoch, context["schema"], tag, reset=not dynamic_v2)
+                    admitted_epoch = context["epoch"] if expected_epoch is None else expected_epoch
+                    snapshot_blocked = reset_before_rpc(
+                        gid,
+                        admitted_epoch,
+                        context["schema"],
+                        tag,
+                        reset=not dynamic_v2,
+                    )
+                    admitted_state = (gid, admitted_epoch, context["schema"], tag, snapshot_blocked)
                 if not run_after:
-                    return self._run_admitted(function_name=function_name, args=args)
-            return self._run_admitted(function_name=function_name, args=args)
+                    return _call_admitted(admitted_state)
+            return _call_admitted(admitted_state)
         except Exception as exc:
             return {"Error": map_arg(str(exc))}
 
-    def _run_admitted(self, *, function_name, args) -> dict:
+    def _run_admitted(
+        self,
+        *,
+        function_name,
+        args,
+        policy_tags: tuple[str, ...] = (),
+        master_bypass: bool = False,
+    ) -> dict:
         if function_name == "echo":
             return args
 
@@ -119,6 +182,14 @@ class RpcManager:
             try:
                 from .dynamic_v2_bridge import run_bridge
 
+                if policy_tags or master_bypass:
+                    return run_bridge(
+                        operation=function_name.split(":", 1)[1],
+                        args=args,
+                        gid=gid,
+                        blocked_tags=policy_tags,
+                        master_bypass=master_bypass,
+                    )
                 return run_bridge(
                     operation=function_name.split(":", 1)[1],
                     args=args,
@@ -154,6 +225,35 @@ class RpcManager:
         if self._should_use_builtin_ip_fallback(gid=gid, prop=prop, verb=verb):
             return {"ip": self._safe_map(f"{actual_type or 'device'}:{gid}")}
 
+        admitted = _ADMITTED_RESERVATION.get()
+        if admitted is not None and admitted[0] == gid:
+            from .device_manager import verify_device_reservation
+
+            verify_device_reservation(gid, admitted[1], schema, admitted[3])
+
+        if not master_bypass:
+            if admitted is not None and admitted[0] == gid:
+                effective_blocked = tuple(admitted[4]) + tuple(policy_tags or ())
+            else:
+                from .device_manager import get_local_device_context
+
+                context = get_local_device_context(gid) or {}
+                effective_blocked = (
+                    tuple(getattr(schema, "blocked_tags", ()) or ())
+                    + tuple(context.get("blocked_tags", ()) or ())
+                    + tuple(policy_tags or ())
+                )
+            if effective_blocked:
+                method_name = v1_method_name(prop, verb)
+                get_tags = getattr(schema, "get_method_tags", None)
+                if method_name is not None and callable(get_tags):
+                    matched = find_blocked_tag(get_tags(method_name), effective_blocked)
+                    if matched is not None:
+                        return {
+                            prop: map_arg("None"),
+                            "Error": map_arg(blocked_tag_message(v1_function_label(prop, verb), matched)),
+                        }
+
         if getattr(schema, "session_scoped", False) and getattr(schema, "device", None) is None:
             # The legacy path is about to open the hardware lazily; a Dynamic
             # v2 session left behind by an earlier run must not block it.
@@ -162,6 +262,10 @@ class RpcManager:
             session_manager.close_gid(gid)
             if session_manager.cleanup_pending(gid):
                 raise RuntimeError("previous native cleanup is still in progress")
+            if admitted is not None and admitted[0] == gid:
+                from .device_manager import verify_device_reservation
+
+                verify_device_reservation(gid, admitted[1], schema, admitted[3])
 
         try:
             if verb == "GET":
@@ -187,7 +291,10 @@ class RpcManager:
                 return {prop: self._safe_map(result)}
 
             if verb == "CALLN":
-                reserved = {"a", "g", "token", "device_id", "device_name", "wire"}
+                reserved = {
+                    "a", "g", "token", "device_id", "device_name", "wire",
+                    "__rrf_reservation_tag", "__rrf_blocked_tags", "__rrf_master_bypass",
+                }
                 call_args = {
                     str(key): unmap_arg(value)
                     for key, value in dict(args).items()

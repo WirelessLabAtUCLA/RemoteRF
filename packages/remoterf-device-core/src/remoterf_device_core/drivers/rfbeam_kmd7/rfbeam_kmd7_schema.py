@@ -1196,11 +1196,11 @@ class RFBeamKMD7Schema(DeviceSchema):
     # Exposed Calls
     # -------------------------------------------------------------------------
 
-    @idl_expose(kind="call", doc="Capture structured 2D point cloud with positions, velocities, and power.")
+    @idl_expose(kind="call", doc="Capture structured 2D point cloud with positions, velocities, and power.", tag="TX")
     def call_capture_point_cloud(self, timeout: float = 1.0) -> Dict[str, Any]:
         return self.device.capture_point_cloud(timeout=float(timeout))
 
-    @idl_expose(kind="call", doc="Capture points as an (N, 6) NumPy array [x, y, dist, speed, angle, mag].")
+    @idl_expose(kind="call", doc="Capture points as an (N, 6) NumPy array [x, y, dist, speed, angle, mag].", tag="TX")
     def call_capture_points(
         self,
         timeout: float = 1.0,
@@ -1214,15 +1214,15 @@ class RFBeamKMD7Schema(DeviceSchema):
             include_tracked=bool(include_tracked),
         )
 
-    @idl_expose(kind="call", doc="Capture active tracked targets as a list of structured dictionaries.")
+    @idl_expose(kind="call", doc="Capture active tracked targets as a list of structured dictionaries.", tag="TX")
     def call_capture_targets(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
         return self.device.capture_targets(timeout=float(timeout))
 
-    @idl_expose(kind="call", doc="Read one synchronized radar frame summary.")
+    @idl_expose(kind="call", doc="Read one synchronized radar frame summary.", tag="TX")
     def call_read_frame(self, timeout: float = 1.0) -> Dict[str, Any]:
         return self.device.read_frame_raw(timeout=float(timeout))
 
-    @idl_expose(kind="call", doc="Request one frame on demand via GNFD handshake mode.")
+    @idl_expose(kind="call", doc="Request one frame on demand via GNFD handshake mode.", tag="TX")
     def call_capture_next_frame(
         self,
         *,
@@ -1240,7 +1240,7 @@ class RFBeamKMD7Schema(DeviceSchema):
             timeout=float(timeout),
         )
 
-    @idl_expose(kind="call", doc="Capture raw ADC I/Q samples (RADC: 3 IF blocks x 512 I/Q uint16).")
+    @idl_expose(kind="call", doc="Capture raw ADC I/Q samples (RADC: 3 IF blocks x 512 I/Q uint16).", tag="TX")
     def call_capture_raw_adc(
         self,
         timeout: float = 2.0,
@@ -1252,7 +1252,7 @@ class RFBeamKMD7Schema(DeviceSchema):
             use_handshake=bool(use_handshake),
         )
 
-    @idl_expose(kind="call", doc="Capture raw 512-point FFT spectrum and threshold in dB (RFFT).")
+    @idl_expose(kind="call", doc="Capture raw 512-point FFT spectrum and threshold in dB (RFFT).", tag="TX")
     def call_capture_raw_fft(
         self,
         timeout: float = 2.0,
@@ -1264,7 +1264,7 @@ class RFBeamKMD7Schema(DeviceSchema):
             use_handshake=bool(use_handshake),
         )
 
-    @idl_expose(kind="call", doc="Capture RADC, RFFT, PDAT, and TDAT together from one radar frame.")
+    @idl_expose(kind="call", doc="Capture RADC, RFFT, PDAT, and TDAT together from one radar frame.", tag="TX")
     def call_capture_full_frame(
         self,
         timeout: float = 2.0,
@@ -1363,7 +1363,7 @@ class RFBeamKMD7Schema(DeviceSchema):
         self.device.flush()
         return True
 
-    @idl_expose(kind="call", doc="Start radar streaming with selectable output messages (RDOT).")
+    @idl_expose(kind="call", doc="Start radar streaming with selectable output messages (RDOT).", tag="TX")
     def call_start(
         self,
         raw_targets: bool = True,

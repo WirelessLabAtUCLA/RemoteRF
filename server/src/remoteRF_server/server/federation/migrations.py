@@ -810,6 +810,8 @@ def migrate_gate_f_usergroups_schema(conn: sqlite3.Connection) -> None:
     if "max_horizon_sec" not in group_columns:
         # How far ahead a reservation may start; 0 = no limit.
         conn.execute("ALTER TABLE UserGroups ADD COLUMN max_horizon_sec INTEGER NOT NULL DEFAULT 604800")
+    if "blacklisted_tags" not in group_columns:
+        conn.execute("ALTER TABLE UserGroups ADD COLUMN blacklisted_tags TEXT NOT NULL DEFAULT '[]'")
     # Cluster codes enrol into a cluster, not a group (group_id is -1 then);
     # ClusterAccounts remembers who joined so attached groups can follow.
     if "cluster_name" not in columns:

@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
 import math
 import os
 import sqlite3
@@ -30,6 +31,7 @@ from uuid import UUID, uuid4, uuid5
 
 from ..common.utils import *
 from ..common.utils.api_token import hash_password, verify_password
+from remoterf_device_core.idl.tags import BLOCK_ALL_TAG
 from remoterf_federation_core import (
     canonical_uuid,
     federated_identity,
@@ -84,6 +86,7 @@ from .federation.migrations import (
     migrate_reservations_schema,
 )
 
+logger = logging.getLogger(__name__)
 allow_connections = True
 
 def _parse_reservation_datetime(value) -> datetime:
@@ -2089,6 +2092,58 @@ class ReservationHandler:
             return None
         return None
 
+    def _blocked_tags_for_holder_locked(
+        self,
+        username: str,
+        device_id: int,
+        *,
+        uid: int | None = None,
+        relayed_only: bool = False,
+    ) -> tuple[str, ...]:
+        """Effective blocked function tags for ``username`` on ``device_id``.
+
+        Admins, Power Users, and members of the built-in ``admin`` group are
+        never blocked. For Normal Users, non-LAN-only groups granting access to
+        ``device_id`` are evaluated first so a LAN-only group never lifts a
+        remote group's blacklist. Only when no non-LAN-only group grants the
+        device and ``relayed_only`` is False (not a federated reservation) are
+        LAN-only groups consulted. Fails closed (blocking every tagged function)
+        on lookup errors or when no eligible group grants the device.
+        """
+        try:
+            role_rows = perms.get_perms(username) or ()
+            if any(row and row[0] in ("Admin", "Power User") for row in role_rows):
+                return ()
+            if uid is None:
+                uid = self.get_uid(username)
+            if uid < 0:
+                return (BLOCK_ALL_TAG,)
+            relayed = RELAYED.set(True)
+            try:
+                allowed, blocked = user_group_handler.get_users_blocked_tags(
+                    uid=uid, device_id=int(device_id)
+                )
+            finally:
+                RELAYED.reset(relayed)
+            if not allowed and not relayed_only:
+                relayed = RELAYED.set(False)
+                try:
+                    allowed, blocked = user_group_handler.get_users_blocked_tags(
+                        uid=uid, device_id=int(device_id)
+                    )
+                finally:
+                    RELAYED.reset(relayed)
+            if not allowed:
+                return (BLOCK_ALL_TAG,)
+            return tuple(blocked)
+        except Exception:
+            logger.exception(
+                "Failed computing blocked function tags for user=%r device_id=%r; failing closed",
+                username,
+                device_id,
+            )
+            return (BLOCK_ALL_TAG,)
+
     @db_connection
     def update_devices(self):
         devices = get_all_devices()  # whatever your local inventory is
@@ -2120,7 +2175,8 @@ class ReservationHandler:
                 security_state = self._account_security_state_locked(reservation[1])
                 if security_state == "incoherent":
                     continue
-                if security_state == "federated" and not self._federated_reservation_authorized(
+                is_federated = security_state == "federated"
+                if is_federated and not self._federated_reservation_authorized(
                     int(reservation[0])
                 ):
                     # An out-of-band row on a proxy account is never honoured.
@@ -2136,16 +2192,35 @@ class ReservationHandler:
                 # Apply reservation token/state for this device_id (local or virtual)
                 held = (reservation[5] or "", reservation[6] or "")
                 if previous is None or tuple(previous[1:]) != held:
+                    uid = self.get_uid(reservation[1])
                     relayed = RELAYED.set(True)
                     try:
                         bypass = ADMIN_GROUP in user_group_handler.get_groups_user_in(
-                            uid=self.get_uid(reservation[1])
+                            uid=uid
                         )
                     finally:
                         RELAYED.reset(relayed)
                     if bypass:
                         print(f"lockout bypass on: {dev_id} (gid {int(dev_id)})")
-                    set_device(dev_id, *held, bypass=bypass)
+                        blocked_tags = ()
+                    else:
+                        fed_check = getattr(self, "_federated_reservation_authorized", None)
+                        if not is_federated and callable(fed_check):
+                            try:
+                                is_federated = bool(fed_check(int(reservation[0])))
+                            except sqlite3.OperationalError:
+                                is_federated = False
+                        blocked_tags = ReservationHandler._blocked_tags_for_holder_locked(
+                            self,
+                            reservation[1],
+                            int(dev_id),
+                            uid=uid,
+                            relayed_only=is_federated,
+                        )
+                    if blocked_tags:
+                        set_device(dev_id, *held, bypass=bypass, blocked_tags=blocked_tags)
+                    else:
+                        set_device(dev_id, *held, bypass=bypass)
 
                 reservations_now += 1
 

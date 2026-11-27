@@ -123,6 +123,31 @@ MULTIUSRP_METHODS = (
     "recv_num_samps", "send_waveform",
 )
 
+TX_MULTIUSRP_METHODS = frozenset({
+    "set_tx_subdev_spec",
+    "set_tx_rate",
+    "set_tx_freq",
+    "set_tx_lo_source",
+    "set_tx_lo_export_enabled",
+    "set_tx_lo_freq",
+    "set_tx_gain",
+    "set_normalized_tx_gain",
+    "set_tx_gain_profile",
+    "set_tx_power_reference",
+    "set_tx_antenna",
+    "set_tx_bandwidth",
+    "set_tx_dc_offset",
+    "set_tx_iq_balance",
+    "set_tx_filter",
+    "get_tx_stream",
+    "send_waveform",
+})
+
+TX_INTEGRATION_METHODS = frozenset({
+    "integration_start",
+    "integration_call",
+})
+
 OPTIONAL_METHODS = {
     "get_radio_control", "get_mb_controller", "get_rx_radio_channel",
     "get_tx_radio_channel", "set_rx_spp", "get_gpio_srcs", "get_gpio_src",
@@ -1429,6 +1454,7 @@ def _streamer_methods() -> list[dict]:
                 )
             ],
             execution="sample_stream",
+            tag="TX",
         ),
         method(
             "recv_async_msg", "uhd.usrp.TXStreamer",
@@ -1527,6 +1553,7 @@ def _property_tree_methods() -> list[dict]:
                         )
                     ],
                     execution="server_handle",
+                    tag="TX",
                 )
             )
     return methods
@@ -1582,6 +1609,7 @@ def build_usrp_schema_v2(driver_version: str = "0.0.9") -> dict:
                 signatures.get(name, _fallback_overload()),
                 execution=execution,
                 availability=availability,
+                tag="TX" if name in TX_MULTIUSRP_METHODS else None,
             )
         )
         coverage[f"uhd.usrp.MultiUSRP.{name}"] = (
@@ -1599,6 +1627,7 @@ def build_usrp_schema_v2(driver_version: str = "0.0.9") -> dict:
             name, "uhd.usrp.MultiUSRP",
             [overload(INTEGRATION_OVERLOAD, [parameter("request", "dict")], returns="dict")],
             doc="Generic application integration control. Requires operator qualification and enablement; accepts bounded plain JSON.",
+            tag="TX" if name in TX_INTEGRATION_METHODS else None,
         ))
         coverage[f"uhd.usrp.MultiUSRP.{name}"] = "implemented_with_documented_remote_difference"
 

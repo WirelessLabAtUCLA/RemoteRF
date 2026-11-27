@@ -2114,6 +2114,15 @@ def cmd_groups_list(argv):
     list_user_groups_local(_prompt_session())
 
 
+def _comma_tags(raw: object, flag: str = "--blacklist-tags") -> List[str]:
+    from remoterf_device_core.idl.tags import normalize_tags
+
+    parts = [part.strip() for part in re.split(r"[\s,]+", str(raw or "")) if part.strip()]
+    if not parts:
+        raise ValueError(f"{flag} must list at least one tag")
+    return list(normalize_tags(parts))
+
+
 def cmd_groups_create(argv):
     from remoteRF_server.server import user_group_cli as groups
 
@@ -2126,7 +2135,7 @@ def cmd_groups_create(argv):
 
     parsed, error = _parse_create_args(
         argv,
-        value_flags={"devices", "max-reservations", "max-time", "horizon", "lifetime", "share"},
+        value_flags={"devices", "max-reservations", "max-time", "horizon", "lifetime", "share", "blacklist-tags"},
         bool_flags={"yes", "json", "lan-only", "public"},
     )
     if error:
@@ -2148,6 +2157,7 @@ def cmd_groups_create(argv):
         max_time = _bounded_int(flags.get("max-time", "1800"), "--max-time", minimum=1)
         horizon = _bounded_int(flags.get("horizon", str(7 * 86400)), "--horizon", minimum=0)
         lifetime = _bounded_int(flags.get("lifetime", "0"), "--lifetime", minimum=0)
+        blacklisted_tags = _comma_tags(flags["blacklist-tags"]) if "blacklist-tags" in flags else []
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -2166,6 +2176,7 @@ def cmd_groups_create(argv):
         lifetime_sec=lifetime,
         lan_only=lan_only,
         max_horizon_sec=horizon,
+        blacklisted_tags=blacklisted_tags,
     )
     if group_id is None:
         now = groups.user_group_handler.get_all_user_groups(include_users=False) or []
@@ -2195,6 +2206,7 @@ def cmd_groups_create(argv):
         print(json.dumps({
             "group_id": int(group_id), "group_name": name,
             "devices_whitelist": created_group.get("devices_whitelist", devices),
+            "blacklisted_tags": created_group.get("blacklisted_tags", blacklisted_tags),
             "max_reservations": created_group.get("max_reservations", max_reservations),
             "max_reservation_time_sec": created_group.get("max_reservation_time_sec", max_time),
             "max_horizon_sec": created_group.get("max_horizon_sec", horizon),
@@ -2221,8 +2233,8 @@ def cmd_groups_edit(argv):
         return 1
     parsed, error = _parse_create_args(
         argv,
-        value_flags={"name", "devices", "max-reservations", "max-time", "lifetime", "horizon", "share"},
-        bool_flags={"yes", "json", "lan-only", "no-lan-only"},
+        value_flags={"name", "devices", "max-reservations", "max-time", "lifetime", "horizon", "share", "blacklist-tags"},
+        bool_flags={"yes", "json", "lan-only", "no-lan-only", "clear-blacklist-tags"},
     )
     if error:
         print(f"ERROR: {error}", file=sys.stderr)
@@ -2233,6 +2245,9 @@ def cmd_groups_edit(argv):
         return 1
     if "lan-only" in flags and "no-lan-only" in flags:
         print("ERROR: --lan-only and --no-lan-only are mutually exclusive", file=sys.stderr)
+        return 1
+    if "blacklist-tags" in flags and "clear-blacklist-tags" in flags:
+        print("ERROR: --blacklist-tags and --clear-blacklist-tags are mutually exclusive", file=sys.stderr)
         return 1
     change_flags = set(flags) - {"yes", "json"}
     if not change_flags:
@@ -2259,6 +2274,12 @@ def cmd_groups_edit(argv):
                     if "lifetime" in flags else None)
         horizon = (_bounded_int(flags["horizon"], "--horizon", minimum=0)
                    if "horizon" in flags else None)
+        if flags.get("clear-blacklist-tags"):
+            blacklisted_tags = []
+        elif "blacklist-tags" in flags:
+            blacklisted_tags = _comma_tags(flags["blacklist-tags"])
+        else:
+            blacklisted_tags = None
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -2279,7 +2300,7 @@ def cmd_groups_edit(argv):
             print(f"ERROR: sharing unchanged: {exc}", file=sys.stderr)
             return 1
 
-    fields = (name, devices, max_time, max_reservations, lifetime, horizon, lan_only)
+    fields = (name, devices, max_time, max_reservations, lifetime, horizon, lan_only, blacklisted_tags)
     if any(value is not None for value in fields):
         ok = groups.user_group_handler.edit_user_group(
             group_id=group_id,
@@ -2290,6 +2311,7 @@ def cmd_groups_edit(argv):
             lifetime_sec=lifetime,
             lan_only=lan_only,
             max_horizon_sec=horizon,
+            blacklisted_tags=blacklisted_tags,
         )
         if not ok:
             print(f"ERROR: failed to update group {ref!r}", file=sys.stderr)

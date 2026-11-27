@@ -407,7 +407,7 @@ class FederatedProxyTests(GateCFixture):
             patch("remoteRF_server.server.reservation.set_device") as set_device,
         ):
             self.reservations.update_devices()
-        set_device.assert_called_once_with("8", token_salt, token_hash, bypass=False)
+        set_device.assert_called_once_with("8", token_salt, token_hash, bypass=False, blocked_tags=("*",))
 
 
 class LegacyAuthTypeReadinessTests(unittest.TestCase):
