@@ -37,8 +37,8 @@
  },
  {
   "device_type": "rfbeam_kmd7",
-  "driver_version": "0.1.0",
-  "v1": "sha256:af9f79ac65f78f524b1c28fdd6226988f8dc69b1c99df8df8eeeb69f15ce52d3",
+  "driver_version": "0.2.0",
+  "v1": "sha256:a83ef756c00700b1be9eb4ec049725cbd66e2ebfb2f70a637fe397af4d1ddef7",
   "v2": null
  },
  {
