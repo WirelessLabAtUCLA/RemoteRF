@@ -754,12 +754,19 @@ def prepare_reservation(
     blocked_tags=(),
 ) -> Optional[Future]:
     """The lab started a reservation on this device: ready it (a switched Pluto boots) for the holder."""
-    set_lockout_bypass(device_id, bypass, tag, blocked_tags=blocked_tags)
-    if resync:
-        return None
+    gid = int(device_id)
+    with _state_lock:
+        set_lockout_bypass(gid, bypass, tag, blocked_tags=blocked_tags)
+        if resync:
+            return None
+        st = _devices.get(gid)
+        if st is not None and st.schema is not None:
+            clear = getattr(type(st.schema), "clear_active_frequencies", None)
+            if callable(clear):
+                clear(st.schema)
     if bypass:
-        info(f"lockout bypass on: device {device_id} (gid {int(device_id)})", component="hostrf.device_manager")
-    return _run_hook(int(device_id), "prepare_for_holder", "preparing")
+        info(f"lockout bypass on: device {device_id} (gid {gid})", component="hostrf.device_manager")
+    return _run_hook(gid, "prepare_for_holder", "preparing")
 
 
 def end_reservation(device_id: int | str) -> Optional[Future]:
@@ -770,6 +777,9 @@ def end_reservation(device_id: int | str) -> Optional[Future]:
         if st is not None:
             if st.schema is not None:
                 st.schema.lockout_bypass = False
+                clear = getattr(type(st.schema), "clear_active_frequencies", None)
+                if callable(clear):
+                    clear(st.schema)
             st.lockout_bypass = False
             st.blocked_tags = ()
             st.reservation_tag = ""

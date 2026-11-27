@@ -21,6 +21,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import math
 import os
 import re
 import secrets
@@ -29,6 +30,7 @@ import hashlib
 import time
 import yaml
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Tuple, Optional, Any, List, Iterator
@@ -924,6 +926,156 @@ def get_all_devices_str(power_state: bool = True) -> Dict[int, str]:
 
     return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
 
+def _is_pluto_state(st: _DeviceState) -> bool:
+    if st.origin == "local" and st.dev is not None:
+        if callable(getattr(type(st.dev), "active_frequencies", None)):
+            return True
+        if any(cls.__name__ == "PlutoSchema" for cls in type(st.dev).__mro__):
+            return True
+    dtype = str(st.dtype or "").strip().lower()
+    if "pluto" in dtype:
+        return True
+    if dtype:
+        try:
+            cls = get_driver_class(dtype)
+        except KeyError:
+            return False
+        return (
+            callable(getattr(cls, "active_frequencies", None))
+            or any(base.__name__ == "PlutoSchema" for base in cls.__mro__)
+        )
+    return False
+
+
+def _clean_freq_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    if isinstance(value, int) or number.is_integer():
+        return int(number)
+    return number
+
+
+def _normalize_freq_report(raw: Any) -> Dict[str, Any]:
+    data = raw if isinstance(raw, dict) else {}
+    updated = data.get("updated_at")
+    if isinstance(updated, bool) or not isinstance(updated, (int, float)) or not math.isfinite(float(updated)):
+        updated = None
+    else:
+        updated = float(updated)
+    tx_active = data.get("tx_active")
+    return {
+        "rx_hz": _clean_freq_number(data.get("rx_hz")),
+        "tx_hz": _clean_freq_number(data.get("tx_hz")),
+        "tx_active": tx_active if isinstance(tx_active, bool) else None,
+        "sample_rate": _clean_freq_number(data.get("sample_rate")),
+        "rx_rf_bandwidth": _clean_freq_number(data.get("rx_rf_bandwidth")),
+        "tx_rf_bandwidth": _clean_freq_number(data.get("tx_rf_bandwidth")),
+        "updated_at": updated,
+    }
+
+
+def active_frequencies_snapshot(reserved_ids, *, host_timeout: float = 2.0) -> List[Dict[str, Any]]:
+    """Recorded frequencies for every currently reserved Pluto (local and host).
+
+    Never touches hardware (a PoE Pluto may be powered off) and never includes
+    usernames or reservation ids.
+    """
+    wanted = {int(gid) for gid in reserved_ids}
+    if not wanted:
+        return []
+
+    _sync_host_devices()
+
+    local_rows: Dict[int, Dict[str, Any]] = {}
+    host_groups: Dict[str, List[Tuple[int, str]]] = {}
+    entries: List[Tuple[int, str, str, Optional[str]]] = []
+
+    with _state_lock:
+        owners = _handle_owners()
+        for gid in sorted(wanted):
+            st = _devices.get(gid)
+            if st is None or not _is_pluto_state(st):
+                continue
+            handle = st.handle if st.handle and owners.get(st.handle) == gid else None
+            entries.append((gid, st.origin, st.name or f"device-{gid}", handle))
+            if st.origin == "local":
+                report = getattr(type(st.dev), "active_frequencies", None) if st.dev is not None else None
+                raw = None
+                if callable(report):
+                    try:
+                        raw = report(st.dev)
+                    except Exception:
+                        logger.warning("active_frequencies read failed for local gid=%s", gid, exc_info=True)
+                local_rows[gid] = _normalize_freq_report(raw)
+            elif st.origin == "host" and isinstance(st.dev, VirtualDevice):
+                host_groups.setdefault(st.dev.host_id, []).append((gid, str(st.dev.device_id)))
+
+    host_reports: Dict[int, Dict[str, Any]] = {}
+    if host_groups:
+        registry = _get_host_registry()
+        if registry is not None:
+            def _query_host(host_id: str, items: List[Tuple[int, str]]) -> Dict[int, Dict[str, Any]]:
+                session_for_host = getattr(registry, "session_for_host", None)
+                if callable(session_for_host):
+                    sess = session_for_host(host_id)
+                    if sess is None or not sess.alive or "active_frequencies" not in sess.capabilities:
+                        return {}
+                device_ids = [did for _, did in items]
+                reply = registry.request_control(
+                    host_id,
+                    kind="active_frequencies",
+                    device_id="",
+                    payload={"device_ids": device_ids},
+                    timeout=host_timeout,
+                )
+                if not isinstance(reply, dict):
+                    return {}
+                reported = reply.get("devices")
+                if not isinstance(reported, dict):
+                    return {}
+                out: Dict[int, Dict[str, Any]] = {}
+                for gid, did in items:
+                    if did in reported:
+                        out[gid] = _normalize_freq_report(reported[did])
+                    elif str(gid) in reported:
+                        out[gid] = _normalize_freq_report(reported[str(gid)])
+                return out
+
+            if len(host_groups) == 1:
+                host_id, items = next(iter(host_groups.items()))
+                try:
+                    host_reports.update(_query_host(host_id, items))
+                except Exception:
+                    logger.warning("active_frequencies query failed for host=%s", host_id, exc_info=True)
+            else:
+                with ThreadPoolExecutor(max_workers=min(8, len(host_groups))) as pool:
+                    futures = {
+                        pool.submit(_query_host, host_id, items): host_id
+                        for host_id, items in host_groups.items()
+                    }
+                    for fut, host_id in futures.items():
+                        try:
+                            host_reports.update(fut.result())
+                        except Exception:
+                            logger.warning("active_frequencies query failed for host=%s", host_id, exc_info=True)
+
+    rows: List[Dict[str, Any]] = []
+    for gid, origin, name, handle in entries:
+        freq = local_rows.get(gid) if origin == "local" else host_reports.get(gid)
+        if freq is None:
+            freq = _normalize_freq_report(None)
+        rows.append({
+            "device_id": int(gid),
+            "handle": handle,
+            "name": name,
+            **freq,
+        })
+    return rows
+
+
 def _clean_blocked_tags(blocked_tags) -> Tuple[str, ...]:
     return clean_blocked_tags(blocked_tags)
 
@@ -969,9 +1121,13 @@ def _set_device(device_id: int, salt: str, hash: str, bypass: bool, blocked_tags
         )
         if all(held) and previous != held and st.origin == "host" and isinstance(st.dev, VirtualDevice):
             host_start = st.dev
+        if previous != held and st.origin == "local" and st.dev is not None:
+            clear = getattr(type(st.dev), "clear_active_frequencies", None)
+            if callable(clear):
+                clear(st.dev)
         # The holder changed: the reservation ended, or a back-to-back one
         # replaced it without the device ever being free.
-        notify_end = any(previous) and previous != (st.salt, st.hsh)
+        notify_end = any(previous) and previous != held
         if notify_end:
             st.reset_pending = True
             for token in [t for t, bound in _bridge_tokens.items() if bound[0] == int(device_id)]:

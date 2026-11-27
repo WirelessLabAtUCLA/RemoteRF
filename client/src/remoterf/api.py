@@ -81,6 +81,16 @@ def list_devices(deployment=None, online_only=True, type=None) -> dict:
     return _call(ops.list_devices, deployment=deployment, online_only=online_only, type=type)
 
 
+def get_active_frequencies() -> list[dict]:
+    """Return active frequencies for currently reserved Plutos at this lab.
+
+    Lab logins only for now (not yet available through RemoteRF Global).
+
+    Example: ``remoterf.get_active_frequencies()`` -> ``[{"device_id": 1, "handle": "Pluto_00@ucla", "name": "Pluto 00", "rx_hz": 915000000, "tx_hz": 915000000, "tx_active": True, ...}]``.
+    """
+    return _call(ops.get_active_frequencies)
+
+
 def slots(handle, start_day=None, days=1, tz=None) -> dict:
     return _call(lambda s: ops.find_slots(s, _handle(s, handle), start_day=start_day, days=days, tz=tz))
 

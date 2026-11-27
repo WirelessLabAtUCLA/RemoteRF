@@ -38,6 +38,7 @@ from remoterf_federation_core import (
     federated_proxy_adapter,
 )
 from .device_manager import (
+    active_frequencies_snapshot,
     device_inventory_snapshot,
     diag_blocks,
     get_all_devices,
@@ -142,7 +143,7 @@ def _clear_failures(key: str) -> None:
         _failures.pop(key, None)
 
 
-# ACC:availability: at most one call per interval per account.
+# ACC:availability and ACC:active_frequencies: at most one call per interval per account.
 AVAILABILITY_WINDOW_SEC = 6 * 3600
 # Retired reservation tokens stay recognizable to ACC:device_token for a week so
 # expired or cancelled raw <token>@<lab> tokens reach the device plane instead of
@@ -433,7 +434,7 @@ class ReservationHandler:
                 password = unmap_arg(args['pw'])
                 if self.login_user(username, password) != {"UC": map_arg(f'{username}')}:
                     return {"ace": map_arg("Invalid login credentials.")}
-                wait = _avail_wait(username)
+                wait = _avail_wait(f"availability:{username}")
                 if wait:
                     return {"ace": map_arg(f"Too many availability requests; try again in {wait} s."),
                             "retry_after": map_arg(wait)}
@@ -447,6 +448,17 @@ class ReservationHandler:
                     d["next"] = o.get("next")
                 return {"UC": map_arg(json.dumps({"now": int(time.time()), "interval": _AVAIL_INTERVAL,
                                                    "window": AVAILABILITY_WINDOW_SEC, "devices": devices}))}
+            elif function_name == 'active_frequencies':
+                username = unmap_arg(args['un'])
+                password = unmap_arg(args['pw'])
+                if self.login_user(username, password) != {"UC": map_arg(f'{username}')}:
+                    return {"ace": map_arg("Invalid login credentials.")}
+                wait = _avail_wait(f"active_frequencies:{username}")
+                if wait:
+                    return {"ace": map_arg(f"Too many active frequencies requests; try again in {wait} s."),
+                            "retry_after": map_arg(wait)}
+                devices = active_frequencies_snapshot(self.active_reserved_device_ids())
+                return {"UC": map_arg(json.dumps({"now": int(time.time()), "devices": devices}))}
             elif function_name == 'login':
                 username = unmap_arg(args['un'])
                 result = self.login_user(username, unmap_arg(args['pw']))
@@ -1735,6 +1747,28 @@ class ReservationHandler:
         return out
 
     @db_connection
+    def active_reserved_device_ids(self) -> set[int]:
+        """Local device ids under an active reservation right now (no usernames or res ids)."""
+        now = datetime.now()
+        active: set[int] = set()
+        for res_id, owner, device_id, start, end in self.cursor.execute(
+            "SELECT res_id, username, device_id, start_time, end_time FROM Reservations WHERE device_id < 1000000"
+        ).fetchall():
+            try:
+                st, et = _parse_reservation_datetime(start), _parse_reservation_datetime(end)
+            except ValueError:
+                continue
+            if not (st <= now < et):
+                continue
+            security_state = self._account_security_state_locked(owner)
+            if security_state == "incoherent":
+                continue
+            if security_state == "federated" and not self._federated_reservation_authorized(int(res_id)):
+                continue
+            active.add(int(device_id))
+        return active
+
+    @db_connection
     def federated_visible_devices(self, *, local_account_id: int) -> list[dict]:
         """Devices this federated principal is permitted to see.
 
@@ -2297,6 +2331,7 @@ _SAFE_ACTIVITY_ARGS = {
     "reserve_device": ("un", "dd", "st", "et"),
     "get_res": ("un",),
     "get_dev": ("un",),
+    "active_frequencies": ("un",),
     "get_perms": ("un",),
     "cancel_res": ("un", "res_id"),
     "set_enroll": ("un",),

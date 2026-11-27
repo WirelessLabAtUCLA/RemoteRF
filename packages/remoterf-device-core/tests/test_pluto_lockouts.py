@@ -49,9 +49,11 @@ class FakeRadio:
         self.tx_hardwaregain_chan1 = -20
         self.tx_enabled_channels = [0, 1]
         self.rx_enabled_channels = [0, 1]
+        self.dds_enabled = [0] * 8
         self.dds_scales = [.9] * 8
         self.tx_cyclic_buffer = True
         self.loopback = 2
+        self._txbuf = None
         self.events = []
         self.fail_dds = False
         self.fail_tx = False
@@ -72,21 +74,46 @@ class FakeRadio:
         self.events.append("tx_destroy_buffer")
         if self.fail_stop:
             raise RuntimeError("buffer stop failed")
+        self._txbuf = None
 
     def rx_destroy_buffer(self):
         self.events.append("rx_destroy_buffer")
 
-    def tx(self, samples):
+    def tx(self, samples=None):
         self.events.append("tx")
         self.samples = samples
         if self.fail_tx:
             raise RuntimeError("TX failed after starting")
+        if self._txbuf and getattr(self, "tx_cyclic_buffer", False):
+            raise Exception(
+                "TX buffer has been submitted in cyclic mode. "
+                "To push more data the tx buffer must be destroyed first."
+            )
+        if not self._txbuf:
+            self.disable_dds()
+        self._txbuf = True
 
     def dds_single_tone(self, frequency, scale, channel=0):
         self.tone = (frequency, scale, channel)
+        n = len(self.dds_scales) if hasattr(self, "dds_scales") else 8
+        scales = [0] * n
+        base = channel * 4
+        for idx in (base, base + 2):
+            if idx < n:
+                scales[idx] = scale
+        self.dds_scales = scales
+        self.dds_enabled = [1] * n
 
     def dds_dual_tone(self, frequency1, scale1, frequency2, scale2, channel=0):
         self.tone = (frequency1, scale1, frequency2, scale2, channel)
+        n = len(self.dds_scales) if hasattr(self, "dds_scales") else 8
+        scales = [0] * n
+        base = channel * 4
+        for idx, scale in ((base, scale1), (base + 2, scale1), (base + 1, scale2), (base + 3, scale2)):
+            if idx < n:
+                scales[idx] = scale
+        self.dds_scales = scales
+        self.dds_enabled = [1] * n
 
 
 class FakePoe(PoePluto):
@@ -1438,3 +1465,65 @@ def test_get_temperature_reads_die_sensor_in_celsius(cls):
     assert iio[0][1:4] == ("temp0", "input", False)
     if cls is PlutoMIMOSchema:
         assert iio[0][4] == "phy"
+
+
+@pytest.mark.parametrize("stop_method", ["call_tx_destroy_buffer", "call_disable_dds"])
+def test_locked_stop_methods_after_failed_poe_power_off_require_real_power_cut(monkeypatch, stop_method):
+    from remoterf_device_core.drivers.adalm_pluto import poe
+
+    fail_off = [True]
+    poe_calls = []
+    boots = []
+
+    def fake_set_poe(*, on, **kw):
+        poe_calls.append(on)
+        if not on and fail_off[0]:
+            raise OSError("switch timeout")
+
+    monkeypatch.setattr(poe, "set_poe", fake_set_poe)
+    monkeypatch.setattr(poe.time, "sleep", lambda s: None)
+    monkeypatch.setattr(poe, "_iiod_up", lambda ip: boots.append(ip) or True)
+
+    poe_dev = PoePluto(ip="192.0.2.1", port="ether5")
+    vars(poe_dev)["_pluto"] = FakeRadio()
+    obj = schema({**BAND, "allow_rf_loopback": True}, radio=poe_dev)
+
+    rpc(obj, "set_tx_lo", 915_000_000)
+    rpc(obj, "call_tx", [1])
+    rpc(obj, "set_loopback", 2)
+    assert obj._tx_flag is True
+    assert obj._rf_loopback is True
+    assert obj.active_frequencies()["tx_active"] is True
+
+    # Power-off fails: _pluto is dropped, _power_off_failed is True, hardware stays powered & transmitting.
+    with pytest.raises(OSError, match="switch timeout"):
+        rpc(obj, "call_power_down")
+    assert vars(poe_dev)["_pluto"] is None
+    assert vars(poe_dev)["_power_off_failed"] is True
+    assert obj._tx_flag is True
+    assert obj._rf_loopback is True
+    assert obj.active_frequencies()["tx_active"] is True
+
+    # While power-off still fails, stop methods must not take the standby no-op shortcut or clear TX flags.
+    with pytest.raises(OSError, match="switch timeout"):
+        rpc(obj, stop_method)
+    assert boots == []
+    assert vars(poe_dev)["_power_off_failed"] is True
+    assert obj._tx_flag is True
+    assert obj._rf_loopback is True
+    assert obj.active_frequencies()["tx_active"] is True
+    assert obj.active_frequencies()["tx_hz"] == 915_000_000
+
+    # Once the switch recovers, the stop method cuts power without booting and clears TX state.
+    fail_off[0] = False
+    poe_calls.clear()
+    rpc(obj, stop_method)
+    assert poe_calls == [False]
+    assert boots == []
+    assert vars(poe_dev)["_pluto"] is None
+    assert vars(poe_dev)["_power_off_failed"] is False
+    assert poe_dev.power_state == "standby"
+    assert obj._tx_flag is False
+    assert obj._rf_loopback is False
+    assert obj.active_frequencies()["tx_active"] is False
+    assert obj.active_frequencies()["tx_hz"] is None
