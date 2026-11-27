@@ -347,6 +347,10 @@ _told: set = set()  # x@lab strings whose refusal ("why") was already printed
 _auto_tried: set = set()  # x@lab handles auto-reservation already tried for in this process
 
 
+class _UnknownHandleError(RuntimeError):
+    pass
+
+
 def _unreachable(dep):
     return RuntimeError(
         f"can't reach {dep}: log in with remoterf --login {dep} or use a token from {dep}"
@@ -358,9 +362,7 @@ def device_route(token: str, *, refresh: bool = False) -> DeviceRoute:
     if route is not None:
         return route
     with _routes_lock:
-        if refresh:
-            _routes.pop(token, None)
-        route = _routes.get(token)
+        route = None if refresh else _routes.get(token)
         if route is None:
             route = _routes[token] = _resolve(token)
     return route
@@ -377,7 +379,12 @@ def renewed_route(token, route, refusal):
     # Every lab refusal of a token says "invalid token": v1, IDL and v2 alike.
     if "invalid token" not in str(refusal or "") or "@" not in token or route.kind == "global":
         return None
-    fresh = device_route(token, refresh=True)
+    try:
+        fresh = device_route(token, refresh=True)
+    except _UnknownHandleError:
+        if route.res_id is None:
+            return None
+        raise
     if route.res_id is not None and fresh.res_id is None:
         # A refusal keeps the driver's reservation: the next re-resolve compares against it.
         with _routes_lock:
@@ -484,6 +491,11 @@ def _lab(t, x, dep, connection):
     results = exchange()
     if "Token" not in results:
         return DeviceRoute(x, kind, connection)
+    error = unmap_arg(results["error"]) if "error" in results else None
+    if error == "unknown_handle":
+        raise _UnknownHandleError(f"No device {x} at {dep}")
+    if error == "ambiguous_handle":
+        raise RuntimeError(f"More than one device matches {x} at {dep}")
     # Only a handle's first lookup in a process books: a refresh when a reservation ends
     # (renewed_route) must not book the next slot, which the driver refuses anyway.
     first = t not in _auto_tried
@@ -524,17 +536,29 @@ def _fold(s):
     return _key(s.replace("-", "_")).casefold()
 
 
+def _compact(s):
+    return _fold(s).replace("_", "")
+
+
 def _same_handle(items, x, handle_of):
     """The items whose handle is `x` as typed (_key), else, when they all share
-    one handle, those equal to it with '-' as '_' and case ignored (_fold)."""
+    one handle, those equal to it with '-' as '_' and case ignored (_fold),
+    else with separators ('-', '_', whitespace) dropped (_compact)."""
     items = [i for i in items if handle_of(i)]
-    if not _fold(x):
+    key = _key(x)
+    if not key or key.startswith(("rfg_", "bridge-")):
         return []
-    exact = [i for i in items if _key(handle_of(i) or "") == _key(x)]
+    exact = [i for i in items if _key(handle_of(i) or "") == key]
     if exact:
         return exact
-    near = [i for i in items if _fold(handle_of(i) or "") == _fold(x)]
-    return near if len({_key(handle_of(i)) for i in near}) == 1 else []
+    for fold in (_fold, _compact):
+        target = fold(x)
+        if not target:
+            return []
+        near = [i for i in items if fold(handle_of(i) or "") == target]
+        if near:
+            return near if len({_key(handle_of(i)) for i in near}) == 1 else []
+    return []
 
 
 def _global_handle(x, dep):

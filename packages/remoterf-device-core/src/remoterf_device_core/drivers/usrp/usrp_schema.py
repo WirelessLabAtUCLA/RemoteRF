@@ -981,11 +981,11 @@ class UsrpSchema(DeviceSchema):
 
     # region explicit MultiUSRP calls used by simple_send.py
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_set_tx_subdev_spec(self, spec, mboard=0):
         self.device.set_tx_subdev_spec(_construct(spec), mboard)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_set_tx_antenna(self, antenna, chan=0):
         self.device.set_tx_antenna(antenna, chan)
 
@@ -1086,15 +1086,15 @@ class UsrpSchema(DeviceSchema):
     def call_set_rx_dc_offset(self, enable, chan=0):
         self.device.set_rx_dc_offset(enable, chan)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_set_tx_rate(self, rate, chan=0):
         self.device.set_tx_rate(rate, chan)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_set_tx_freq(self, tune_request, chan=0):
         self.device.set_tx_freq(_construct(tune_request), chan)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_set_tx_gain(self, gain, chan=0):
         self.device.set_tx_gain(gain, chan)
 
@@ -1108,6 +1108,7 @@ class UsrpSchema(DeviceSchema):
     @idl_expose(
         kind="call",
         client_return=c.ctor("uhd.TXStreamer", "$self", "$result"),
+        tag="TX",
     )
     def call_get_tx_stream(self, stream_args):
         return self._put_streamer("tx", self.device.get_tx_stream(_construct(stream_args)))
@@ -1146,7 +1147,7 @@ class UsrpSchema(DeviceSchema):
         )
         return count, recv_buffer, _rx_metadata_payload(metadata)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_stream_send(self, value):
         _require_dict(value, "stream_send")
         _require_key(value, "handle", "stream_send")

@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
 import math
 import os
 import sqlite3
@@ -30,6 +31,7 @@ from uuid import UUID, uuid4, uuid5
 
 from ..common.utils import *
 from ..common.utils.api_token import hash_password, verify_password
+from remoterf_device_core.idl.tags import BLOCK_ALL_TAG
 from remoterf_federation_core import (
     canonical_uuid,
     federated_identity,
@@ -39,9 +41,10 @@ from .device_manager import (
     active_frequencies_snapshot,
     device_inventory_snapshot,
     diag_blocks,
-    find_device_id_by_handle,
     get_all_devices,
+    is_passthrough_token,
     reservation_bridge_token,
+    resolve_device_handle,
     get_registered_devices,
     set_device,
     get_all_devices_str,
@@ -84,6 +87,7 @@ from .federation.migrations import (
     migrate_reservations_schema,
 )
 
+logger = logging.getLogger(__name__)
 allow_connections = True
 
 def _parse_reservation_datetime(value) -> datetime:
@@ -141,6 +145,10 @@ def _clear_failures(key: str) -> None:
 
 # ACC:availability and ACC:active_frequencies: at most one call per interval per account.
 AVAILABILITY_WINDOW_SEC = 6 * 3600
+# Retired reservation tokens stay recognizable to ACC:device_token for a week so
+# expired or cancelled raw <token>@<lab> tokens reach the device plane instead of
+# looking like unknown handles.
+RETIRED_TOKEN_RETENTION_SEC = 7 * 86400
 try:
     _AVAIL_INTERVAL = float(os.getenv("REMOTERF_AVAILABILITY_INTERVAL_SEC", "10"))
 except ValueError:
@@ -354,6 +362,24 @@ class ReservationHandler:
             created_at TIMESTAMP NOT NULL,
             last_used_at TIMESTAMP NOT NULL
         )
+        ''')
+
+        # Recently expired or cancelled reservation tokens: kept briefly so
+        # ACC:device_token lets the device plane reject them as expired/invalid
+        # instead of reporting them as unknown device handles.
+        self.cursor.executescript('''
+        CREATE TABLE IF NOT EXISTS RetiredTokens (
+            salt TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            retired_at INTEGER NOT NULL,
+            PRIMARY KEY (salt, hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_retired_tokens_retired_at ON RetiredTokens(retired_at);
+        CREATE TRIGGER IF NOT EXISTS retired_tokens_del AFTER DELETE ON Reservations
+        WHEN OLD.salt != '' AND OLD.hash != '' BEGIN
+            INSERT OR REPLACE INTO RetiredTokens (salt, hash, retired_at)
+            VALUES (OLD.salt, OLD.hash, CAST(strftime('%s', 'now') AS INTEGER));
+        END;
         ''')
         
         self.cursor.close()
@@ -965,6 +991,7 @@ class ReservationHandler:
                 self.cursor.execute('DROP TABLE IF EXISTS Accounts')
                 self.cursor.execute('DROP TABLE IF EXISTS Reservations')
                 self.cursor.execute('DROP TABLE IF EXISTS ClientSessions')
+                self.cursor.execute('DROP TABLE IF EXISTS RetiredTokens')
                 perms.rm_db()
                 sys.exit()
     
@@ -1621,15 +1648,57 @@ class ReservationHandler:
         ).fetchone()
         return row is not None
 
+    def _is_passthrough_token(self, handle: str) -> bool:
+        """True when `handle` is a known device-plane token (bridge, super,
+        reservation bearer, or partner HOME token) that should pass through
+        unchanged."""
+        if not isinstance(handle, str) or not handle:
+            return False
+        if is_passthrough_token(handle):
+            return True
+        if self.federation_devices is not None:
+            try:
+                if self.federation_devices.resolve_token(handle) is not None:
+                    return True
+            except Exception:
+                pass
+        cutoff = int(time.time()) - RETIRED_TOKEN_RETENTION_SEC
+        rows = self.cursor.execute(
+            "SELECT salt, hash FROM Reservations "
+            "UNION ALL "
+            "SELECT salt, hash FROM RetiredTokens WHERE retired_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        for salt, hsh in rows:
+            if not (salt and hsh):
+                continue
+            try:
+                if validate_token(salt, hsh, handle):
+                    return True
+            except ValueError:
+                continue
+        return False
+
     @db_connection
     def device_token(self, username, handle):
         """`handle` (which may be a raw token: never log it) as a token for the
         caller's own live reservation on that device: a bridge token bound to
-        it. Anything that is not a handle comes back unchanged, for the device
-        plane to judge. The refusal never says who holds the device."""
-        gid = find_device_id_by_handle(handle)
+        it. Known device-plane tokens come back unchanged, for the device plane
+        to judge; unknown or ambiguous handles report why. The refusal never
+        says who holds the device."""
+        gid, ambiguous = resolve_device_handle(handle)
         if gid is None:
-            return {"Token": map_arg(handle)}
+            if ambiguous:
+                return {
+                    "Token": map_arg(handle),
+                    "error": map_arg("ambiguous_handle"),
+                }
+            if self._is_passthrough_token(handle):
+                return {"Token": map_arg(handle)}
+            return {
+                "Token": map_arg(handle),
+                "error": map_arg("unknown_handle"),
+            }
         why = {"Token": map_arg(handle), "why": map_arg(f"no active reservation of yours on {handle} right now")}
         # update_devices() applied the federated/incoherent filters to the live
         # pair, but leaves an offline device's pair and expired rows alone:
@@ -2057,6 +2126,58 @@ class ReservationHandler:
             return None
         return None
 
+    def _blocked_tags_for_holder_locked(
+        self,
+        username: str,
+        device_id: int,
+        *,
+        uid: int | None = None,
+        relayed_only: bool = False,
+    ) -> tuple[str, ...]:
+        """Effective blocked function tags for ``username`` on ``device_id``.
+
+        Admins, Power Users, and members of the built-in ``admin`` group are
+        never blocked. For Normal Users, non-LAN-only groups granting access to
+        ``device_id`` are evaluated first so a LAN-only group never lifts a
+        remote group's blacklist. Only when no non-LAN-only group grants the
+        device and ``relayed_only`` is False (not a federated reservation) are
+        LAN-only groups consulted. Fails closed (blocking every tagged function)
+        on lookup errors or when no eligible group grants the device.
+        """
+        try:
+            role_rows = perms.get_perms(username) or ()
+            if any(row and row[0] in ("Admin", "Power User") for row in role_rows):
+                return ()
+            if uid is None:
+                uid = self.get_uid(username)
+            if uid < 0:
+                return (BLOCK_ALL_TAG,)
+            relayed = RELAYED.set(True)
+            try:
+                allowed, blocked = user_group_handler.get_users_blocked_tags(
+                    uid=uid, device_id=int(device_id)
+                )
+            finally:
+                RELAYED.reset(relayed)
+            if not allowed and not relayed_only:
+                relayed = RELAYED.set(False)
+                try:
+                    allowed, blocked = user_group_handler.get_users_blocked_tags(
+                        uid=uid, device_id=int(device_id)
+                    )
+                finally:
+                    RELAYED.reset(relayed)
+            if not allowed:
+                return (BLOCK_ALL_TAG,)
+            return tuple(blocked)
+        except Exception:
+            logger.exception(
+                "Failed computing blocked function tags for user=%r device_id=%r; failing closed",
+                username,
+                device_id,
+            )
+            return (BLOCK_ALL_TAG,)
+
     @db_connection
     def update_devices(self):
         devices = get_all_devices()  # whatever your local inventory is
@@ -2069,6 +2190,10 @@ class ReservationHandler:
         # Clean expired reservations for devices we actually know locally
         for k in list(devices.keys()):
             self._clean_expired_reservations(str(k).strip())
+        self.cursor.execute(
+            "DELETE FROM RetiredTokens WHERE retired_at < ?",
+            (int(time.time()) - RETIRED_TOKEN_RETENTION_SEC,),
+        )
 
         self.cursor.execute("SELECT * FROM Reservations")
         reservations = self.cursor.fetchall()
@@ -2084,7 +2209,8 @@ class ReservationHandler:
                 security_state = self._account_security_state_locked(reservation[1])
                 if security_state == "incoherent":
                     continue
-                if security_state == "federated" and not self._federated_reservation_authorized(
+                is_federated = security_state == "federated"
+                if is_federated and not self._federated_reservation_authorized(
                     int(reservation[0])
                 ):
                     # An out-of-band row on a proxy account is never honoured.
@@ -2100,16 +2226,35 @@ class ReservationHandler:
                 # Apply reservation token/state for this device_id (local or virtual)
                 held = (reservation[5] or "", reservation[6] or "")
                 if previous is None or tuple(previous[1:]) != held:
+                    uid = self.get_uid(reservation[1])
                     relayed = RELAYED.set(True)
                     try:
                         bypass = ADMIN_GROUP in user_group_handler.get_groups_user_in(
-                            uid=self.get_uid(reservation[1])
+                            uid=uid
                         )
                     finally:
                         RELAYED.reset(relayed)
                     if bypass:
                         print(f"lockout bypass on: {dev_id} (gid {int(dev_id)})")
-                    set_device(dev_id, *held, bypass=bypass)
+                        blocked_tags = ()
+                    else:
+                        fed_check = getattr(self, "_federated_reservation_authorized", None)
+                        if not is_federated and callable(fed_check):
+                            try:
+                                is_federated = bool(fed_check(int(reservation[0])))
+                            except sqlite3.OperationalError:
+                                is_federated = False
+                        blocked_tags = ReservationHandler._blocked_tags_for_holder_locked(
+                            self,
+                            reservation[1],
+                            int(dev_id),
+                            uid=uid,
+                            relayed_only=is_federated,
+                        )
+                    if blocked_tags:
+                        set_device(dev_id, *held, bypass=bypass, blocked_tags=blocked_tags)
+                    else:
+                        set_device(dev_id, *held, bypass=bypass)
 
                 reservations_now += 1
 

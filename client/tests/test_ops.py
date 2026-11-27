@@ -504,15 +504,31 @@ def test_nothing_reaches_stdout(lab, home, monkeypatch, capsys):
     assert "Invalid login credentials." in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("typed", ["Pluto_A@ucla", "pluto-a@ucla", "PLUTO A@ucla"])
+@pytest.mark.parametrize("typed", ["Pluto_A@ucla", "pluto-a@ucla", "PLUTO A@ucla", "PlutoA@ucla", "plutoa@ucla"])
 def test_a_lab_handle_resolves_leniently_without_an_exact_match(lab, typed):
     assert ops._resolve(lab, typed)[0] == "Pluto_A@ucla"
 
 
 def test_a_global_handle_resolves_leniently_without_an_exact_match(home):
     assert ops._resolve(home, "PLUTO-01@ucla")[0] == "Pluto_01@ucla"
+    assert ops._resolve(home, "Pluto01@ucla")[0] == "Pluto_01@ucla"
     with pytest.raises(ops.RemoteRFOpsError):
-        ops._resolve(home, "Pluto01@ucla")
+        ops._resolve(home, "Pluto02@ucla")
+
+
+def test_separator_folding_and_ambiguity_in_ops_resolve(home):
+    devices = [{"device_id": REF, "deployment_id": DEP, "deployment_name": "ucla", "local_device_id": "1",
+                "display_name": "RTL-SDR 00", "device_type": "rtl_sdr", "online": True, "handle": "RTL-SDR_00",
+                "max_reservation_time_sec": 1800}]
+    home.account.backend.devices = lambda: {"devices": devices, "destinations": []}
+    for typed in ("RTLSDR_00@ucla", "rtlsdr00@ucla", "RTL SDR 00@ucla"):
+        assert ops._resolve(home, typed)[0] == "RTL-SDR_00@ucla"
+    devices.append({**devices[0], "device_id": f"{DEP}:2", "local_device_id": "2",
+                    "display_name": "RTLSDR 00", "handle": "RTLSDR_00"})
+    assert ops._resolve(home, "rtl_sdr_00@ucla")[0] == "RTL-SDR_00@ucla"
+    assert ops._resolve(home, "rtlsdr-00@ucla")[0] == "RTLSDR_00@ucla"
+    with pytest.raises(ops.RemoteRFOpsError):
+        ops._resolve(home, "rtlsdr00@ucla")
 
 
 def test_get_active_frequencies_returns_reserved_plutos_and_defaults_to_saved_session(lab, monkeypatch):

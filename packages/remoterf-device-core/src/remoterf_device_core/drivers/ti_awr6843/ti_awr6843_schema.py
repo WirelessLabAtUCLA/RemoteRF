@@ -709,7 +709,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_clutter_removal(self) -> bool:
         return self.device.clutter_removal
 
-    @idl_expose(kind="set", doc="Enable or disable static clutter removal filter at runtime.")
+    @idl_expose(kind="set", doc="Enable or disable static clutter removal filter at runtime.", tag="TX")
     def set_clutter_removal(self, value: bool) -> None:
         self.device.clutter_removal = bool(value)
 
@@ -717,7 +717,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_fps(self) -> float:
         return self.device.fps
 
-    @idl_expose(kind="set", doc="Set radar target frame rate in Hz (e.g. 10.0, 15.0, 30.0).")
+    @idl_expose(kind="set", doc="Set radar target frame rate in Hz (e.g. 10.0, 15.0, 30.0).", tag="TX")
     def set_fps(self, value: float) -> None:
         self.device.fps = float(value)
 
@@ -725,7 +725,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_preset(self) -> str:
         return self.device.preset
 
-    @idl_expose(kind="set", doc="Switch radar configuration to a preset profile.")
+    @idl_expose(kind="set", doc="Switch radar configuration to a preset profile.", tag="TX")
     def set_preset(self, value: str) -> None:
         self.device.preset = str(value)
 
@@ -733,7 +733,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_mode(self) -> str:
         return self.device.mode
 
-    @idl_expose(kind="set", doc="Set chirp dimension mode ('3d' or '2d').")
+    @idl_expose(kind="set", doc="Set chirp dimension mode ('3d' or '2d').", tag="TX")
     def set_mode(self, value: str) -> None:
         self.device.mode = str(value)
 
@@ -741,7 +741,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_sensitivity(self) -> str:
         return self.device.sensitivity
 
-    @idl_expose(kind="set", doc="Set CFAR detection threshold sensitivity ('low', 'medium', 'high').")
+    @idl_expose(kind="set", doc="Set CFAR detection threshold sensitivity ('low', 'medium', 'high').", tag="TX")
     def set_sensitivity(self, value: str) -> None:
         self.device.sensitivity = str(value)
 
@@ -749,7 +749,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_min_range(self) -> float:
         return self.device.min_range
 
-    @idl_expose(kind="set", doc="Set minimum detection range in meters.")
+    @idl_expose(kind="set", doc="Set minimum detection range in meters.", tag="TX")
     def set_min_range(self, value: float) -> None:
         self.device.min_range = float(value)
 
@@ -757,7 +757,7 @@ class TiMmWaveSchema(DeviceSchema):
     def get_max_range(self) -> float:
         return self.device.max_range
 
-    @idl_expose(kind="set", doc="Set maximum detection range in meters.")
+    @idl_expose(kind="set", doc="Set maximum detection range in meters.", tag="TX")
     def set_max_range(self, value: float) -> None:
         self.device.max_range = float(value)
 
@@ -802,7 +802,7 @@ class TiMmWaveSchema(DeviceSchema):
             timeout=float(timeout),
         )
 
-    @idl_expose(kind="call", doc="Apply newline-delimited TI CLI configuration commands in order.")
+    @idl_expose(kind="call", doc="Apply newline-delimited TI CLI configuration commands in order.", tag="TX")
     def call_apply_config(
         self,
         config_text: str,
@@ -816,7 +816,7 @@ class TiMmWaveSchema(DeviceSchema):
             command_timeout=float(command_timeout),
         )
 
-    @idl_expose(kind="call", doc="Configure radar parameters via presets (indoor-people, gesture, fast-motion).")
+    @idl_expose(kind="call", doc="Configure radar parameters via presets (indoor-people, gesture, fast-motion).", tag="TX")
     def call_configure(
         self,
         preset: str = "default",
@@ -835,7 +835,7 @@ class TiMmWaveSchema(DeviceSchema):
             start=bool(start),
         )
 
-    @idl_expose(kind="call", doc="Send one runtime CLI command and return the textual response.")
+    @idl_expose(kind="call", doc="Send one runtime CLI command and return the textual response.", tag="TX")
     def call_send_command(self, command: str, timeout: float = 2.0) -> str:
         """Sends single CLI command string (e.g. 'version', 'sensorStop')."""
         return self.device.send_command(str(command), timeout=float(timeout))
@@ -850,7 +850,7 @@ class TiMmWaveSchema(DeviceSchema):
         """Flushes input buffers."""
         return self.device.flush_frames()
 
-    @idl_expose(kind="call", doc="Start radar RF transmission and data streaming.")
+    @idl_expose(kind="call", doc="Start radar RF transmission and data streaming.", tag="TX")
     def call_start(self, timeout: float = 5.0) -> bool:
         """Sends sensorStart."""
         return self.device.start(timeout=float(timeout))

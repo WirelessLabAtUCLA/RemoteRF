@@ -27,6 +27,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
+from remoterf_device_core.idl.tags import blocked_tag_message, find_blocked_tag
 from remoterf_device_core.native_lifetime import Activity, submit_cleanup
 from remoterf_device_core.integrations import IntegrationError
 from remoterf_device_core.integrations.wire import INTEGRATION_METHODS, decode_request, validate_arguments, validate_result
@@ -42,6 +43,7 @@ from ..common.idl.v2 import (
     CONTROL_PROTOCOL_VERSION,
     SCHEMA_VERSION,
     STREAMING_PROTOCOL_VERSION,
+    get_method_tags,
 )
 # Retained as a module attribute for integrations that patched the former
 # policy loader. Runtime access is no longer gated by it.
@@ -51,12 +53,15 @@ from ..drivers.usrp.uhd_manifest import (
     HANDLE_RETURN_METHODS,
 )
 from .device_manager import (
+    ReservationChangedError,
     hardware_access,
     diag_blocks,
     get_local_device_context,
+    is_master_token,
     register_reservation_end_callback,
     resolve_gid_for_token,
     token_matches_device,
+    verify_device_reservation,
 )
 from .v2_errors import (
     RemoteRFNativeUHDError,
@@ -565,6 +570,9 @@ class DeviceSession:
     cleanup_error: bool = False
     retired_handles: list = field(default_factory=list)
     created_monotonic: float = field(default_factory=time.monotonic)
+    bypass_tag_blacklist: bool = False
+    blocked_tags: tuple[str, ...] = ()
+    reservation: tuple[str, str] | None = None
 
 
 def _refuse_partner_token(token: str) -> None:
@@ -773,6 +781,9 @@ class SessionManager:
         inventory_schema = context["schema"]
         if inventory_schema is not admitted_schema:
             raise RemoteRFReservationError("device inventory changed; retry open")
+        is_master = is_master_token(token)
+        reservation = context.get("reservation")
+        session_blocked_tags = () if is_master else tuple(context.get("blocked_tags", ()) or ())
         schema_v2 = self.schema_for_token(token)
         if requested_schema_hash and requested_schema_hash != schema_v2["schema_hash"]:
             raise RemoteRFProtocolError(
@@ -867,6 +878,9 @@ class SessionManager:
             schema_v2=schema_v2,
             root_handle=root_handle,
             capabilities=capabilities,
+            bypass_tag_blacklist=is_master,
+            blocked_tags=session_blocked_tags,
+            reservation=reservation,
         )
         session.handles[root_handle] = HandleEntry(
             handle=root_handle,
@@ -879,6 +893,11 @@ class SessionManager:
         # callbacks advance the epoch even though bridge tokens are long-lived.
         try:
             valid = resolve_gid_for_token(token) == gid
+            if valid and reservation is not None:
+                try:
+                    verify_device_reservation(gid, reservation)
+                except ReservationChangedError:
+                    valid = False
         except Exception:
             valid = False
         with self._lock:
@@ -901,13 +920,20 @@ class SessionManager:
             session = self._sessions.get(session_id)
         if session is None or session.closed:
             raise RemoteRFSessionExpiredError("unknown or closed device session")
-        if validate_reservation and not token_matches_device(session.token, session.gid):
-            self.close(session_id)
-            raise RemoteRFSessionExpiredError(
-                "reservation ended; the device session and all handles are stale"
-            )
-        if validate_reservation and diag_blocks(session.gid):
-            raise RemoteRFReservationError("the device is under diagnostics; try again in a few minutes")
+        if validate_reservation:
+            still_valid = token_matches_device(session.token, session.gid)
+            if still_valid and session.reservation is not None:
+                try:
+                    verify_device_reservation(session.gid, session.reservation)
+                except ReservationChangedError:
+                    still_valid = False
+            if not still_valid:
+                self.close(session_id)
+                raise RemoteRFSessionExpiredError(
+                    "reservation ended; the device session and all handles are stale"
+                )
+            if diag_blocks(session.gid):
+                raise RemoteRFReservationError("the device is under diagnostics; try again in a few minutes")
         return session
 
     def get_handle(
@@ -1354,6 +1380,34 @@ class SessionManager:
             job.done.wait(max(0.0, deadline - time.monotonic()))
         return len(session_ids)
 
+    @staticmethod
+    def _check_blocked_tags(
+        session: DeviceSession,
+        owner: str,
+        method_name: str,
+    ) -> None:
+        if session.reservation is not None:
+            try:
+                verify_device_reservation(session.gid, session.reservation)
+            except ReservationChangedError:
+                raise RemoteRFSessionExpiredError(
+                    "reservation ended; the device session and all handles are stale"
+                ) from None
+        if session.bypass_tag_blacklist:
+            return
+        blocked_tags = session.blocked_tags
+        if not blocked_tags:
+            return
+        matched = find_blocked_tag(
+            get_method_tags(session.schema_v2, owner, method_name),
+            blocked_tags,
+        )
+        if matched is not None:
+            raise RemoteRFPolicyError(
+                blocked_tag_message(method_name, matched),
+                method=method_name,
+            )
+
     def invoke(self, session_id, handle, method_name, args, *, positional_args=None, overload_id=""):
         if method_name in INTEGRATION_METHODS:
             try:
@@ -1365,6 +1419,7 @@ class SessionManager:
                 if not any(item['owner'] == entry.type_id and item['name'] == method_name
                            for item in session.schema_v2['methods']):
                     raise IntegrationError("unsupported", "generic integration API is not declared by this driver")
+                self._check_blocked_tags(session, entry.type_id, method_name)
                 context = get_local_device_context(session.gid)
                 if not context or context['dtype'] != 'usrp':
                     raise IntegrationError("unsupported_device", "integrations require a configured plain USRP")
@@ -1405,6 +1460,7 @@ class SessionManager:
             )
             if descriptor is None:
                 raise RemoteRFProtocolError(f"method is not declared by schema v2: {method_name}")
+            self._check_blocked_tags(session, entry.type_id, method_name)
             _validate_overload(
                 descriptor,
                 overload_id,
@@ -1470,6 +1526,7 @@ class SessionManager:
                 f"method is not declared by schema v2: "
                 f"{entry.type_id}.{method_name}"
             )
+        self._check_blocked_tags(session, entry.type_id, method_name)
         _validate_overload(
             descriptor,
             overload_id,
@@ -1853,6 +1910,13 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             raise RemoteRFProtocolError(
                                 "sample direction does not match the streamer type"
                             )
+                        session_manager._check_blocked_tags(
+                            session,
+                            entry.type_id,
+                            "send"
+                            if request.direction == grpc_pb2.SAMPLE_DIRECTION_TX
+                            else "recv",
+                        )
                         with entry.lock:
                             if entry.active_operation:
                                 raise RemoteRFServerOverloadedError(
@@ -1984,6 +2048,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                     ):
                         if not entry.type_id.endswith("RXStreamer"):
                             raise RemoteRFStaleHandleError("RX request used a non-RX handle")
+                        session_manager._check_blocked_tags(session, entry.type_id, "recv")
                         buffer = np.empty(shape, dtype=dtype)
                         metadata = self._metadata_object(
                             session.schema, "RXMetadata", request.metadata_json
@@ -2090,6 +2155,7 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                     ):
                         if not entry.type_id.endswith("TXStreamer"):
                             raise RemoteRFStaleHandleError("TX data used a non-TX handle")
+                        session_manager._check_blocked_tags(session, entry.type_id, "send")
                         if len(request.payload) != byte_count:
                             raise RemoteRFProtocolError(
                                 "TX payload byte length does not match dtype/shape"

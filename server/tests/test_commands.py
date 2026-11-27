@@ -331,6 +331,50 @@ class NonInteractiveGroupCommandsTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("requires a group and --yes", output)
 
+    def test_group_create_and_edit_blacklist_tags_flags(self):
+        rc, output = self.run_shell([
+            "groups", "create", "rxonly", "--devices", "3",
+            "--blacklist-tags", "TX,FOO,tx", "--yes", "--json",
+        ])
+        self.assertEqual(rc, 0, output)
+        created = json.loads(output)
+        self.assertEqual(created["blacklisted_tags"], ["TX", "FOO"])
+        row = self.handler.get_all_user_groups(include_users=False)[-1]
+        self.assertEqual(row["blacklisted_tags"], ["TX", "FOO"])
+
+        rc, output = self.run_shell([
+            "groups", "edit", "rxonly", "--blacklist-tags", "BAR", "--yes", "--json",
+        ])
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(json.loads(output)["blacklisted_tags"], ["BAR"])
+        row = self.handler.get_all_user_groups(include_users=False)[-1]
+        self.assertEqual(row["blacklisted_tags"], ["BAR"])
+
+        rc, output = self.run_shell([
+            "groups", "edit", "rxonly", "--clear-blacklist-tags", "--yes", "--json",
+        ])
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(json.loads(output)["blacklisted_tags"], [])
+        row = self.handler.get_all_user_groups(include_users=False)[-1]
+        self.assertEqual(row["blacklisted_tags"], [])
+
+        rc, output = self.run_shell([
+            "groups", "edit", "rxonly", "--blacklist-tags", "TX",
+            "--clear-blacklist-tags", "--yes",
+        ])
+        self.assertEqual(rc, 1)
+        self.assertIn("mutually exclusive", output)
+
+        rc, output = self.run_shell([
+            "groups", "create", "badtags", "--devices", "3",
+            "--blacklist-tags", ",,,", "--yes",
+        ])
+        self.assertEqual(rc, 1)
+
+        groups_help = "\n".join(commands.help_text(in_daemon=False, section="Groups"))
+        self.assertIn("--blacklist-tags", groups_help)
+        self.assertIn("--clear-blacklist-tags", groups_help)
+
     def test_codes_remove_one_invite_and_all_for_group(self):
         rc, output = self.create_group()
         group_id = json.loads(output)["group_id"]

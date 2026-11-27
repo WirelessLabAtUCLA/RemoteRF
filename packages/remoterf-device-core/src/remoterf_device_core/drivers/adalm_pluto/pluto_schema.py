@@ -880,7 +880,7 @@ class PlutoSchema(DeviceSchema):
     def get_loopback(self):
         return self.device.loopback
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_loopback(self, value):
         self.device.loopback = value
         self._record_tx(loopback=_is_rf_loopback(value))
@@ -907,7 +907,7 @@ class PlutoSchema(DeviceSchema):
     def get_tx_hardwaregain_chan0(self):
         return self.device.tx_hardwaregain_chan0
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_hardwaregain_chan0(self, value):
         self.device.tx_hardwaregain_chan0 = value
 
@@ -924,7 +924,7 @@ class PlutoSchema(DeviceSchema):
     def get_tx_rf_bandwidth(self):
         return self.device.tx_rf_bandwidth
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_rf_bandwidth(self, value):
         self.device.tx_rf_bandwidth = value
         self._record_freq("tx_rf_bandwidth", value)
@@ -966,7 +966,7 @@ class PlutoSchema(DeviceSchema):
     def get_tx_lo(self):
         return self.device.tx_lo
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_lo(self, value):
         self.device.tx_lo = value
         self._record_freq("tx_hz", value)
@@ -975,7 +975,7 @@ class PlutoSchema(DeviceSchema):
     def get_tx_cyclic_buffer(self):
         return self.device.tx_cyclic_buffer
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_cyclic_buffer(self, value):
         self.device.tx_cyclic_buffer = value
 
@@ -1000,7 +1000,7 @@ class PlutoSchema(DeviceSchema):
     def call_rx_destroy_buffer(self):
         self.device.rx_destroy_buffer()
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_tx(self, value):
         self._sync_freq_power_state()
         radio = self._lockout_handle() if self.device is not None else None
@@ -1041,7 +1041,7 @@ class PlutoSchema(DeviceSchema):
             dds = None
         self._record_tx(buffer=has_txbuf, dds=dds)
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_tx_destroy_buffer(self):
         self.device.tx_destroy_buffer()
         self._record_tx(buffer=False)
@@ -1169,7 +1169,7 @@ class PlutoSchema(DeviceSchema):
             finally:
                 self._sync_freq_power_state()
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_disable_dds(self):
         """Disable the internal DDS tone generator."""
         self.device.disable_dds()
@@ -1239,7 +1239,7 @@ class PlutoSchema(DeviceSchema):
             return
         self._record_tx(dds=self._dds_active_from_device())
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_dds_single_tone(self, frequency, scale, channel=0):
         """Generate one complex DDS tone on the selected TX channel."""
         try:
@@ -1249,7 +1249,7 @@ class PlutoSchema(DeviceSchema):
             raise
         self._record_tx(dds=_any_nonzero(scale))
 
-    @idl_expose(kind="call")
+    @idl_expose(kind="call", tag="TX")
     def call_dds_dual_tone(
         self,
         frequency1,
@@ -1276,7 +1276,7 @@ class PlutoSchema(DeviceSchema):
     def get_dds_frequencies(self):
         return self.device.dds_frequencies
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_dds_frequencies(self, value):
         self.device.dds_frequencies = value
 
@@ -1284,7 +1284,7 @@ class PlutoSchema(DeviceSchema):
     def get_dds_scales(self):
         return self.device.dds_scales
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_dds_scales(self, value):
         try:
             self.device.dds_scales = value
@@ -1295,7 +1295,7 @@ class PlutoSchema(DeviceSchema):
     def get_dds_phases(self):
         return self.device.dds_phases
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_dds_phases(self, value):
         self.device.dds_phases = value
 
@@ -1303,7 +1303,7 @@ class PlutoSchema(DeviceSchema):
     def get_dds_enabled(self):
         return self.device.dds_enabled
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_dds_enabled(self, value):
         try:
             self.device.dds_enabled = value
@@ -1326,7 +1326,7 @@ class PlutoSchema(DeviceSchema):
     def get_tx_enabled_channels(self):
         return self.device.tx_enabled_channels
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_enabled_channels(self, value):
         self.device.tx_enabled_channels = _normalize_channels(value)
 
@@ -1392,7 +1392,7 @@ class PlutoSchema(DeviceSchema):
         """tx_int8_filter_en: Enable interpolate-by-8 filter in FPGA"""
         return bool(self.device.tx_int8_filter_en)
 
-    @idl_expose(kind="set")
+    @idl_expose(kind="set", tag="TX")
     def set_tx_int8_filter_en(self, value):
         """tx_int8_filter_en: Enable interpolate-by-8 filter in FPGA"""
         self.device.tx_int8_filter_en = value

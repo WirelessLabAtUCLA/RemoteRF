@@ -32,6 +32,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from remoterf_device_core.idl.tags import OLD_HOST_TAGS_ERROR, clean_blocked_tags
+from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
 from ..host import host_tunnel_server as hts
 from . import global_onboarding
 from .federation.identity import load_private_key, load_state, public_key_pem
@@ -122,7 +125,14 @@ def lab_info(host_id: str, tls_public_key: str) -> dict | None:
         return None
 
 
-def issue_grant(host_id: str, gid: int, rid: str, reservation_end: float, tag: str = "") -> str:
+def issue_grant(
+    host_id: str,
+    gid: int,
+    rid: str,
+    reservation_end: float,
+    tag: str = "",
+    blocked_tags: tuple[str, ...] | list[str] = (),
+) -> str:
     state_dir, state, _hostname = _identity()
     now = time.time()
     claims = {
@@ -135,13 +145,25 @@ def issue_grant(host_id: str, gid: int, rid: str, reservation_end: float, tag: s
         "iat": now,
         "exp": int(min(float(reservation_end), now + 120)),
     }
+    tags = list(clean_blocked_tags(blocked_tags))
+    if tags:
+        claims["blocked_tags"] = tags
     return jwt.encode(
         claims, load_private_key(state_dir), algorithm="EdDSA",
         headers={"typ": "remoterf-host-grant"},
     )
 
 
-def _start_refresher(host_id: str, gid: int, rid: str, reservation_end: float, still_live, session, tag: str = "") -> None:
+def _start_refresher(
+    host_id: str,
+    gid: int,
+    rid: str,
+    reservation_end: float,
+    still_live,
+    session,
+    tag: str = "",
+    blocked_tags: tuple[str, ...] | list[str] = (),
+) -> None:
     key = (host_id, int(gid))
     with _refresh_lock:
         old = _refreshers.pop(key, None)
@@ -193,8 +215,24 @@ def _start_refresher(host_id: str, gid: int, rid: str, reservation_end: float, s
             logger.warning("host direct grant refresh unavailable for %s: no tunnel", host_id)
             schedule()
             return
+        clean_blocked = clean_blocked_tags(blocked_tags)
+        if clean_blocked and not hts.host_supports_function_tags(host_id, registry=registry):
+            logger.warning("host direct grant refresh refused for %s: host lacks function_tags capability", host_id)
+            try:
+                registry.send_control(
+                    host_id, kind="revoke", device_id=str(gid),
+                    payload={"rid": str(rid), "at": time.time()},
+                )
+            except Exception as exc:
+                logger.warning("host direct revoke unavailable for %s: %s", host_id, exc)
+            stop()
+            return
         try:
-            grant = issue_grant(host_id, gid, rid, reservation_end, tag)
+            grant = (
+                issue_grant(host_id, gid, rid, reservation_end, tag, clean_blocked)
+                if clean_blocked
+                else issue_grant(host_id, gid, rid, reservation_end, tag)
+            )
         except Exception as exc:
             logger.warning("host direct grant refresh unavailable for %s: %s", host_id, exc)
             schedule()
@@ -261,11 +299,23 @@ def _valid_answer(answer: object) -> bool:
         return False
 
 
-def offer(device, ice: str, *, rid: str, reservation_end: float, still_live, tag: str = "") -> dict | None:
+def offer(
+    device,
+    ice: str,
+    *,
+    rid: str,
+    reservation_end: float,
+    still_live,
+    tag: str = "",
+    blocked_tags: tuple[str, ...] | list[str] = (),
+) -> dict | None:
     """Ask the owning Host to answer ICE, leaving callers to use lab fallback."""
     host_id = str(getattr(device, "host_id", "") or "")
     gid = int(getattr(device, "gid"))
+    clean_blocked = clean_blocked_tags(blocked_tags)
     registry = hts.get_tunnel_registry(create=False)
+    if clean_blocked and not hts.host_supports_function_tags(host_id, registry=registry):
+        raise RemoteRFPolicyError(OLD_HOST_TAGS_ERROR)
     if registry is None:
         return None
     session = registry.session_for_host(host_id)
@@ -285,9 +335,14 @@ def offer(device, ice: str, *, rid: str, reservation_end: float, still_live, tag
     failed = False
     try:
         def ask():
+            grant = (
+                issue_grant(host_id, gid, rid, reservation_end, tag, clean_blocked)
+                if clean_blocked
+                else issue_grant(host_id, gid, rid, reservation_end, tag)
+            )
             return registry.request_control(
                 host_id, kind="direct_offer", device_id=str(gid), timeout=_OFFER_TIMEOUT_SECONDS,
-                payload={"ice": ice, "grant": issue_grant(host_id, gid, rid, reservation_end, tag)},
+                payload={"ice": ice, "grant": grant},
             )
 
         response = ask()
@@ -315,7 +370,10 @@ def offer(device, ice: str, *, rid: str, reservation_end: float, still_live, tag
         slot = getattr(registry, "relay_slot_for_host", lambda _host_id: None)(host_id)
         if isinstance(relay, dict) and slot is not None:
             answer["relay"] = {"session": relay["session"], "endpoint": slot["endpoint"]}
-        _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag)
+        if clean_blocked:
+            _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag, clean_blocked)
+        else:
+            _start_refresher(host_id, gid, rid, reservation_end, still_live, session, tag)
         return answer
     finally:
         _finish_offer(host_id, failed=failed)

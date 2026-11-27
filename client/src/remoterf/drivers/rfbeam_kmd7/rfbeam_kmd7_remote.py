@@ -14,10 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Auto-generated from IDL schema — do not edit by hand.
-# device_type: rfbeam_kmd7  driver_version: 0.1.0  schema_hash: sha256:af9f79ac65f78f524b1c28fdd6226988f8dc69b1c99df8df8eeeb69f15ce52d3
+# device_type: rfbeam_kmd7  driver_version: 0.2.0  schema_hash: sha256:a83ef756c00700b1be9eb4ec049725cbd66e2ebfb2f70a637fe397af4d1ddef7
 
 _PREFIX = "Rfbeam_kmd7"
-_SCHEMA_HASH = "sha256:af9f79ac65f78f524b1c28fdd6226988f8dc69b1c99df8df8eeeb69f15ce52d3"
+_SCHEMA_HASH = "sha256:a83ef756c00700b1be9eb4ec049725cbd66e2ebfb2f70a637fe397af4d1ddef7"
 _CLIENT_MODULES = {'rfbeam_kmd7': 'remoterf.drivers.support.rfbeam_kmd7'}
 _CLIENT_OBJECTS = {}
 
@@ -157,6 +157,15 @@ class RFBeamKMD7:
         return batch(self.token)
 
     @property
+    def baudrate(self):
+        'Active UART baud rate in bps (115200..3000000).'
+        return _try_get("baudrate", self.token)
+
+    @baudrate.setter
+    def baudrate(self, value):
+        _try_set("baudrate", value, self.token)
+
+    @property
     def device_info(self):
         'Serial port, connection identity, and firmware version.'
         return _try_get("device_info", self.token)
@@ -174,6 +183,15 @@ class RFBeamKMD7:
     def firmware_version(self):
         'Firmware version string (e.g. K-MD7_APP-RFB-0205).'
         return _try_get("firmware_version", self.token)
+
+    @property
+    def frequency_channel(self):
+        'RF base frequency channel (0=Low, 1=Middle, 2=High).'
+        return _try_get("frequency_channel", self.token)
+
+    @frequency_channel.setter
+    def frequency_channel(self, value):
+        _try_set("frequency_channel", value, self.token)
 
     @property
     def is_running(self):
@@ -199,6 +217,33 @@ class RFBeamKMD7:
         _try_set("max_speed", value, self.token)
 
     @property
+    def max_speed_filter(self):
+        'Maximum detection speed filter as percentage of speed setting (0 - 100%).'
+        return _try_get("max_speed_filter", self.token)
+
+    @max_speed_filter.setter
+    def max_speed_filter(self, value):
+        _try_set("max_speed_filter", value, self.token)
+
+    @property
+    def max_zone_angle(self):
+        'Maximum detection zone azimuth angle in degrees (-30 to +30).'
+        return _try_get("max_zone_angle", self.token)
+
+    @max_zone_angle.setter
+    def max_zone_angle(self, value):
+        _try_set("max_zone_angle", value, self.token)
+
+    @property
+    def max_zone_distance(self):
+        'Maximum detection zone distance as percentage of range setting (0 - 100%).'
+        return _try_get("max_zone_distance", self.token)
+
+    @max_zone_distance.setter
+    def max_zone_distance(self, value):
+        _try_set("max_zone_distance", value, self.token)
+
+    @property
     def min_speed_filter(self):
         'Minimum detection speed filter as percentage of speed setting (0 - 100%).'
         return _try_get("min_speed_filter", self.token)
@@ -206,6 +251,24 @@ class RFBeamKMD7:
     @min_speed_filter.setter
     def min_speed_filter(self, value):
         _try_set("min_speed_filter", value, self.token)
+
+    @property
+    def min_zone_angle(self):
+        'Minimum detection zone azimuth angle in degrees (-30 to +30).'
+        return _try_get("min_zone_angle", self.token)
+
+    @min_zone_angle.setter
+    def min_zone_angle(self, value):
+        _try_set("min_zone_angle", value, self.token)
+
+    @property
+    def min_zone_distance(self):
+        'Minimum detection zone distance as percentage of range setting (0 - 100%).'
+        return _try_get("min_zone_distance", self.token)
+
+    @min_zone_distance.setter
+    def min_zone_distance(self, value):
+        _try_set("min_zone_distance", value, self.token)
 
     @property
     def mode(self):
@@ -220,6 +283,11 @@ class RFBeamKMD7:
     def radar_parameters(self):
         'Complete 31-byte radar parameter structure (RPST).'
         return _try_get("radar_parameters", self.token)
+
+    @property
+    def stream_mask(self):
+        'Active RDOT streaming output bitmask (0 when stopped).'
+        return _try_get("stream_mask", self.token)
 
     @property
     def stream_stats(self):
@@ -244,6 +312,27 @@ class RFBeamKMD7:
     def tracking_filter(self, value):
         _try_set("tracking_filter", value, self.token)
 
+    def capture_full_frame(self, timeout=_NO_ARG, *, raw_adc=_NO_ARG, raw_fft=_NO_ARG, raw_targets=_NO_ARG, tracked_targets=_NO_ARG, use_handshake=_NO_ARG):
+        'Capture RADC, RFFT, PDAT, and TDAT together from one radar frame.'
+        return _try_calln("capture_full_frame", self.token, {
+            "timeout": timeout,
+            "raw_adc": raw_adc,
+            "raw_fft": raw_fft,
+            "raw_targets": raw_targets,
+            "tracked_targets": tracked_targets,
+            "use_handshake": use_handshake,
+        })
+
+    def capture_next_frame(self, *, raw_adc=_NO_ARG, raw_fft=_NO_ARG, raw_targets=_NO_ARG, tracked_targets=_NO_ARG, timeout=_NO_ARG):
+        'Request one frame on demand via GNFD handshake mode.'
+        return _try_calln("capture_next_frame", self.token, {
+            "raw_adc": raw_adc,
+            "raw_fft": raw_fft,
+            "raw_targets": raw_targets,
+            "tracked_targets": tracked_targets,
+            "timeout": timeout,
+        })
+
     def capture_point_cloud(self, timeout=_NO_ARG):
         'Capture structured 2D point cloud with positions, velocities, and power.'
         return _try_calln("capture_point_cloud", self.token, {
@@ -258,14 +347,28 @@ class RFBeamKMD7:
             "include_tracked": include_tracked,
         })
 
+    def capture_raw_adc(self, timeout=_NO_ARG, *, use_handshake=_NO_ARG):
+        'Capture raw ADC I/Q samples (RADC: 3 IF blocks x 512 I/Q uint16).'
+        return _try_calln("capture_raw_adc", self.token, {
+            "timeout": timeout,
+            "use_handshake": use_handshake,
+        })
+
+    def capture_raw_fft(self, timeout=_NO_ARG, *, use_handshake=_NO_ARG):
+        'Capture raw 512-point FFT spectrum and threshold in dB (RFFT).'
+        return _try_calln("capture_raw_fft", self.token, {
+            "timeout": timeout,
+            "use_handshake": use_handshake,
+        })
+
     def capture_targets(self, timeout=_NO_ARG):
         'Capture active tracked targets as a list of structured dictionaries.'
         return _try_calln("capture_targets", self.token, {
             "timeout": timeout,
         })
 
-    def configure(self, mode=_NO_ARG, *, max_range=_NO_ARG, max_speed=_NO_ARG, threshold_offset=_NO_ARG, tracking_filter=_NO_ARG, min_speed_filter=_NO_ARG):
-        'Configure radar parameters via high-level presets.'
+    def configure(self, mode=_NO_ARG, *, max_range=_NO_ARG, max_speed=_NO_ARG, threshold_offset=_NO_ARG, tracking_filter=_NO_ARG, min_speed_filter=_NO_ARG, max_speed_filter=_NO_ARG, direction_filter=_NO_ARG, frequency_channel=_NO_ARG, min_zone_distance=_NO_ARG, max_zone_distance=_NO_ARG, min_zone_angle=_NO_ARG, max_zone_angle=_NO_ARG):
+        'Configure radar parameters via high-level presets and optional overrides.'
         return _try_calln("configure", self.token, {
             "mode": mode,
             "max_range": max_range,
@@ -273,6 +376,13 @@ class RFBeamKMD7:
             "threshold_offset": threshold_offset,
             "tracking_filter": tracking_filter,
             "min_speed_filter": min_speed_filter,
+            "max_speed_filter": max_speed_filter,
+            "direction_filter": direction_filter,
+            "frequency_channel": frequency_channel,
+            "min_zone_distance": min_zone_distance,
+            "max_zone_distance": max_zone_distance,
+            "min_zone_angle": min_zone_angle,
+            "max_zone_angle": max_zone_angle,
         })
 
     def flush_frames(self):
@@ -280,19 +390,38 @@ class RFBeamKMD7:
         return _try_call("flush_frames", self.token)
 
     def read_frame(self, timeout=_NO_ARG):
-        'Read one synchronized raw radar frame.'
+        'Read one synchronized radar frame summary.'
         return _try_calln("read_frame", self.token, {
             "timeout": timeout,
         })
 
     def restore_factory_settings(self):
-        'Restore factory default settings.'
+        'Restore factory default settings (RFSE).'
         return _try_call("restore_factory_settings", self.token)
 
-    def start(self):
-        'Start radar streaming.'
-        return _try_call("start", self.token)
+    def set_detection_zone(self, min_dist_pct=_NO_ARG, max_dist_pct=_NO_ARG, min_angle_deg=_NO_ARG, max_angle_deg=_NO_ARG):
+        'Set detection zone distance (%) and azimuth angle (-30..+30 deg).'
+        return _try_calln("set_detection_zone", self.token, {
+            "min_dist_pct": min_dist_pct,
+            "max_dist_pct": max_dist_pct,
+            "min_angle_deg": min_angle_deg,
+            "max_angle_deg": max_angle_deg,
+        })
+
+    def set_radar_parameters(self, params):
+        'Update complete radar parameter structure atomically (SRPS).'
+        return _try_call("set_radar_parameters", self.token, params)
+
+    def start(self, raw_targets=_NO_ARG, tracked_targets=_NO_ARG, *, raw_adc=_NO_ARG, raw_fft=_NO_ARG, bitmask=_NO_ARG):
+        'Start radar streaming with selectable output messages (RDOT).'
+        return _try_calln("start", self.token, {
+            "raw_targets": raw_targets,
+            "tracked_targets": tracked_targets,
+            "raw_adc": raw_adc,
+            "raw_fft": raw_fft,
+            "bitmask": bitmask,
+        })
 
     def stop(self):
-        'Stop radar streaming.'
+        'Stop radar streaming cleanly via RDOT(0x00).'
         return _try_call("stop", self.token)

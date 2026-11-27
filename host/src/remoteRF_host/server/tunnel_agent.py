@@ -54,6 +54,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Iterable, List, Tuple, NoReturn
 
+from remoterf_device_core.idl.tags import BLOCK_ALL_TAG, HOST_FUNCTION_TAGS_CAPABILITY
+
 from ..common.utils import device_name_key, get_devices_config_path, get_host_config_dir
 from ..common.utils.host_logging import error, exception, info, status, warn
 from ..common.grpc import grpc_host_pb2 as host_pb2
@@ -658,6 +660,7 @@ class HostTunnelAgent:
         if hasattr(hello, "capabilities"):
             hello.capabilities.append("reservation_tag")
             hello.capabilities.append("active_frequencies")
+            hello.capabilities.append(HOST_FUNCTION_TAGS_CAPABILITY)
 
         direct = getattr(self, "_direct_host", None)
         if direct is not None and hasattr(hello, "capabilities") and hasattr(hello, "tls_public_key"):
@@ -1016,8 +1019,25 @@ class HostTunnelAgent:
                 resync = payload.get("resync", False) is True
             except Exception as exc:
                 warn(f"Invalid {kind} payload: {exc}", component="hostrf.tunnel_agent")
-                bypass, tag, resync = False, "", False
-            prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
+                bypass, tag, resync, blocked_tags = False, "", False, (BLOCK_ALL_TAG,)
+            else:
+                blocked_tags = ()
+                if "blocked_tags" in payload:
+                    raw_tags = payload["blocked_tags"]
+                    if isinstance(raw_tags, list) and all(
+                        isinstance(item, str) and item.strip() for item in raw_tags
+                    ):
+                        blocked_tags = tuple(item.strip() for item in raw_tags)
+                    else:
+                        warn(
+                            f"Invalid {kind} blocked_tags: {raw_tags!r}",
+                            component="hostrf.tunnel_agent",
+                        )
+                        blocked_tags = (BLOCK_ALL_TAG,)
+            if blocked_tags:
+                prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync, blocked_tags=blocked_tags)
+            else:
+                prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
             info(f"Reservation started on device {gid}: preparing device.", component="hostrf")
             return
         try:
@@ -1164,6 +1184,10 @@ class HostTunnelAgent:
             # self._override_token_for_gid(args_map, gid_s)
 
             try:
+                args_map.pop("__rrf_blocked_tags", None)
+            except Exception:
+                pass
+            try:
                 args_map["gid"].CopyFrom(_argument_string(gid_s))
             except Exception:
                 pass
@@ -1214,7 +1238,7 @@ class HostTunnelAgent:
             self._consume_cancel(req_id)
 
     def _run_direct_call(self, gid: int, greq, expected_epoch=None) -> Dict[str, Any]:
-        excluded = {"a", "token", "device_name", "g", "gid", "device_id"}
+        excluded = {"a", "token", "device_name", "g", "gid", "device_id", "__rrf_master_bypass"}
         args_map = {
             str(key): value
             for key, value in greq.args.items()

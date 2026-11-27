@@ -71,20 +71,58 @@ import json
 
 import numpy as np
 
+from remoterf_device_core.idl.tags import (
+    OLD_HOST_TAGS_ERROR,
+    blocked_tag_message,
+    find_blocked_tag,
+    v1_function_label,
+    v1_method_name,
+)
+from remoterf_device_core.v2_errors import RemoteRFPolicyError
+
 from .reservation import reservation_handler
 from ..common.utils import *
 from ..common.grpc import grpc_pb2 as generic_pb2
-from .device_manager import acquire_device, acquire_device_by_gid, VirtualDevice, get_device_schema, find_device_id_by_name, get_device_by_id, resolve_gid_for_token
+from .device_manager import (
+    VirtualDevice,
+    acquire_device,
+    acquire_device_by_gid,
+    find_device_id_by_name,
+    get_device_by_id,
+    get_device_schema,
+    resolve_gid_for_token,
+    verify_device_reservation,
+)
 from ..host import host_tunnel_server as hts
 
 
 # <Prefix>:batch:CALLN runs op0..op{n-1} in order under one io_lock hold.
 _BATCH_MAX_OPS = 64
 _BATCH_VERBS = {"GET", "SET", "CALL0", "CALL1", "CALLN"}
-_BATCH_ROUTING_KEYS = {"a", "g", "gid", "token", "device_id", "device_name"}
+_BATCH_ROUTING_KEYS = {
+    "a", "g", "gid", "token", "device_id", "device_name",
+    "__rrf_reservation_tag", "__rrf_blocked_tags", "__rrf_master_bypass",
+}
 # <Prefix>:rx_n:CALL1 returns up to arg1 rx() buffers stacked on a new axis.
 _RX_N_MAX_BUFFERS = 64
 _RX_N_MAX_SAMPLES = 1 << 20
+
+
+def _check_v1_blocked_tags(schema: object, prop: str, verb: str, blocked_tags) -> None:
+    if not blocked_tags or schema is None:
+        return
+    get_tags = getattr(schema, "get_method_tags", None)
+    if not callable(get_tags):
+        return
+    method_name = v1_method_name(prop, verb)
+    if method_name is None:
+        return
+    matched = find_blocked_tag(get_tags(method_name), blocked_tags)
+    if matched is not None:
+        raise RemoteRFPolicyError(
+            blocked_tag_message(v1_function_label(prop, verb), matched),
+            method=method_name,
+        )
 
 
 def _normalize_device_rpc_type(value: str) -> str:
@@ -156,9 +194,14 @@ class RpcManager:
             return self._federated_rpc(federated, function_name=function_name, args=args)
 
         try:
-            with acquire_device(api_token) as (gid, dev):
+            with acquire_device(api_token, include_policy=True) as (gid, dev, blocked_tags, reservation):
                 return self._dispatch_acquired(
-                    function_name=function_name, args=args, gid=gid, dev=dev
+                    function_name=function_name,
+                    args=args,
+                    gid=gid,
+                    dev=dev,
+                    blocked_tags=blocked_tags,
+                    reservation=reservation,
                 )
 
         except Exception as e:
@@ -222,17 +265,44 @@ class RpcManager:
         from remoterf_device_core.v2_errors import RemoteRFPolicyError
         from .device_manager import ReservationChangedError
         try:
-            with acquire_device_by_gid(int(gid), expected_reservation=expected_reservation) as (resolved, dev):
+            with acquire_device_by_gid(
+                int(gid), expected_reservation=expected_reservation, include_policy=True
+            ) as (resolved, dev, blocked_tags, reservation):
                 return self._dispatch_acquired(
-                    function_name=function_name, args=args, gid=resolved, dev=dev
+                    function_name=function_name,
+                    args=args,
+                    gid=resolved,
+                    dev=dev,
+                    blocked_tags=blocked_tags,
+                    reservation=reservation,
                 )
         except (RemoteRFPolicyError, ReservationChangedError) as exc:
             return {"a": map_arg(str(exc))}
 
     def _dispatch_acquired(
-        self, *, function_name: str, args: dict, gid: int, dev: object
+        self,
+        *,
+        function_name: str,
+        args: dict,
+        gid: int,
+        dev: object,
+        blocked_tags: tuple[str, ...] | None = None,
+        reservation: tuple[str, str] | None = None,
     ) -> dict:
+        if reservation is not None:
+            verify_device_reservation(gid, reservation)
+
+        effective_blocked = (
+            tuple(getattr(dev, "blocked_tags", ()) or ())
+            if blocked_tags is None
+            else tuple(blocked_tags)
+        )
+
         self._validate_device_rpc_type(function_name=function_name, gid=gid, dev=dev)
+
+        if isinstance(dev, VirtualDevice) and effective_blocked:
+            if not hts.host_supports_function_tags(dev.host_id):
+                raise RemoteRFPolicyError(OLD_HOST_TAGS_ERROR)
 
         # Both live in the RPC layer, not in schemas, so no schema hash moves.
         # An old server sends either to dispatch("call_batch"/"call_rx_n"),
@@ -244,20 +314,43 @@ class RpcManager:
             if prop in ("batch", "rx_n") and hasattr(dev, "list_exposed") else []
         )
         if prop == "batch" and verb == "CALLN" and "call_batch" not in calls:
-            return self._run_batch(function_name=function_name, args=args, gid=gid, dev=dev)
+            return self._run_batch(
+                function_name=function_name,
+                args=args,
+                gid=gid,
+                dev=dev,
+                blocked_tags=effective_blocked,
+                reservation=reservation,
+            )
         if prop == "rx_n" and verb == "CALL1" and "call_rx_n" not in calls and (
             isinstance(dev, VirtualDevice) or "call_rx" in calls
         ):
-            return self._run_rx_n(function_name=function_name, args=args, gid=gid, dev=dev)
+            return self._run_rx_n(
+                function_name=function_name,
+                args=args,
+                gid=gid,
+                dev=dev,
+                blocked_tags=effective_blocked,
+                reservation=reservation,
+            )
 
         if self._should_use_builtin_ip_fallback(function_name=function_name, gid=gid, dev=dev):
             return {"ip": map_arg(self._builtin_ip_fallback(gid=gid, dev=dev))}
 
         if isinstance(dev, VirtualDevice):
+            if effective_blocked:
+                from .host_dynamic_v2 import lab_copy
+                local = lab_copy(gid, dev)
+                if local is not None:
+                    _check_v1_blocked_tags(local, prop, verb, effective_blocked)
             fwd_args = dict(args)
             fwd_args.pop('a', None)
+            fwd_args.pop('__rrf_blocked_tags', None)
+            fwd_args.pop('__rrf_master_bypass', None)
             fwd_args['g'] = map_arg(int(gid))
             fwd_args['__rrf_reservation_tag'] = map_arg(dev.reservation_tag)
+            if getattr(dev, "is_master", False):
+                fwd_args['__rrf_master_bypass'] = map_arg(True)
             results = hts.handle_host_device(
                 hts.get_tunnel_registry(create=False),
                 host_id=dev.host_id,
@@ -276,9 +369,25 @@ class RpcManager:
                 )}
             return results
 
-        return self._dispatch_local_schema(function_name=function_name, args=args, gid=gid, dev=dev)
+        return self._dispatch_local_schema(
+            function_name=function_name,
+            args=args,
+            gid=gid,
+            dev=dev,
+            blocked_tags=effective_blocked,
+            reservation=reservation,
+        )
 
-    def _run_batch(self, *, function_name: str, args: dict, gid: int, dev: object) -> dict:
+    def _run_batch(
+        self,
+        *,
+        function_name: str,
+        args: dict,
+        gid: int,
+        dev: object,
+        blocked_tags: tuple[str, ...] | None = None,
+        reservation: tuple[str, str] | None = None,
+    ) -> dict:
         """Every op is checked before any runs; the first failing op (raised,
         or answered with ``a``/``Error``) stops the batch. Success returns the
         last op's results plus ``batch_done``; failure at op i returns
@@ -313,7 +422,12 @@ class RpcManager:
         for i, op in enumerate(ops):
             try:
                 results = self._dispatch_acquired(
-                    function_name=op.function_name, args=dict(op.args), gid=gid, dev=dev
+                    function_name=op.function_name,
+                    args=dict(op.args),
+                    gid=gid,
+                    dev=dev,
+                    blocked_tags=blocked_tags,
+                    reservation=reservation,
                 )
                 failure = results.get('a', results.get('Error'))
                 error = None if failure is None else str(unmap_arg(failure))
@@ -327,7 +441,16 @@ class RpcManager:
                 }
         return {**results, "batch_done": map_arg(count)}
 
-    def _run_rx_n(self, *, function_name: str, args: dict, gid: int, dev: object) -> dict:
+    def _run_rx_n(
+        self,
+        *,
+        function_name: str,
+        args: dict,
+        gid: int,
+        dev: object,
+        blocked_tags: tuple[str, ...] | None = None,
+        reservation: tuple[str, str] | None = None,
+    ) -> dict:
         """``arg1`` rx() calls back to back under the held io_lock, each exactly
         as a plain rx would run (so a Host device expands here too), stacked to
         shape (m, ...) and sent in the caller's ``wire`` encoding. A failure on
@@ -342,7 +465,12 @@ class RpcManager:
         while len(buffers) < want:
             try:
                 results = self._dispatch_acquired(
-                    function_name=rx_name, args=rx_args, gid=gid, dev=dev
+                    function_name=rx_name,
+                    args=rx_args,
+                    gid=gid,
+                    dev=dev,
+                    blocked_tags=blocked_tags,
+                    reservation=reservation,
                 )
                 buffer = None if 'Error' in results or 'rx' not in results else unmap_arg(results['rx'])
             except Exception:
@@ -395,14 +523,47 @@ class RpcManager:
             return ""
         return str(getattr(schema, "device_type", "") or "")
 
-    def _dispatch_local_schema(self, *, function_name: str, args: dict, dev: object, gid: int | None = None) -> dict:
+    def _dispatch_local_schema(
+        self,
+        *,
+        function_name: str,
+        args: dict,
+        dev: object,
+        gid: int | None = None,
+        blocked_tags: tuple[str, ...] | None = None,
+        reservation: tuple[str, str] | None = None,
+    ) -> dict:
         from contextlib import nullcontext
         from .device_manager import hardware_access
         with hardware_access.native(gid) if gid is not None else nullcontext():
-            return self._dispatch_native_schema(function_name=function_name, args=args, dev=dev, gid=gid)
+            return self._dispatch_native_schema(
+                function_name=function_name,
+                args=args,
+                dev=dev,
+                gid=gid,
+                blocked_tags=blocked_tags,
+                reservation=reservation,
+            )
 
-    def _dispatch_native_schema(self, *, function_name: str, args: dict, dev: object, gid: int | None = None) -> dict:
+    def _dispatch_native_schema(
+        self,
+        *,
+        function_name: str,
+        args: dict,
+        dev: object,
+        gid: int | None = None,
+        blocked_tags: tuple[str, ...] | None = None,
+        reservation: tuple[str, str] | None = None,
+    ) -> dict:
         _, prop, verb = function_name.split(':', 2)
+        if gid is not None and reservation is not None:
+            verify_device_reservation(gid, reservation)
+        effective_blocked = (
+            getattr(dev, "blocked_tags", ())
+            if blocked_tags is None
+            else blocked_tags
+        )
+        _check_v1_blocked_tags(dev, prop, verb, effective_blocked)
 
         if gid is not None and getattr(dev, "session_scoped", False) and getattr(dev, "device", None) is None:
             # The legacy path is about to open the hardware lazily; a Dynamic
@@ -412,6 +573,8 @@ class RpcManager:
             session_manager.close_gid(gid)
             if session_manager.cleanup_pending(gid):
                 raise RuntimeError("previous native cleanup is still in progress")
+            if reservation is not None:
+                verify_device_reservation(gid, reservation)
 
         if verb == "GET":
             result = dev.dispatch(f"get_{prop}", {})
@@ -434,7 +597,10 @@ class RpcManager:
             return {prop: map_arg(result)} if result is not None else {prop: map_arg('None')}
 
         if verb == "CALLN":
-            reserved = {"a", "g", "token", "device_id", "device_name", "wire"}
+            reserved = {
+                "a", "g", "token", "device_id", "device_name", "wire",
+                "__rrf_reservation_tag", "__rrf_blocked_tags", "__rrf_master_bypass",
+            }
             call_args = {
                 str(key): unmap_arg(value)
                 for key, value in dict(args).items()
