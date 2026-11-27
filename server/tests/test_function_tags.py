@@ -346,6 +346,12 @@ class ReservationBlockedTagsTests(unittest.TestCase):
                 CREATE TABLE FederatedReservations (
                     res_id INTEGER PRIMARY KEY
                 );
+                CREATE TABLE RetiredTokens (
+                    salt TEXT NOT NULL,
+                    hash TEXT NOT NULL,
+                    retired_at INTEGER NOT NULL,
+                    PRIMARY KEY (salt, hash)
+                );
                 """
             )
             start_s = (now - timedelta(minutes=1)).isoformat()
@@ -571,6 +577,10 @@ class ReservationBlockedTagsTests(unittest.TestCase):
             conn.execute(
                 "CREATE TABLE Reservations (res_id INTEGER PRIMARY KEY, username TEXT, "
                 "device_id INTEGER, start_time TEXT, end_time TEXT, salt TEXT, hash TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE RetiredTokens (salt TEXT NOT NULL, hash TEXT NOT NULL, "
+                "retired_at INTEGER NOT NULL, PRIMARY KEY (salt, hash))"
             )
             conn.execute(
                 "INSERT INTO Reservations VALUES (1, 'alice', 3, ?, ?, 's1', 'h1')",

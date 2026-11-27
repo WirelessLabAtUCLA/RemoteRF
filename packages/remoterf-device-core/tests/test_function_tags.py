@@ -387,6 +387,10 @@ class BuiltinDriverTagTests(unittest.TestCase):
             "call_capture_point_cloud",
             "call_capture_points",
             "call_capture_targets",
+            "call_capture_next_frame",
+            "call_capture_raw_adc",
+            "call_capture_raw_fft",
+            "call_capture_full_frame",
         }
         actual_kmd7 = {name for name, entry in kmd7._exposed.items() if "TX" in entry.policy_tags}
         self.assertEqual(actual_kmd7, expected_kmd7)

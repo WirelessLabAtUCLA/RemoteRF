@@ -16,7 +16,7 @@ from unittest import mock
 import yaml
 
 from remoteRF_server.common.grpc import grpc_host_pb2, grpc_pb2
-from remoteRF_server.common.utils import map_arg, unmap_arg
+from remoteRF_server.common.utils import generate_token, hash_token, map_arg, unmap_arg
 from remoteRF_server.server import device_manager as dm
 
 GID = 4300
@@ -61,10 +61,23 @@ class HandleTableTests(_Devices):
         for typed in ("Pluto_A", "PLUTO-a"):  # no exact match: '-' as '_', any case
             self.assertEqual(dm.find_device_id_by_handle(typed), 7, typed)
         dm._devices[8] = _state(name="RTL-SDR 00")
-        for typed in ("RTL-SDR_00", "rtl_sdr_00", "RTL_SDR 00"):
+        for typed in ("RTL-SDR_00", "rtl_sdr_00", "RTL_SDR 00", "RTL SDR 00", "RTLSDR_00", "rtlsdr00", "RTL-S-D-R 0_0"):
             self.assertEqual(dm.find_device_id_by_handle(typed), 8, typed)
-        self.assertIsNone(dm.find_device_id_by_handle("RTLSDR_00"))
+        self.assertIsNone(dm.find_device_id_by_handle("RTL-SDR 01"))
         self.assertEqual([dm._name_handle(n) for n in ("a@b", "a:b", "rfg_x", "bridge-x", " _ ")], [""] * 5)
+
+    def test_separator_stripped_match_keeps_priority_and_refuses_ambiguity(self):
+        dm._devices.update({8: _state(name="RTL-SDR 00"), 9: _state(name="RTLSDR 00")})
+        self.assertEqual(dm.find_device_id_by_handle("RTL-SDR 00"), 8)
+        self.assertEqual(dm.find_device_id_by_handle("RTLSDR 00"), 9)
+        self.assertEqual(dm.find_device_id_by_handle("rtl_sdr_00"), 8)
+        self.assertEqual(dm.find_device_id_by_handle("RTL SDR 00"), 8)
+        self.assertEqual(dm.find_device_id_by_handle("rtlsdr-00"), 9)
+        for typed in ("rtlsdr00", "RTL-S-D-R 0_0"):
+            self.assertEqual(dm.resolve_device_handle(typed), (None, True), typed)
+            self.assertIsNone(dm.find_device_id_by_handle(typed), typed)
+        dm._devices[9].handle = ""  # unannounced neighbour still blocks an ambiguous loose match
+        self.assertEqual(dm.resolve_device_handle("rtlsdr00"), (None, True))
 
     def test_duplicates_go_to_local_first_then_the_lowest_id(self):
         dm._devices.update({
@@ -340,11 +353,65 @@ class DeviceTokenExchangeTests(_Devices):
         self.assertEqual(dm.resolve_gid_for_token(reply["Token"]), GID)
         self.assertEqual(self._exchange("Pluto A")["Token"], reply["Token"])
         self.assertEqual(self._exchange("pluto-a")["Token"], reply["Token"])
+        self.assertEqual(self._exchange("plutoa")["Token"], reply["Token"])
 
     def test_anything_that_is_not_a_handle_comes_back_unchanged(self):
-        self._reserve("alice")
-        for h in ("Pluto B", "Ab3__xY9-kLm_", "bridge-1-x"):  # a miss is never rewritten
+        salt, hsh = hash_token("Ab3__xY9-kLm_")
+        self._reserve("alice", salt=salt, hsh=hsh)
+        for h in ("Ab3__xY9-kLm_", "bridge-1-x"):  # a token is never rewritten
             self.assertEqual(self._exchange(h), {"Token": h})
+
+    def test_unknown_and_ambiguous_handles_report_why(self):
+        self._reserve("alice")
+        self.assertEqual(
+            self._exchange("Pluto B"),
+            {"Token": "Pluto B", "error": "unknown_handle"},
+        )
+        dm._devices[GID + 1] = _state(name="RTL-SDR 00")
+        for typed in ("RTLSDR_00", "rtlsdr00", "RTL SDR 00"):
+            self.assertEqual(
+                self._exchange(typed),
+                {"Token": typed, "why": f"no active reservation of yours on {typed} right now"},
+                typed,
+            )
+        dm._devices[GID + 2] = _state(name="RTLSDR 00")
+        self.assertEqual(
+            self._exchange("rtlsdr00"),
+            {"Token": "rtlsdr00", "error": "ambiguous_handle"},
+        )
+        self.assertEqual(
+            self._exchange("rtl_sdr_00"),
+            {"Token": "rtl_sdr_00", "why": "no active reservation of yours on rtl_sdr_00 right now"},
+        )
+
+    def test_unknown_and_ambiguous_handles_omit_why_for_older_clients(self):
+        self._reserve("alice")
+        unknown = self._exchange("Pluto B")
+        self.assertEqual(unknown, {"Token": "Pluto B", "error": "unknown_handle"})
+        self.assertNotIn("why", unknown)
+        dm._devices[GID + 1] = _state(name="RTL-SDR 00")
+        dm._devices[GID + 2] = _state(name="RTLSDR 00")
+        ambiguous = self._exchange("rtlsdr00")
+        self.assertEqual(ambiguous, {"Token": "rtlsdr00", "error": "ambiguous_handle"})
+        self.assertNotIn("why", ambiguous)
+
+    def test_expired_and_cancelled_raw_tokens_pass_through_until_purged(self):
+        exp_salt, exp_hash, exp_token = generate_token()
+        self._reserve("alice", salt=exp_salt, hsh=exp_hash, end="2026-01-01 00:01:00")
+        self.h.update_devices()
+        self.assertEqual(self._exchange(exp_token), {"Token": exp_token})
+
+        can_salt, can_hash, can_token = generate_token()
+        res_id = self._reserve("alice", salt=can_salt, hsh=can_hash)
+        self.h.remove_reservation(res_id=res_id)
+        self.h.update_devices()
+        self.assertEqual(self._exchange(can_token), {"Token": can_token})
+
+        with sqlite3.connect(self.h.filepath) as conn:
+            conn.execute("UPDATE RetiredTokens SET retired_at = 0 WHERE salt = ?", (exp_salt,))
+        self.h.update_devices()
+        self.assertEqual(self._exchange(exp_token), {"Token": exp_token, "error": "unknown_handle"})
+        self.assertEqual(self._exchange(can_token), {"Token": can_token})
 
     def test_a_super_token_passes_through_to_the_device_plane(self):
         self._reserve("alice")  # held: only the _force form takes it over

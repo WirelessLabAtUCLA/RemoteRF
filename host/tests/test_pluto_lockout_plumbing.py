@@ -538,3 +538,45 @@ def test_tagged_v2_open_stays_in_one_hold_and_leaves_reset_to_hook(monkeypatch, 
     assert observed == [("DynamicV2:OpenSession", True), ("DynamicV2:Invoke", False)]
     reset.assert_not_called()
     assert state.reset_pending
+
+
+def test_reset_failure_is_logged_and_does_not_fail_next_holder_rpc(monkeypatch, state):
+    warn = Mock()
+    monkeypatch.setattr(dm, "warn", warn)
+    state.reset_pending = True
+    state.schema.reset_for_next_holder = Mock(side_effect=RuntimeError("serial glitch"))
+    after = state.schema.lockout_after_hook = Mock()
+    state.schema.dispatch.return_value = "ok"
+
+    out = rpc.RpcManager().run_rpc(function_name="fake:tx:CALL0", args={"g": map_arg(7)})
+
+    assert "Error" not in out
+    assert unmap_arg(out["tx"]) == "ok"
+    assert not state.reset_pending
+    after.assert_called_once_with("reset", failed=True)
+    assert any("serial glitch" in call.args[0] for call in warn.call_args_list)
+
+    # Parity with server: a failing reset still allows prepare_for_holder to run,
+    # and a failing lockout_after_hook during reset is also logged and contained.
+    from remoterf_device_core import native_lifetime
+    monkeypatch.setattr(native_lifetime, "submit_cleanup", lambda ready, run: run())
+    warn.reset_mock()
+    state.reset_pending = True
+
+    def fail_reset_lockout(kind, failed=False):
+        if kind == "reset":
+            raise RuntimeError("park failed")
+
+    after_prepare = state.schema.lockout_after_hook = Mock(side_effect=fail_reset_lockout)
+    prepare = state.schema.prepare_for_holder = Mock()
+    future = dm.prepare_reservation(7)
+    future.result(1)
+    assert not state.reset_pending
+    prepare.assert_called_once()
+    assert [c.args for c in after_prepare.call_args_list] == [("reset",), ("prepare",)]
+    assert [c.kwargs for c in after_prepare.call_args_list] == [{"failed": True}, {"failed": False}]
+    assert any(
+        "lockout cleanup failed" in call.args[0] and "park failed" in call.args[0]
+        for call in warn.call_args_list
+    )
+    assert not any("preparing gid=7 failed" in call.args[0] for call in warn.call_args_list)
