@@ -156,6 +156,10 @@ def _native_uhd_buffer(array: np.ndarray) -> np.ndarray:
     return array
 
 
+_RX_WAIT_SLICE_SEC = 0.1
+_STOP_STREAM_MODES = frozenset({"stop_cont", "stop_continuous"})
+
+
 def _sample_timeout(value: float) -> float:
     timeout = float(value)
     if not math.isfinite(timeout) or timeout < 0:
@@ -163,6 +167,31 @@ def _sample_timeout(value: float) -> float:
             "sample timeout must be finite and non-negative"
         )
     return timeout
+
+
+def _stream_cmd_mode(command: Any) -> str:
+    if isinstance(command, Mapping):
+        if "__remoterf_handle_arg__" in command:
+            return ""
+        raw_mode = command.get("stream_mode", command.get("mode", ""))
+    else:
+        raw_mode = getattr(command, "stream_mode", getattr(command, "mode", ""))
+    return str("" if raw_mode is None else raw_mode).rsplit(".", 1)[-1].lower()
+
+
+def _is_stop_stream_cmd(
+    args: Mapping[str, Any] | None,
+    positional_args: list[Any] | None,
+) -> bool:
+    if positional_args:
+        cmd = positional_args[0]
+    elif isinstance(args, Mapping):
+        cmd = args.get("stream_cmd")
+        if cmd is None:
+            cmd = args.get("rate")
+    else:
+        cmd = None
+    return _stream_cmd_mode(cmd) in _STOP_STREAM_MODES
 
 
 def _matches_wire_type(value: Any, wire_type: str) -> bool:
@@ -552,10 +581,16 @@ class HandleEntry:
     rx_recv_lock: threading.Lock = field(default_factory=threading.Lock)
     rx_prefetch_overflowed: bool = False
     rx_pending: tuple[np.ndarray, dict, int] | None = None
+    rx_stop_generation: int = 0
 
 
 @dataclass
 class DeviceSession:
+    # Lock order across this module:
+    #   session.control_lock -> entry.lock -> entry.rx_recv_lock
+    #   -> short bookkeeping (session_manager._lock / session.lifecycle_lock / hardware_access.native).
+    # Never acquire session.control_lock while holding entry.lock, entry.rx_recv_lock,
+    # or session.lifecycle_lock; never hold bookkeeping locks across native calls or waits.
     session_id: str
     token: str
     gid: int
@@ -573,6 +608,7 @@ class DeviceSession:
     cleanup_error: bool = False
     retired_handles: list = field(default_factory=list)
     created_monotonic: float = field(default_factory=time.monotonic)
+    rx_stop_generation: int = 0
     blocked_tags: tuple[str, ...] = ()
     epoch: int | None = None
     reservation_tag: str | None = None
@@ -735,6 +771,7 @@ class SessionManager:
                 except Exception:
                     pass
             live_schema = create()
+            self._inherit_freq_limits(inventory_schema, live_schema, context)
             capabilities = live_schema.build_session_metadata_v2()
             capabilities["remote_resource_limits"] = {
                 "maximum_sessions": _MAX_SESSIONS,
@@ -906,6 +943,9 @@ class SessionManager:
             )
             session.handles[handle] = entry
         if type_id.endswith("TXStreamer"):
+            mark_tx = getattr(session.schema, "mark_tx_in_flight", None)
+            if callable(mark_tx):
+                mark_tx()
             self._start_async_worker(session, entry)
         return entry
 
@@ -1062,6 +1102,67 @@ class SessionManager:
         )
         entry.rx_worker.start()
 
+    @staticmethod
+    def _inherit_freq_limits(
+        inventory_schema: Any,
+        live_schema: Any,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        inv_limits = getattr(inventory_schema, "_freq_limits", None)
+        if inv_limits is not None:
+            configure = getattr(live_schema, "configure_lockouts", None)
+            if not callable(configure):
+                raise RemoteRFPolicyError(
+                    "live device schema cannot enforce configured frequency limits"
+                )
+            configure(inv_limits)
+            if getattr(live_schema, "_freq_limits", None) != inv_limits:
+                raise RemoteRFPolicyError(
+                    "live device schema did not retain configured frequency limits"
+                )
+        if hasattr(live_schema, "lockout_bypass"):
+            live_schema.lockout_bypass = bool(
+                context.get("lockout_bypass", False) if context is not None else False
+            )
+
+    @staticmethod
+    def _sync_lockout_bypass(session: DeviceSession) -> None:
+        if hasattr(session.schema, "lockout_bypass"):
+            ctx = get_local_device_context(session.gid) or {}
+            session.schema.lockout_bypass = bool(ctx.get("lockout_bypass", False))
+
+    @staticmethod
+    def _signal_rx_stop(session: DeviceSession) -> None:
+        session.rx_stop_generation += 1
+        with session.lifecycle_lock:
+            rx_handles = [
+                h
+                for h in session.handles.values()
+                if h.type_id.endswith("RXStreamer") and not h.closed
+            ]
+        for rx_entry in rx_handles:
+            rx_entry.rx_stop_generation += 1
+            rx_entry.rx_prefetch_stop.set()
+
+    def _reset_rx_prefetch(self, session: DeviceSession) -> None:
+        with session.lifecycle_lock:
+            rx_handles = [
+                h
+                for h in session.handles.values()
+                if h.type_id.endswith("RXStreamer") and not h.closed
+            ]
+        check_rx = getattr(session.schema, "check_rx_channels", None)
+        for rx_entry in rx_handles:
+            was_running = bool(rx_entry.rx_worker and rx_entry.rx_worker.is_alive())
+            self._stop_rx_prefetch(rx_entry)
+            if was_running:
+                if callable(check_rx):
+                    try:
+                        check_rx(rx_entry.stream_channels)
+                    except RemoteRFPolicyError:
+                        continue
+                self._start_rx_prefetch(session, rx_entry)
+
     def _stop_rx_prefetch(self, entry: HandleEntry) -> None:
         entry.rx_prefetch_stop.set()
         worker = entry.rx_worker
@@ -1106,7 +1207,8 @@ class SessionManager:
 
     @contextmanager
     def admitted(self, session, entry, lock=None, *, worker=False):
-        # Lock order: per-entry/control lock -> short lifecycle bookkeeping.
+        # Lock order: session.control_lock -> entry.lock -> entry.rx_recv_lock
+        # -> short bookkeeping (self._lock, session.lifecycle_lock, hardware_access.native).
         # No manager/lifecycle lock is held across a native call or cleanup wait.
         with lock if lock is not None else nullcontext(), hardware_access.native(session.gid):
             if not worker:
@@ -1315,8 +1417,34 @@ class SessionManager:
                 raise RemoteRFProtocolError(str(exc), details={"integration_code": exc.code}, method=method_name) from None
         session = self.get(session_id)
         entry = self.get_handle(session, handle)
-        lock = session.control_lock if entry.type_id == "uhd.usrp.MultiUSRP" else entry.lock
-        with self.admitted(session, entry, lock):
+        if entry.type_id == "uhd.usrp.MultiUSRP":
+            is_stop_cmd = method_name == "issue_stream_cmd" and _is_stop_stream_cmd(
+                args, positional_args
+            )
+            if is_stop_cmd:
+                self._signal_rx_stop(session)
+            lock = None if is_stop_cmd else session.control_lock
+            with self.admitted(session, entry, lock):
+                return self._invoke_admitted(session_id, handle, method_name, args,
+                                             positional_args=positional_args, overload_id=overload_id)
+        is_rx_stop_cmd = (
+            entry.type_id.endswith("RXStreamer")
+            and method_name == "issue_stream_cmd"
+            and _is_stop_stream_cmd(args, positional_args)
+        )
+        if is_rx_stop_cmd:
+            entry.rx_stop_generation += 1
+            entry.rx_prefetch_stop.set()
+        needs_control_lock = (
+            (
+                entry.type_id.endswith("RXStreamer")
+                and method_name == "issue_stream_cmd"
+                and not is_rx_stop_cmd
+            )
+            or (entry.type_id.startswith("uhd.property.") and method_name in {"set", "set_coerced"})
+        )
+        control_lock = session.control_lock if needs_control_lock else nullcontext()
+        with control_lock, self.admitted(session, entry, entry.lock):
             return self._invoke_admitted(session_id, handle, method_name, args,
                                          positional_args=positional_args, overload_id=overload_id)
 
@@ -1360,14 +1488,52 @@ class SessionManager:
                 self._resolve_handle_argument(session, value)
                 for value in positional_args
             ]
-            with session.control_lock:
+            native_stop_cmd = (
+                method_name == "issue_stream_cmd"
+                and _is_stop_stream_cmd(native_args, native_positional)
+            )
+            if native_stop_cmd:
+                self._signal_rx_stop(session)
+            with nullcontext() if native_stop_cmd else session.control_lock:
                 try:
+                    if not native_stop_cmd:
+                        self._sync_lockout_bypass(session)
+                    if method_name == "set_tx_rate":
+                        check_rate = getattr(session.schema, "check_tx_rate_change", None)
+                        if callable(check_rate):
+                            with session.lifecycle_lock:
+                                tx_handles = [
+                                    h
+                                    for h in session.handles.values()
+                                    if h.type_id.endswith("TXStreamer")
+                                ]
+                            if tx_handles:
+                                rate_val = native_args.get(
+                                    "rate",
+                                    native_positional[0] if native_positional else None,
+                                )
+                                chan_val = native_args.get(
+                                    "chan",
+                                    native_positional[1] if len(native_positional) > 1 else None,
+                                )
+                                active_tx_channels = (
+                                    ()
+                                    if any(not h.stream_channels for h in tx_handles)
+                                    else sorted(
+                                        {
+                                            ch
+                                            for h in tx_handles
+                                            for ch in h.stream_channels
+                                        }
+                                    )
+                                )
+                                check_rate(rate_val, chan_val, active_tx_channels)
                     result = session.schema.invoke_native(
                         method_name,
                         native_args,
                         positional_args=native_positional,
                     )
-                except RemoteRFProtocolError:
+                except (RemoteRFProtocolError, RemoteRFPolicyError):
                     raise
                 except Exception as exc:
                     raise RemoteRFNativeUHDError(
@@ -1376,6 +1542,10 @@ class SessionManager:
                         uhd_version=session.capabilities.get("uhd_version", ""),
                         method=method_name,
                     ) from exc
+                if method_name in {"set_rx_freq", "set_rx_lo_freq", "recv_num_samps"}:
+                    limits = getattr(session.schema, "_freq_limits", None)
+                    if limits is not None and limits.rx.is_active:
+                        self._reset_rx_prefetch(session)
             type_id = HANDLE_RETURN_METHODS.get(method_name)
             if type_id and result is not None:
                 try:
@@ -1385,7 +1555,29 @@ class SessionManager:
                 stream_args = args.get("stream_args")
                 if stream_args is None and positional_args:
                     stream_args = positional_args[0]
-                if isinstance(stream_args, dict):
+                if type_id.endswith(("RXStreamer", "TXStreamer")):
+                    from remoterf_device_core.drivers.usrp.usrp_schema import _extract_stream_channels
+                    source = (
+                        native_args.get(
+                            "stream_args",
+                            native_positional[0] if native_positional else None,
+                        )
+                        if isinstance(stream_args, Mapping)
+                        and "__remoterf_handle_arg__" in stream_args
+                        else stream_args
+                    )
+                    child.stream_channels = _extract_stream_channels(source)
+                    unwrapped = stream_args
+                    while (
+                        isinstance(unwrapped, Mapping)
+                        and unwrapped.get("__remoterf_uhd_helper__") == "stream"
+                    ):
+                        unwrapped = unwrapped.get("stream_args")
+                    if isinstance(unwrapped, Mapping):
+                        child.cpu_format = str(unwrapped.get("cpu_format") or "")
+                    elif hasattr(source, "cpu_format"):
+                        child.cpu_format = str(getattr(source, "cpu_format") or "")
+                elif isinstance(stream_args, dict):
                     child.stream_channels = [
                         int(item) for item in stream_args.get("channels", ())
                     ]
@@ -1451,6 +1643,19 @@ class SessionManager:
             self._resolve_handle_argument(session, value)
             for value in positional_args
         ]
+        if entry.type_id.startswith("uhd.property.") and method_name in {"set", "set_coerced"}:
+            limits = getattr(session.schema, "_freq_limits", None)
+            if limits is not None and limits.is_active:
+                self._sync_lockout_bypass(session)
+                refuse = getattr(session.schema, "_freq_refuse", None)
+                message = (
+                    "Every UHD property-tree write is refused while frequency limits are active; "
+                    "normal MultiUSRP setters still work."
+                )
+                if callable(refuse):
+                    refuse(message)
+                else:
+                    raise RemoteRFPolicyError(message)
         rx_stream_command = (
             entry.type_id.endswith("RXStreamer")
             and method_name == "issue_stream_cmd"
@@ -1462,8 +1667,15 @@ class SessionManager:
                 if native_positional
                 else native_args.get("stream_cmd")
             )
-            stream_mode = str(getattr(command, "mode", "")).rsplit(".", 1)[-1].lower()
+            stream_mode = _stream_cmd_mode(command)
             self._stop_rx_prefetch(entry)
+            if stream_mode in _STOP_STREAM_MODES:
+                entry.rx_stop_generation += 1
+            else:
+                self._sync_lockout_bypass(session)
+                check_rx = getattr(session.schema, "check_rx_channels", None)
+                if callable(check_rx):
+                    check_rx(entry.stream_channels)
         with entry.lock:
             try:
                 result = target(*native_positional, **native_args)
@@ -1674,25 +1886,70 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                 entry.active_operation = ""
 
     @staticmethod
-    def _recv_prefetched(entry: HandleEntry, buffer: np.ndarray, timeout: float):
+    def _recv_prefetched(
+        entry: HandleEntry,
+        buffer: np.ndarray,
+        timeout: float,
+        *,
+        session: DeviceSession | None = None,
+    ):
+        prefetch_stop = entry.rx_prefetch_stop
+        stop_gen = (
+            entry.rx_stop_generation,
+            session.rx_stop_generation if session is not None else 0,
+        )
+
+        def _stopped(*, waiting: bool = False) -> bool:
+            if (session is not None and session.closed) or entry.closed:
+                return True
+            if session is not None and (
+                entry.rx_stop_generation,
+                session.rx_stop_generation,
+            ) != stop_gen:
+                return True
+            if session is not None or waiting:
+                return bool(
+                    prefetch_stop.is_set() or entry.rx_prefetch_stop.is_set()
+                )
+            return False
+
         deadline = time.monotonic() + timeout
         count = 0
         metadata_snapshot = {"error_code": "none"}
         while count < buffer.shape[-1]:
+            if _stopped():
+                break
             pending = entry.rx_pending
             if pending is None:
-                remaining = max(0.0, deadline - time.monotonic())
-                if count and remaining <= 0.0:
-                    break
-                try:
-                    samples, snapshot = entry.rx_prefetch.get(
-                        timeout=remaining if remaining > 0 else 0
+                while True:
+                    if _stopped():
+                        pending = None
+                        break
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if count and remaining <= 0.0:
+                        pending = None
+                        break
+                    wait = (
+                        min(remaining, _RX_WAIT_SLICE_SEC)
+                        if remaining > 0.0
+                        else 0.0
                     )
-                except queue.Empty:
-                    if count == 0:
-                        metadata_snapshot = {"error_code": "timeout"}
+                    try:
+                        samples, snapshot = entry.rx_prefetch.get(timeout=wait)
+                    except queue.Empty:
+                        if _stopped(waiting=True):
+                            pending = None
+                            break
+                        if remaining <= 0.0 or time.monotonic() >= deadline:
+                            if count == 0:
+                                metadata_snapshot = {"error_code": "timeout"}
+                            pending = None
+                            break
+                        continue
+                    pending = (samples, snapshot, 0)
                     break
-                pending = (samples, snapshot, 0)
+                if pending is None:
+                    break
 
             samples, snapshot, offset = pending
             available = samples.shape[-1] - offset
@@ -1711,11 +1968,14 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
             has_error = error_code not in {"none", "error_code_none", "timeout"}
             if count == take or has_error:
                 metadata_snapshot = dict(snapshot)
-            entry.rx_pending = (
-                (samples, snapshot, offset) if offset < samples.shape[-1] else None
-            )
-            if available <= 0:
-                entry.rx_pending = None
+            if not _stopped():
+                entry.rx_pending = (
+                    (samples, snapshot, offset)
+                    if offset < samples.shape[-1]
+                    else None
+                )
+                if available <= 0:
+                    entry.rx_pending = None
             if has_error:
                 break
 
@@ -1872,7 +2132,10 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                         raise RemoteRFProtocolError(
                             "sample_count must match the final shape dimension"
                         )
-                    if entry.stream_channels and list(request.channels) != entry.stream_channels:
+                    if (
+                        entry.stream_channels
+                        and (list(request.channels) or [0]) != entry.stream_channels
+                    ):
                         raise RemoteRFProtocolError(
                             "sample channels do not match the stream handle"
                         )
@@ -1905,67 +2168,150 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                         if not entry.type_id.endswith("RXStreamer"):
                             raise RemoteRFStaleHandleError("RX request used a non-RX handle")
                         session_manager._check_blocked_tags(session, entry.type_id, "recv")
-                        buffer = np.empty(shape, dtype=dtype)
-                        metadata = self._metadata_object(
-                            session.schema, "RXMetadata", request.metadata_json
-                        )
                         if request.one_packet:
                             raise RemoteRFProtocolError(
                                 "one_packet is not exposed by the pinned "
                                 "UHD 4.10 Python RXStreamer.recv binding"
                             )
+                        buffer = np.empty(shape, dtype=dtype)
+                        metadata = self._metadata_object(
+                            session.schema, "RXMetadata", request.metadata_json
+                        )
                         timeout = _sample_timeout(request.timeout_sec)
-                        deadline = time.monotonic() + timeout
                         count = 0
                         metadata_snapshot = snapshot_native(metadata)
-                        if entry.rx_worker and entry.rx_worker.is_alive():
-                            count, metadata_snapshot = self._recv_prefetched(
-                                entry,
-                                buffer,
-                                timeout,
-                            )
-                        else:
-                            with entry.lock, entry.rx_recv_lock, session_manager.admitted(session, entry):
-                                while count < int(request.sample_count):
-                                    remaining = max(0.0, deadline - time.monotonic())
-                                    if count and remaining <= 0.0:
-                                        break
-                                    current_metadata = (
-                                        metadata
-                                        if count == 0
-                                        else self._metadata_object(
-                                            session.schema,
-                                            "RXMetadata",
-                                            request.metadata_json,
-                                        )
+                        limits = getattr(session.schema, "_freq_limits", None)
+                        rx_limited = bool(limits is not None and limits.rx.is_active)
+                        if not rx_limited:
+                            with session.control_lock:
+                                session_manager._sync_lockout_bypass(session)
+                        # Lock order: session.control_lock (if rx_limited) -> admitted()
+                        # -> per-slice entry.lock -> entry.rx_recv_lock. Keeping admitted()
+                        # active across both branches prevents _Reaper from blocking on
+                        # control_lock, while bounded slices let CloseSession / stop_cont finish promptly.
+                        with session.control_lock if rx_limited else nullcontext():
+                            if rx_limited:
+                                session_manager._sync_lockout_bypass(session)
+                            check_rx = getattr(session.schema, "check_rx_channels", None)
+                            if callable(check_rx):
+                                check_rx(entry.stream_channels)
+                            if entry.rx_worker and entry.rx_worker.is_alive():
+                                with session_manager.admitted(session, entry):
+                                    count, metadata_snapshot = self._recv_prefetched(
+                                        entry,
+                                        buffer,
+                                        timeout,
+                                        session=session,
                                     )
-                                    target = buffer[..., count:]
-                                    received = int(
-                                        entry.value.recv(
-                                            _native_uhd_buffer(target),
-                                            current_metadata,
-                                            timeout if count == 0 else remaining,
-                                        )
+                            else:
+                                with session_manager.admitted(session, entry):
+                                    stop_gen = (
+                                        entry.rx_stop_generation,
+                                        session.rx_stop_generation,
                                     )
-                                    if received < 0 or received > target.shape[-1]:
-                                        raise RemoteRFProtocolError(
-                                            "native RX returned an invalid sample count"
+                                    deadline = time.monotonic() + timeout
+                                    remaining_budget = timeout
+                                    while count < int(request.sample_count):
+                                        if (
+                                            session.closed
+                                            or entry.closed
+                                            or (
+                                                entry.rx_stop_generation,
+                                                session.rx_stop_generation,
+                                            )
+                                            != stop_gen
+                                        ):
+                                            break
+                                        remaining = min(
+                                            remaining_budget,
+                                            max(0.0, deadline - time.monotonic()),
                                         )
-                                    current_snapshot = snapshot_native(current_metadata)
-                                    error_code = str(
-                                        current_snapshot.get("error_code", "none")
-                                    ).rsplit(".", 1)[-1].lower()
-                                    has_error = error_code not in {
-                                        "none",
-                                        "error_code_none",
-                                    }
-                                    if count == 0 or has_error:
-                                        metadata = current_metadata
-                                        metadata_snapshot = current_snapshot
-                                    count += received
-                                    if received == 0 or has_error:
-                                        break
+                                        if count and remaining <= 0.0:
+                                            break
+                                        sliced = remaining > _RX_WAIT_SLICE_SEC
+                                        slice_timeout = (
+                                            min(remaining, _RX_WAIT_SLICE_SEC)
+                                            if remaining > 0.0
+                                            else 0.0
+                                        )
+                                        current_metadata = (
+                                            metadata
+                                            if count == 0
+                                            else self._metadata_object(
+                                                session.schema,
+                                                "RXMetadata",
+                                                request.metadata_json,
+                                            )
+                                        )
+                                        target = buffer[..., count:]
+                                        slice_start = time.monotonic()
+                                        with entry.lock, entry.rx_recv_lock:
+                                            if (
+                                                session.closed
+                                                or entry.closed
+                                                or (
+                                                    entry.rx_stop_generation,
+                                                    session.rx_stop_generation,
+                                                )
+                                                != stop_gen
+                                            ):
+                                                break
+                                            received = int(
+                                                entry.value.recv(
+                                                    _native_uhd_buffer(target),
+                                                    current_metadata,
+                                                    slice_timeout,
+                                                )
+                                            )
+                                        elapsed = max(0.0, time.monotonic() - slice_start)
+                                        if received < 0 or received > target.shape[-1]:
+                                            raise RemoteRFProtocolError(
+                                                "native RX returned an invalid sample count"
+                                            )
+                                        current_snapshot = snapshot_native(current_metadata)
+                                        error_code = str(
+                                            current_snapshot.get("error_code", "none")
+                                        ).rsplit(".", 1)[-1].lower()
+                                        is_timeout = error_code in {
+                                            "timeout",
+                                            "error_code_timeout",
+                                        }
+                                        has_error = error_code not in {
+                                            "none",
+                                            "error_code_none",
+                                        }
+                                        if count == 0 or (has_error and not is_timeout):
+                                            metadata = current_metadata
+                                            metadata_snapshot = current_snapshot
+                                        count += received
+                                        if is_timeout:
+                                            remaining_budget -= max(elapsed, slice_timeout)
+                                            if (
+                                                not sliced
+                                                or remaining_budget <= 0.0
+                                                or time.monotonic() >= deadline
+                                                or session.closed
+                                                or entry.closed
+                                                or (
+                                                    entry.rx_stop_generation,
+                                                    session.rx_stop_generation,
+                                                )
+                                                != stop_gen
+                                            ):
+                                                if count == 0:
+                                                    metadata = current_metadata
+                                                    metadata_snapshot = current_snapshot
+                                                break
+                                            continue
+                                        remaining_budget -= elapsed
+                                        if received == 0 or has_error:
+                                            break
                         session_manager.get(session.session_id)
+                        session_manager.get_handle(
+                            session,
+                            entry.handle,
+                            generation=entry.generation,
+                        )
                         if count < 0 or count > int(request.sample_count):
                             raise RemoteRFProtocolError(
                                 "native RX returned an invalid sample count"
@@ -2021,7 +2367,25 @@ class SampleDataV1Servicer(grpc_pb2_grpc.SampleDataV1Servicer):
                             session.schema, "TXMetadata", request.metadata_json
                         )
                         timeout = _sample_timeout(request.timeout_sec)
-                        with entry.lock, session_manager.admitted(session, entry):
+                        limits = getattr(session.schema, "_freq_limits", None)
+                        tx_limited = bool(limits is not None and limits.tx.is_active)
+                        if not tx_limited:
+                            with session.control_lock:
+                                session_manager._sync_lockout_bypass(session)
+                        with (
+                            session.control_lock if tx_limited else nullcontext()
+                        ), entry.lock, session_manager.admitted(session, entry):
+                            if tx_limited:
+                                session_manager._sync_lockout_bypass(session)
+                            check_tx = getattr(session.schema, "check_tx_channels", None)
+                            if callable(check_tx):
+                                check_tx(entry.stream_channels)
+                            check_tx_md = getattr(session.schema, "check_tx_metadata", None)
+                            if callable(check_tx_md):
+                                check_tx_md(metadata)
+                            mark_tx = getattr(session.schema, "mark_tx_in_flight", None)
+                            if callable(mark_tx):
+                                mark_tx()
                             count = int(
                                 entry.value.send(
                                     _native_uhd_buffer(samples),

@@ -1467,6 +1467,53 @@ def test_get_temperature_reads_die_sensor_in_celsius(cls):
         assert iio[0][4] == "phy"
 
 
+@pytest.mark.parametrize("cls", [PlutoSchema, PlutoMIMOSchema])
+def test_tx_max_gain_db_snaps_to_ad9361_quarter_db_grid(cls):
+    """Hunt N3: AD9361 TX attenuation steps in 0.25 dB, so off-grid gains/caps cannot exceed the cap."""
+    assert parse_lockouts({**BAND, "tx_max_gain_db": -10.1})["tx_max_gain_db"] == -10.25
+    assert parse_lockouts({**BAND, "tx_max_gain_db": -29.9})["tx_max_gain_db"] == -30.0
+    assert parse_lockouts({**BAND, "tx_max_gain_db": -10.0})["tx_max_gain_db"] == -10.0
+
+    # Cap -10.1 dB snaps to -10.25 dB; requesting -10.1 or -10.24 (hw -10.0 dB) is refused while -10.25 passes.
+    obj = schema({**BAND, "tx_max_gain_db": -10.1}, cls=cls)
+    for bad in (-10.1, -10.24):
+        refused(
+            obj,
+            "set_tx_hardwaregain_chan0",
+            f"TX gain {bad:g} dB is above this device's limit of -10.25 dB.",
+            bad,
+        )
+    rpc(obj, "set_tx_hardwaregain_chan0", -10.25)
+    assert obj.device.tx_hardwaregain_chan0 == -10.25
+
+    # Hygiene also parks a radio whose live gain would quantize above the cap.
+    obj.device.tx_hardwaregain_chan0 = -10.1
+    obj.lockout_settle()
+    assert obj.device.tx_hardwaregain_chan0 == -89.75
+
+    # Cap -29.9 dB snaps to -30.0 dB; requesting -29.9 (hw -29.75 dB) is refused while -30.0 passes.
+    obj2 = schema({**BAND, "tx_max_gain_db": -29.9}, cls=cls)
+    refused(
+        obj2,
+        "set_tx_hardwaregain_chan0",
+        "TX gain -29.9 dB is above this device's limit of -30 dB.",
+        -29.9,
+    )
+    rpc(obj2, "set_tx_hardwaregain_chan0", -30.0)
+    assert obj2.device.tx_hardwaregain_chan0 == -30.0
+
+    # Exact grid cap -10.0 dB still allows -10.1 (hw -10.0 dB <= -10.0) and refuses -9.99 (hw -9.75 dB).
+    obj3 = schema({**BAND, "tx_max_gain_db": -10.0}, cls=cls)
+    rpc(obj3, "set_tx_hardwaregain_chan0", -10.1)
+    assert obj3.device.tx_hardwaregain_chan0 == -10.1
+    refused(
+        obj3,
+        "set_tx_hardwaregain_chan0",
+        "TX gain -9.99 dB is above this device's limit of -10 dB.",
+        -9.99,
+    )
+
+
 @pytest.mark.parametrize("stop_method", ["call_tx_destroy_buffer", "call_disable_dds"])
 def test_locked_stop_methods_after_failed_poe_power_off_require_real_power_cut(monkeypatch, stop_method):
     from remoterf_device_core.drivers.adalm_pluto import poe

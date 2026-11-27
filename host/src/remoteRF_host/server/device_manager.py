@@ -185,24 +185,50 @@ def _connect_from_record(rec: Dict[str, Any]):
         return (None, ident, dtype)
 
     pluto = any(cls.__name__ == "PlutoSchema" for cls in schema_cls.__mro__)
+    freq_driver = (
+        any(cls.__name__ in ("HackRFSchema", "UsrpSchema") for cls in schema_cls.__mro__)
+        and not any(cls.__name__ == "UsrpPhaserSchema" for cls in schema_cls.__mro__)
+        and bool(getattr(schema_cls, "supports_freq_limits", True))
+    )
     cfg = None
     try:
         from remoterf_device_core.drivers.adalm_pluto.lockout_keys import LOCKOUT_KEYS
+        from remoterf_device_core.freq_ranges import (
+            FREQ_RANGE_KEYS,
+            NON_PLUTO_LOCKOUT_KEYS,
+            parse_freq_limits,
+        )
         try:
             from remoterf_device_core.drivers.adalm_pluto.pluto_schema import parse_lockouts
         except Exception:  # no libiio: fine unless this device needs the parser
             if pluto:
                 raise
             parse_lockouts = None
-        has_keys = any(isinstance(key, str) and key.lower() in LOCKOUT_KEYS for key in init_kwargs)
-        if has_keys and not pluto:
-            raise ValueError("lockout keys require a Pluto-derived driver")
-        cfg = parse_lockouts(init_kwargs) if pluto else None
-        if cfg is not None and (
-            getattr(getattr(schema_cls, "dispatch", None), "__qualname__", "") != "PlutoSchema.dispatch"
-            or not callable(getattr(schema_cls, "configure_lockouts", None))
-        ):
-            raise ValueError("the serving driver has no lockout guard")
+        pluto_only_keys = LOCKOUT_KEYS - NON_PLUTO_LOCKOUT_KEYS
+        if not pluto:
+            has_pluto_only = any(isinstance(key, str) and key.lower() in pluto_only_keys for key in init_kwargs)
+            has_freq_keys = any(isinstance(key, str) and key.lower() in NON_PLUTO_LOCKOUT_KEYS for key in init_kwargs)
+            if has_pluto_only:
+                raise ValueError("lockout keys require a Pluto-derived driver")
+            if has_freq_keys and not freq_driver:
+                raise ValueError("frequency limit keys require a supported SDR driver (adalm_pluto, hackrf, usrp)")
+        if pluto:
+            cfg = parse_lockouts(init_kwargs)
+            if cfg is not None:
+                if (
+                    getattr(getattr(schema_cls, "dispatch", None), "__qualname__", "") != "PlutoSchema.dispatch"
+                    or not callable(getattr(schema_cls, "configure_lockouts", None))
+                ):
+                    raise ValueError("the serving driver has no lockout guard")
+                if (
+                    any(isinstance(key, str) and key.lower() in FREQ_RANGE_KEYS for key in init_kwargs)
+                    and not callable(getattr(schema_cls, "_freq_limits_for", None))
+                ):
+                    raise ValueError("the serving driver does not support frequency allow/deny range lockouts")
+        elif freq_driver:
+            cfg = parse_freq_limits(init_kwargs)
+            if cfg is not None and not callable(getattr(schema_cls, "configure_lockouts", None)):
+                raise ValueError("the serving driver has no frequency-limit guard")
     except Exception as exc:
         try:
             serving_file = inspect.getfile(schema_cls)
@@ -216,6 +242,10 @@ def _connect_from_record(rec: Dict[str, Any]):
         try:
             schema = schema_cls()
             schema.bind_inventory(init_kwargs)
+            if cfg is not None or callable(getattr(schema, "configure_lockouts", None)):
+                schema.configure_lockouts(cfg)
+                if cfg is not None:
+                    info(f"lockouts active: {rec.get('NAME') or dtype}", component="hostrf.device_manager")
             return (schema, ident, dtype)
         except Exception as e:
             warn(f"inventory binding failed for {dtype}: {e}", component="hostrf.device_manager")
@@ -236,7 +266,11 @@ def _connect_from_record(rec: Dict[str, Any]):
         try:
             schema.configure_lockouts(cfg)
         except Exception as exc:
-            warn(f"lockouts invalid on {rec.get('NAME') or dtype}: {exc}; device left offline (serving file: {inspect.getfile(schema_cls)})", component="hostrf.device_manager")
+            try:
+                serving_file = inspect.getfile(schema_cls)
+            except TypeError:
+                serving_file = schema_cls.__module__
+            warn(f"lockouts invalid on {rec.get('NAME') or dtype}: {exc}; device left offline (serving file: {serving_file})", component="hostrf.device_manager")
             return (None, ident, dtype)
         if cfg is not None:
             info(f"lockouts active: {rec.get('NAME') or dtype}", component="hostrf.device_manager")
@@ -579,6 +613,7 @@ def get_local_device_context(device_id: int) -> dict[str, Any] | None:
             "io_lock": st.io_lock,
             "epoch": st.epoch,
             "reservation_tag": st.reservation_tag,
+            "lockout_bypass": bool(st.lockout_bypass),
             "blocked_tags": st.blocked_tags,
         }
 

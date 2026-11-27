@@ -287,6 +287,36 @@ def test_multitap_coax_steps_tx_up_but_never_past_minus_10():
     assert max(fake.tx_gains_while_sending) == -10
 
 
+@pytest.mark.parametrize(
+    "init,expected_tx_los",
+    [
+        ({"multi_tap": True, "tx_allow": [[2.4e9, 2.4835e9]]}, [2_400_000_000]),
+        ({"multi_tap": True, "tx_deny": [[902e6, 928e6]]}, [400_000_000, 2_400_000_000, 3_500_000_000]),
+        ({"multi_tap": True, "tx_min_freq": 902e6, "tx_max_freq": 928e6, "tx_deny": [[914e6, 916e6]]}, []),
+    ],
+)
+def test_pluto_diag_honours_tx_allow_and_tx_deny(monkeypatch, init, expected_tx_los):
+    monkeypatch.setitem(sys.modules, "adi", types.ModuleType("adi"))
+    fake = FakePluto(coax_min_tx=-40)
+    tx_lo_writes = []
+    orig_set = fake.set
+
+    def record_set(key, value):
+        if key == "tx_lo":
+            tx_lo_writes.append(value)
+        orig_set(key, value)
+
+    fake.set = record_set
+    row, tests = run_one(state("Locked Tap", fake, "adalm_pluto"), init=init)
+    assert row["status"] == "ok", tests
+    assert tests["loopback tone"]["status"] == "skip"
+    assert tests["coax loopback"]["status"] == "skip"
+    assert fake.tx_gains_while_sending == []
+    # Exclude the final teardown restore write (2.4 GHz from initial snapshot).
+    lo_sweep_writes = tx_lo_writes[:-1]
+    assert lo_sweep_writes == expected_tx_los
+
+
 @pytest.mark.parametrize("reserved_midway,powered_down", [(False, True), (True, False)])
 def test_poe_pluto_boots_and_returns_to_standby(reserved_midway, powered_down):
     native = MagicMock(spec=PoePluto)
