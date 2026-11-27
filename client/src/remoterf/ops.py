@@ -604,6 +604,56 @@ def list_devices(s, *, deployment=None, online_only=True, type=None) -> dict:
             "notes": notes, "incomplete": incomplete}
 
 
+@_op
+def get_active_frequencies(s=None) -> list[dict]:
+    """Return active frequencies for currently reserved Plutos at this lab.
+
+    Lab logins only for now (not yet available through RemoteRF Global).
+
+    Example: ``remoterf.ops.get_active_frequencies()`` -> ``[{"device_id": 1, "handle": "Pluto_00@ucla", "name": "Pluto 00", "rx_hz": 915000000, "tx_hz": 915000000, "tx_active": True, ...}]``.
+    """
+    if s is None:
+        s = saved_session()
+    if s.home_kind != "deployment":
+        raise RemoteRFOpsError(
+            "invalid_argument",
+            "get_active_frequencies() is only available for direct lab logins for now (not through RemoteRF Global); "
+            "log in directly to your lab with `remoterf --login <lab>`.",
+        )
+    from .core.grpc_client import rpc_client
+
+    args = {"un": map_arg(s.account.username), "pw": map_arg(s.account.password)}
+    res = rpc_client(function_name="ACC:active_frequencies", args=args).results
+    if "UC" not in res:
+        if "retry_after" in res:
+            raise _rate_limited(unmap_arg(res["retry_after"]))
+        error = str(unmap_arg(res.get("ace", res.get("ACC", map_arg("Unexpected reply from the deployment.")))))
+        if "No matching server function" in error:
+            raise RemoteRFOpsError(
+                "unsupported_version",
+                "This lab server does not support active_frequencies yet; ask its administrator to upgrade.",
+            )
+        raise _deployment_error(error, where=s.home)
+    data = json.loads(unmap_arg(res["UC"]))
+    out = []
+    for d in data.get("devices", ()):
+        handle = d.get("handle")
+        full_handle = f"{handle}@{s.home}" if handle and s.home else (handle or None)
+        out.append({
+            "device_id": int(d["device_id"]),
+            "handle": full_handle,
+            "name": d.get("name"),
+            "rx_hz": d.get("rx_hz"),
+            "tx_hz": d.get("tx_hz"),
+            "tx_active": d.get("tx_active"),
+            "sample_rate": d.get("sample_rate"),
+            "rx_rf_bandwidth": d.get("rx_rf_bandwidth"),
+            "tx_rf_bandwidth": d.get("tx_rf_bandwidth"),
+            **_instant("updated_at", d.get("updated_at")),
+        })
+    return out
+
+
 def _local_zone():
     """This machine's IANA zone name, or None when it has none."""
     from zoneinfo import ZoneInfo

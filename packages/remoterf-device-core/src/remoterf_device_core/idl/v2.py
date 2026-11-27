@@ -24,9 +24,60 @@ from __future__ import annotations
 
 import json
 import keyword
+import threading
 from typing import Any, Iterable, Mapping
 
 from ..digest import schema_digest
+from .tags import normalize_tags
+
+_SCHEMA_TAGS_LOCK = threading.RLock()
+_SCHEMA_TAGS_BY_HASH: dict[str, dict[tuple[str, str], tuple[str, ...]]] = {}
+
+
+class _TaggedMethod(dict):
+    """Method descriptor dict carrying server/host-only policy tags out-of-band."""
+
+    __slots__ = ("_policy_tags",)
+
+    def __init__(self, data: Mapping[str, Any], policy_tags: tuple[str, ...]):
+        super().__init__(data)
+        self._policy_tags = tuple(policy_tags)
+
+
+class _TaggedSchema(dict):
+    """Built v2 schema dict carrying server/host-only method tags out-of-band."""
+
+    __slots__ = ("_method_policy_tags",)
+
+    def __init__(
+        self,
+        data: Mapping[str, Any],
+        method_policy_tags: Mapping[tuple[str, str], tuple[str, ...]],
+    ):
+        super().__init__(data)
+        self._method_policy_tags = dict(method_policy_tags)
+
+
+def get_schema_tags(schema_or_hash: Any) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Return server/host-only {(owner, name): policy_tags} for a v2 schema."""
+    if isinstance(schema_or_hash, _TaggedSchema):
+        return dict(schema_or_hash._method_policy_tags)
+    schema_hash = (
+        str(schema_or_hash.get("schema_hash") or "")
+        if isinstance(schema_or_hash, Mapping)
+        else str(schema_or_hash or "")
+    )
+    if not schema_hash:
+        return {}
+    with _SCHEMA_TAGS_LOCK:
+        return dict(_SCHEMA_TAGS_BY_HASH.get(schema_hash, {}))
+
+
+def get_method_tags(schema_or_hash: Any, owner: str, name: str) -> tuple[str, ...]:
+    """Return server/host-only policy tags for one v2 (owner, method_name)."""
+    if isinstance(schema_or_hash, _TaggedSchema):
+        return schema_or_hash._method_policy_tags.get((str(owner), str(name)), ())
+    return get_schema_tags(schema_or_hash).get((str(owner), str(name)), ())
 
 SCHEMA_VERSION = "2.0"
 CONTROL_PROTOCOL_VERSION = "2.0"
@@ -113,9 +164,11 @@ def method(
     availability: Mapping[str, Any] | None = None,
     policy: str | None = None,
     doc: str = "",
+    tag: Any = None,
 ) -> dict:
     if execution not in EXECUTION_KINDS:
         raise ValueError(f"unsupported execution kind: {execution!r}")
+    tags = normalize_tags(tag)
     out = {
         "name": str(name),
         "owner": str(owner),
@@ -128,6 +181,8 @@ def method(
         out["availability"] = _json_safe(dict(availability), f"availability for {name}")
     if policy:
         out["policy"] = str(policy)
+    if tags:
+        return _TaggedMethod(out, tags)
     return out
 
 
@@ -183,7 +238,9 @@ def build_schema(
     coverage: Mapping[str, str],
     deprecations: Iterable[Mapping[str, Any]] = (),
     hardware_profile_definitions: Iterable[Mapping[str, Any]] = (),
+    inherited_tags: Mapping[tuple[str, str], Iterable[str]] | None = None,
 ) -> dict:
+    method_list = list(methods)
     body = {
         "schema_version": SCHEMA_VERSION,
         "device_type": str(device_type),
@@ -199,15 +256,31 @@ def build_schema(
             "streaming": [STREAMING_PROTOCOL_VERSION],
         },
         "objects": [dict(item) for item in objects],
-        "methods": [dict(item) for item in methods],
+        "methods": [dict(item) for item in method_list],
         "errors": [dict(item) for item in errors],
         "capability_fields": [str(item) for item in capability_fields],
         "deprecations": [dict(item) for item in deprecations],
         "coverage": {str(key): str(value) for key, value in coverage.items()},
     }
     validate_schema(body)
-    body["schema_hash"] = schema_digest(body)
-    return body
+    schema_hash = schema_digest(body)
+    body["schema_hash"] = schema_hash
+    tags_by_method: dict[tuple[str, str], tuple[str, ...]] = {}
+    if inherited_tags:
+        for key, raw_tags in inherited_tags.items():
+            normalized = normalize_tags(
+                raw_tags if isinstance(raw_tags, (str, list, tuple)) else list(raw_tags)
+            )
+            if normalized:
+                tags_by_method[(str(key[0]), str(key[1]))] = normalized
+    for item in method_list:
+        item_tags = getattr(item, "_policy_tags", ())
+        if item_tags:
+            tags_by_method[(str(item["owner"]), str(item["name"]))] = tuple(item_tags)
+    if tags_by_method:
+        with _SCHEMA_TAGS_LOCK:
+            _SCHEMA_TAGS_BY_HASH[schema_hash] = dict(tags_by_method)
+    return _TaggedSchema(body, tags_by_method)
 
 
 def validate_schema(schema: Mapping[str, Any]) -> None:

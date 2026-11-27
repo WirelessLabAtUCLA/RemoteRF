@@ -131,6 +131,7 @@ class PoePluto:
             _switch={"switch": switch, "user": user, "password": password},
             _pluto=None,
             _power_off_failed=False,
+            _power_epoch=0,
             fault=None,  # message of the last failed boot; None once a boot succeeds
             _lock=threading.RLock(),
         )
@@ -142,7 +143,10 @@ class PoePluto:
         # The switch API occasionally times out; a lost power-off leaves the Pluto on.
         for attempt in range(3):
             try:
-                return set_poe(port=self._port, on=on, **self._switch)
+                res = set_poe(port=self._port, on=on, **self._switch)
+                if not on:
+                    vars(self)["_power_epoch"] = vars(self).get("_power_epoch", 0) + 1
+                return res
             except OSError:
                 if attempt == 2:
                     if not on:

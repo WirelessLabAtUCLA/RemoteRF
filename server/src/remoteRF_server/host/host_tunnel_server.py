@@ -36,6 +36,8 @@ from concurrent import futures
 
 import grpc
 
+from remoterf_device_core.idl.tags import HOST_FUNCTION_TAGS_CAPABILITY
+
 from ..common.utils.process_arg import map_arg  
 from ..common.grpc import grpc_pb2 as generic_pb2  
 from ..common.grpc import grpc_host_pb2_grpc as host_tunnel_pb2_grpc
@@ -832,6 +834,15 @@ class HostTunnelRegistry:
         with self._lock:
             return self._hosts.get(host_id)
 
+    def host_has_capability(self, host_id: str, capability: str) -> bool:
+        with self._lock:
+            sess = self._hosts.get(host_id)
+            return bool(
+                sess is not None
+                and sess.alive
+                and capability in getattr(sess, "capabilities", ())
+            )
+
     def send_control(self, host_id: str, *, kind: str, device_id: str, payload: Optional[dict] = None, drop_on_failure: bool = False) -> bool:
         with self._lock:
             sess = self._hosts.get(host_id)
@@ -1224,6 +1235,8 @@ class HostTunnelRegistry:
         rpc_req.request.CopyFrom(request)
         if "reservation_tag" not in sess.capabilities:
             rpc_req.request.args.pop("__rrf_reservation_tag", None)
+        if HOST_FUNCTION_TAGS_CAPABILITY not in sess.capabilities:
+            rpc_req.request.args.pop("__rrf_master_bypass", None)
 
         frame = host_tunnel_pb2.HostFrame(rpc_request=rpc_req)
 
@@ -1907,3 +1920,26 @@ def set_tunnel_registry(reg: "HostTunnelRegistry") -> "HostTunnelRegistry":
     with _TUNNEL_REGISTRY_LOCK:
         TUNNEL_REGISTRY = reg
     return reg
+
+
+def host_supports_function_tags(
+    host_id: str,
+    *,
+    registry: Optional["HostTunnelRegistry"] = None,
+) -> bool:
+    """Return True only when ``host_id`` has a live session advertising function-tag support."""
+    reg = registry if registry is not None else get_tunnel_registry(create=False)
+    if reg is None:
+        return False
+    checker = getattr(reg, "host_has_capability", None)
+    if callable(checker):
+        return bool(checker(host_id, HOST_FUNCTION_TAGS_CAPABILITY))
+    session_getter = getattr(reg, "session_for_host", None)
+    if not callable(session_getter):
+        return False
+    sess = session_getter(host_id)
+    return bool(
+        sess is not None
+        and getattr(sess, "alive", False)
+        and HOST_FUNCTION_TAGS_CAPABILITY in getattr(sess, "capabilities", ())
+    )

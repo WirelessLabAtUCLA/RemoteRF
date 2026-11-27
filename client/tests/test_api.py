@@ -110,7 +110,8 @@ def test_no_saved_login_propagates(monkeypatch):
 
 
 def test_nothing_reaches_stdout(session, capsys):
-    remoterf.whoami(), remoterf.list_devices(), remoterf.slots("Pluto_A"), remoterf.reservations()
+    remoterf.whoami(), remoterf.list_devices(), remoterf.get_active_frequencies(), remoterf.slots("Pluto_A")
+    remoterf.reservations()
     out = remoterf.reserve("Pluto_A", DAY.replace(hour=20).astimezone() + timedelta(days=1), minutes=60)
     remoterf.cancel(out)
     with pytest.raises(remoterf.RemoteRFOpsError):
@@ -138,3 +139,14 @@ def test_session_reload_is_shared_across_threads(monkeypatch):
     for t in threads:
         t.join()
     assert len(loads) == 1 and len(set(map(id, seen))) == 1
+
+
+def test_get_active_frequencies_exported_and_handles_global_login(session, home, monkeypatch):  # noqa: F811
+    assert remoterf.get_active_frequencies is api.get_active_frequencies
+    rows = remoterf.get_active_frequencies()
+    assert [r["handle"] for r in rows] == ["Pluto_A@ucla", "Pluto_B@ucla"]
+    assert rows[0]["rx_hz"] == 915_000_000 and rows[0]["tx_hz"] == 2_450_000_000 and rows[0]["tx_active"] is True
+
+    monkeypatch.setattr(api, "_session", home)
+    err = _code(remoterf.get_active_frequencies)
+    assert err.code == "invalid_argument" and "RemoteRF Global" in err.message

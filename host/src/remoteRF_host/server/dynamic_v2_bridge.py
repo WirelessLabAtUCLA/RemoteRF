@@ -19,6 +19,8 @@ from __future__ import annotations
 import queue
 import threading
 
+from remoterf_device_core.idl.tags import clean_blocked_tags
+
 from ..common.grpc import grpc_pb2
 from ..common.utils import map_arg, unmap_arg
 from .device_manager import make_host_bridge_token
@@ -169,21 +171,36 @@ def close_all_bridge_sessions() -> int:
         _SAMPLE_BRIDGE.close_all()
 
 
-def run_bridge(*, operation: str, args: dict, gid: int) -> dict:
+def run_bridge(
+    *,
+    operation: str,
+    args: dict,
+    gid: int,
+    blocked_tags: tuple[str, ...] = (),
+    master_bypass: bool = False,
+) -> dict:
     """Execute one serialized v2 protobuf request for a trusted server tunnel."""
+    from .dynamic_v2 import GRANT_BLOCKED_TAGS, GRANT_MASTER_BYPASS
+
     operation = str(operation or "")
     wire = _wire_arg(args)
+    token = GRANT_BLOCKED_TAGS.set(clean_blocked_tags(blocked_tags))
+    bypass_token = GRANT_MASTER_BYPASS.set(bool(master_bypass))
     try:
-        response = _dispatch(operation, wire, gid)
-    except RemoteRFError as exc:
-        # A closed session or a mismatched device is the client's to handle,
-        # typed as the servicer would type it, not an opaque tunnel failure.
-        if operation == "SampleFrame":
-            response = _SAMPLES._error_frame(grpc_pb2.SampleFrame.FromString(wire), exc)
-        elif operation in _RESPONSE_TYPES:
-            response = _RESPONSE_TYPES[operation](error=error_envelope(exc))
-        else:
-            raise
+        try:
+            response = _dispatch(operation, wire, gid)
+        except RemoteRFError as exc:
+            # A closed session or a mismatched device is the client's to handle,
+            # typed as the servicer would type it, not an opaque tunnel failure.
+            if operation == "SampleFrame":
+                response = _SAMPLES._error_frame(grpc_pb2.SampleFrame.FromString(wire), exc)
+            elif operation in _RESPONSE_TYPES:
+                response = _RESPONSE_TYPES[operation](error=error_envelope(exc))
+            else:
+                raise
+    finally:
+        GRANT_MASTER_BYPASS.reset(bypass_token)
+        GRANT_BLOCKED_TAGS.reset(token)
     return {"wire": map_arg(response.SerializeToString())}
 
 

@@ -22,6 +22,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from remoterf_device_core.idl.tags import normalize_tags
+
 from ..common.utils.panel import print_table
 from .global_onboarding import invite, lan_endpoint
 from .user_group_handler import user_group_handler
@@ -84,6 +86,10 @@ def _clusters_here() -> List[str]:
 
 def _names(raw: str) -> List[str]:
     return [] if raw.lower() == "none" else [p for p in re.split(r"[\s,]+", raw) if p]
+
+
+def _tags(raw: str) -> List[str]:
+    return list(normalize_tags(_names(raw)))
 
 def make_user_group_local(session) -> None:
     def _prompt_str(msg: str) -> Optional[str]:
@@ -182,6 +188,11 @@ def make_user_group_local(session) -> None:
     if horizon_days is None:
         return
 
+    tags_raw = _prompt_str("Blacklisted function tags (e.g. TX | Enter for none, c to cancel): ")
+    if tags_raw is None:
+        return
+    blacklisted_tags = _tags(tags_raw) if tags_raw else []
+
     # Off the LAN means through the Global relay: codes for a LAN-only group
     # cannot be redeemed there and its members cannot log in there.
     lan_only = not _prompt_yes_no("Reachable from outside your network (via Global)? (Y/n): ", default_no=False)
@@ -207,6 +218,7 @@ def make_user_group_local(session) -> None:
     print(f"  max_reservations         : {max_reservations}")
     print(f"  lifetime_sec             : {lifetime_sec}")
     print(f"  max_days_ahead           : {horizon_days or 'no limit'}")
+    print(f"  blacklisted_tags         : {', '.join(blacklisted_tags) or 'none'}")
     print(f"  lan_only                 : {'yes' if lan_only else 'no'}")
     print(f"  public                   : {'yes' if public else 'no'}")
     if partners:
@@ -224,6 +236,7 @@ def make_user_group_local(session) -> None:
         lifetime_sec=lifetime_sec,
         lan_only=lan_only,
         max_horizon_sec=horizon_days * 86400,
+        blacklisted_tags=blacklisted_tags,
     )
 
     if group_id is not None:
@@ -289,9 +302,10 @@ def list_user_groups_local(session) -> None:
 
     for group in groups:
         group["devices_whitelist"] = group.get("devices_whitelist") or "all"
+        group["blacklisted_tags"] = ", ".join(group.get("blacklisted_tags") or []) or "-"
         group["shared_with"] = ", ".join(cluster.shared_with(group["group_id"])) or "-"
     columns = [
-        "group_id", "group_name", "devices_whitelist", "max_reservation_time_sec",
+        "group_id", "group_name", "devices_whitelist", "blacklisted_tags", "max_reservation_time_sec",
         "max_reservations", "lifetime_sec", "max_horizon_sec", "lan_only", "shared_with", "created_at",
     ] + (["users"] if include_users else [])
     print_table("User groups", groups, columns, empty="No user groups found.")
@@ -409,6 +423,13 @@ def edit_user_group_local(session) -> None:
         return
     lan_only = None if lan_only_raw == "" else lan_only_raw.lower() in {"y", "yes"}
 
+    tags_raw = _prompt_raw(
+        "New blacklisted function tags (e.g. TX | none to clear | Enter unchanged, c cancel): "
+    )
+    if tags_raw is None:
+        return
+    blacklisted_tags = _tags(tags_raw) if tags_raw else None
+
     from .federation import cluster
 
     share = None  # unchanged
@@ -430,6 +451,7 @@ def edit_user_group_local(session) -> None:
         and lifetime_sec is None
         and horizon_days is None
         and lan_only is None
+        and blacklisted_tags is None
         and share is None
     ):
         print("No changes specified. Nothing to do.")
@@ -450,6 +472,7 @@ def edit_user_group_local(session) -> None:
     print(f"  lifetime_sec            : {lifetime_sec if lifetime_sec is not None else '(unchanged)'}")
     print(f"  max_days_ahead          : {(horizon_days or 'no limit') if horizon_days is not None else '(unchanged)'}")
     print(f"  lan_only                : {('yes' if lan_only else 'no') if lan_only is not None else '(unchanged)'}")
+    print(f"  blacklisted_tags        : {(', '.join(blacklisted_tags) or 'none') if blacklisted_tags is not None else '(unchanged)'}")
     print(f"  shared_with             : {(', '.join(share) or 'nothing') if share is not None else '(unchanged)'}")
 
     if not _prompt_yes_no("Proceed? (y/n): "):
@@ -463,7 +486,7 @@ def edit_user_group_local(session) -> None:
             print(f"Sharing unchanged: {exc}")
             return
     if not any(v is not None for v in (group_name, devices_whitelist, max_res_time, max_reservations,
-                                         lifetime_sec, horizon_days, lan_only)):
+                                         lifetime_sec, horizon_days, lan_only, blacklisted_tags)):
         return
 
     ok = user_group_handler.edit_user_group(
@@ -475,6 +498,7 @@ def edit_user_group_local(session) -> None:
         lifetime_sec=lifetime_sec,              # type: ignore[arg-type]
         lan_only=lan_only,
         max_horizon_sec=None if horizon_days is None else horizon_days * 86400,
+        blacklisted_tags=blacklisted_tags,
     )
 
     if ok:
@@ -805,6 +829,7 @@ def export_user_groups_csv_local() -> Optional[Path]:
         "group_id", "id",
         "group_name", "name",
         "devices_whitelist",
+        "blacklisted_tags",
         "max_reservation_time_sec",
         "max_reservations",
         "lifetime_sec",

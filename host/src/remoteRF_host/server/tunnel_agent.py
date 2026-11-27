@@ -54,6 +54,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Iterable, List, Tuple, NoReturn
 
+from remoterf_device_core.idl.tags import BLOCK_ALL_TAG, HOST_FUNCTION_TAGS_CAPABILITY
+
 from ..common.utils import device_name_key, get_devices_config_path, get_host_config_dir
 from ..common.utils.host_logging import error, exception, info, status, warn
 from ..common.grpc import grpc_host_pb2 as host_pb2
@@ -155,6 +157,7 @@ try:
     from .device_manager import (  # type: ignore
         end_reservation,
         get_configured_devices,
+        get_device,
         get_device_schema,
         prepare_reservation,
         reload_devices,
@@ -162,6 +165,7 @@ try:
 except Exception:
     end_reservation = None
     get_configured_devices = None
+    get_device = None
     get_device_schema = None
     prepare_reservation = None
     reload_devices = None
@@ -655,6 +659,8 @@ class HostTunnelAgent:
 
         if hasattr(hello, "capabilities"):
             hello.capabilities.append("reservation_tag")
+            hello.capabilities.append("active_frequencies")
+            hello.capabilities.append(HOST_FUNCTION_TAGS_CAPABILITY)
 
         direct = getattr(self, "_direct_host", None)
         if direct is not None and hasattr(hello, "capabilities") and hasattr(hello, "tls_public_key"):
@@ -977,6 +983,9 @@ class HostTunnelAgent:
                 name=f"direct_offer_{str(getattr(ctl, 'req_id', ''))[:16]}",
             ).start()
             return
+        if kind == "active_frequencies":
+            self._handle_active_frequencies(ctl)
+            return
         if kind == "grant":
             direct = getattr(self, "_direct_host", None)
             if direct is None:
@@ -1010,8 +1019,25 @@ class HostTunnelAgent:
                 resync = payload.get("resync", False) is True
             except Exception as exc:
                 warn(f"Invalid {kind} payload: {exc}", component="hostrf.tunnel_agent")
-                bypass, tag, resync = False, "", False
-            prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
+                bypass, tag, resync, blocked_tags = False, "", False, (BLOCK_ALL_TAG,)
+            else:
+                blocked_tags = ()
+                if "blocked_tags" in payload:
+                    raw_tags = payload["blocked_tags"]
+                    if isinstance(raw_tags, list) and all(
+                        isinstance(item, str) and item.strip() for item in raw_tags
+                    ):
+                        blocked_tags = tuple(item.strip() for item in raw_tags)
+                    else:
+                        warn(
+                            f"Invalid {kind} blocked_tags: {raw_tags!r}",
+                            component="hostrf.tunnel_agent",
+                        )
+                        blocked_tags = (BLOCK_ALL_TAG,)
+            if blocked_tags:
+                prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync, blocked_tags=blocked_tags)
+            else:
+                prepare_reservation(gid, bypass=bypass, tag=tag, resync=resync)  # queued: the boot runs off this loop
             info(f"Reservation started on device {gid}: preparing device.", component="hostrf")
             return
         try:
@@ -1069,6 +1095,50 @@ class HostTunnelAgent:
         if not queued:
             warn(f"Could not queue direct answer req_id={req_id}", component="hostrf.tunnel_agent")
 
+    def _live_device_for_gid(self, gid: int):
+        if not callable(get_device):
+            return None
+        return get_device(id=gid)
+
+    def _handle_active_frequencies(self, ctl) -> None:
+        req_id = str(getattr(ctl, "req_id", "") or "")
+        if not req_id:
+            return
+        try:
+            payload = json.loads(str(ctl.payload)) if ctl.payload else {}
+            if not isinstance(payload, dict):
+                raise ValueError("payload is not an object")
+            raw_ids = payload.get("device_ids")
+            if raw_ids is None:
+                gids = sorted(self._devices)
+            elif isinstance(raw_ids, list):
+                gids = []
+                for item in raw_ids:
+                    if isinstance(item, bool):
+                        continue
+                    try:
+                        gid = int(item)
+                    except (TypeError, ValueError):
+                        continue
+                    if gid in self._devices:
+                        gids.append(gid)
+            else:
+                raise ValueError("device_ids must be a list")
+            devices: Dict[str, Any] = {}
+            for gid in gids:
+                schema = self._live_device_for_gid(gid)
+                report = getattr(type(schema), "active_frequencies", None) if schema is not None else None
+                if callable(report):
+                    devices[str(gid)] = report(schema)
+            response = {"devices": devices}
+        except Exception as exc:
+            response = {"error": str(exc)}
+        queued = self._enqueue(host_pb2.HostFrame(control=host_pb2.Control(
+            kind="active_frequencies", req_id=req_id, payload=json.dumps(response),
+        )), timeout=0.1)
+        if not queued:
+            warn(f"Could not queue active_frequencies req_id={req_id}", component="hostrf.tunnel_agent")
+
     # -------- rpc execution --------
 
     def _override_token_for_gid(self, args_map: Any, gid_s: str) -> None:
@@ -1113,6 +1183,10 @@ class HostTunnelAgent:
 
             # self._override_token_for_gid(args_map, gid_s)
 
+            try:
+                args_map.pop("__rrf_blocked_tags", None)
+            except Exception:
+                pass
             try:
                 args_map["gid"].CopyFrom(_argument_string(gid_s))
             except Exception:
@@ -1164,7 +1238,7 @@ class HostTunnelAgent:
             self._consume_cancel(req_id)
 
     def _run_direct_call(self, gid: int, greq, expected_epoch=None) -> Dict[str, Any]:
-        excluded = {"a", "token", "device_name", "g", "gid", "device_id"}
+        excluded = {"a", "token", "device_name", "g", "gid", "device_id", "__rrf_master_bypass"}
         args_map = {
             str(key): value
             for key, value in greq.args.items()

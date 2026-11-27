@@ -100,6 +100,16 @@ def lab(monkeypatch):
 
     def rpc(*, function_name, args):
         calls.append(function_name)
+        if function_name == "ACC:active_frequencies":
+            return _r({"UC": json.dumps({"now": int(DAY.timestamp()), "devices": [
+                {"device_id": 3, "handle": "Pluto_A", "name": "Pluto SDR",
+                 "rx_hz": 915_000_000, "tx_hz": 2_450_000_000, "tx_active": True,
+                 "sample_rate": 2_000_000, "rx_rf_bandwidth": 1_500_000, "tx_rf_bandwidth": None,
+                 "updated_at": int(DAY.timestamp()) + 120},
+                {"device_id": 5, "handle": "Pluto_B", "name": "Pluto B",
+                 "rx_hz": None, "tx_hz": None, "tx_active": False,
+                 "sample_rate": None, "rx_rf_bandwidth": None, "tx_rf_bandwidth": None,
+                 "updated_at": None}]})})
         return _r({"UC": json.dumps({"interval": 10, "devices": [
             {"local_device_id": "3", "display_name": "Pluto SDR", "handle": "Pluto_A", "device_type": "pluto",
              "online": True, "state": "free", "until": None, "next": int(DAY.timestamp()) + 3600},
@@ -478,7 +488,7 @@ def test_device_api_keeps_lab_text_out_of_code(lab, monkeypatch):
 
 
 def test_nothing_reaches_stdout(lab, home, monkeypatch, capsys):
-    ops.whoami(lab), ops.list_devices(lab), ops.find_slots(lab, "Pluto_A@ucla", now=DAY)
+    ops.whoami(lab), ops.list_devices(lab), ops.get_active_frequencies(lab), ops.find_slots(lab, "Pluto_A@ucla", now=DAY)
     ops.reserve(lab, "Pluto_A@ucla", DAY.replace(hour=20), DAY.replace(hour=21), reveal_token=True)
     ops.list_reservations(home), ops.reserve(home, "Pluto_01@ucla", DAY, DAY.replace(hour=1)), ops.cancel(home, f"{DEP}:10")
     with pytest.raises(ops.RemoteRFOpsError):
@@ -494,12 +504,72 @@ def test_nothing_reaches_stdout(lab, home, monkeypatch, capsys):
     assert "Invalid login credentials." in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("typed", ["Pluto_A@ucla", "pluto-a@ucla", "PLUTO A@ucla"])
+@pytest.mark.parametrize("typed", ["Pluto_A@ucla", "pluto-a@ucla", "PLUTO A@ucla", "PlutoA@ucla", "plutoa@ucla"])
 def test_a_lab_handle_resolves_leniently_without_an_exact_match(lab, typed):
     assert ops._resolve(lab, typed)[0] == "Pluto_A@ucla"
 
 
 def test_a_global_handle_resolves_leniently_without_an_exact_match(home):
     assert ops._resolve(home, "PLUTO-01@ucla")[0] == "Pluto_01@ucla"
+    assert ops._resolve(home, "Pluto01@ucla")[0] == "Pluto_01@ucla"
     with pytest.raises(ops.RemoteRFOpsError):
-        ops._resolve(home, "Pluto01@ucla")
+        ops._resolve(home, "Pluto02@ucla")
+
+
+def test_separator_folding_and_ambiguity_in_ops_resolve(home):
+    devices = [{"device_id": REF, "deployment_id": DEP, "deployment_name": "ucla", "local_device_id": "1",
+                "display_name": "RTL-SDR 00", "device_type": "rtl_sdr", "online": True, "handle": "RTL-SDR_00",
+                "max_reservation_time_sec": 1800}]
+    home.account.backend.devices = lambda: {"devices": devices, "destinations": []}
+    for typed in ("RTLSDR_00@ucla", "rtlsdr00@ucla", "RTL SDR 00@ucla"):
+        assert ops._resolve(home, typed)[0] == "RTL-SDR_00@ucla"
+    devices.append({**devices[0], "device_id": f"{DEP}:2", "local_device_id": "2",
+                    "display_name": "RTLSDR 00", "handle": "RTLSDR_00"})
+    assert ops._resolve(home, "rtl_sdr_00@ucla")[0] == "RTL-SDR_00@ucla"
+    assert ops._resolve(home, "rtlsdr-00@ucla")[0] == "RTLSDR_00@ucla"
+    with pytest.raises(ops.RemoteRFOpsError):
+        ops._resolve(home, "rtlsdr00@ucla")
+
+
+def test_get_active_frequencies_returns_reserved_plutos_and_defaults_to_saved_session(lab, monkeypatch):
+    rows = ops.get_active_frequencies(lab)
+    assert len(rows) == 2
+    first, second = rows
+    assert first["device_id"] == 3 and first["handle"] == "Pluto_A@ucla" and first["name"] == "Pluto SDR"
+    assert (first["rx_hz"], first["tx_hz"], first["tx_active"], first["sample_rate"]) == (
+        915_000_000, 2_450_000_000, True, 2_000_000)
+    assert first["rx_rf_bandwidth"] == 1_500_000 and first["tx_rf_bandwidth"] is None
+    assert first["updated_at_ts"] == int(DAY.timestamp()) + 120 and first["updated_at"].endswith("Z")
+    assert second["handle"] == "Pluto_B@ucla" and second["rx_hz"] is None and second["tx_hz"] is None
+    assert second["tx_active"] is False and second["updated_at"] is None and second["updated_at_ts"] is None
+
+    monkeypatch.setattr(ops, "saved_session", lambda: lab)
+    assert ops.get_active_frequencies() == rows
+    assert "RemoteRF Global" in (ops.get_active_frequencies.__doc__ or "")
+    assert "get_active_frequencies()" in (ops.get_active_frequencies.__doc__ or "")
+
+
+def test_get_active_frequencies_refuses_global_login_and_old_or_expired_lab(lab, home, monkeypatch):
+    with pytest.raises(ops.RemoteRFOpsError) as raised:
+        ops.get_active_frequencies(home)
+    assert raised.value.code == "invalid_argument"
+    assert "RemoteRF Global" in raised.value.message
+
+    monkeypatch.setattr(grpc_client, "rpc_client", lambda **kw: _r({"ace": "No matching server function"}))
+    with pytest.raises(ops.RemoteRFOpsError) as raised:
+        ops.get_active_frequencies(lab)
+    assert raised.value.code == "unsupported_version"
+
+    monkeypatch.setattr(grpc_client, "rpc_client", lambda **kw: _r({"ace": "Invalid login credentials."}))
+    with pytest.raises(ops.RemoteRFOpsError) as raised:
+        ops.get_active_frequencies(lab)
+    assert raised.value.code == "session_expired"
+
+    monkeypatch.setattr(
+        grpc_client,
+        "rpc_client",
+        lambda **kw: _r({"ace": "Too many active frequencies requests; try again in 7 s.", "retry_after": 7}),
+    )
+    with pytest.raises(ops.RemoteRFOpsError) as raised:
+        ops.get_active_frequencies(lab)
+    assert (raised.value.code, raised.value.retry_after) == ("rate_limited", 7)
