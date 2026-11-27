@@ -79,6 +79,14 @@ class ControlSocketTests(unittest.TestCase):
             self.assertEqual(oct(self.path.stat().st_mode & 0o777), "0o600")
         self.assertFalse(self.path.exists())
 
+    def test_a_server_that_accepts_but_never_answers_counts_as_running(self):
+        import socket
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(srv.close)
+        srv.bind(str(self.path))
+        srv.listen(1)
+        self.assertTrue(control.running(self.path))
+
 
 class TwoDoorsTests(unittest.TestCase):
     def setUp(self):

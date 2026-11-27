@@ -106,11 +106,11 @@ def _table() -> list[Command]:
         # ---- server ----
         Command(("help", "h", "?"), "This list", _lazy(".commands", "cmd_help"), "Server"),
         Command(("status",), "What the server is doing", _daemon("cmd_status"), "Server", where=D),
-        Command(("restart",), "Restart the server", _daemon("cmd_restart"), "Server", where=D),
+        Command(("restart",), "Restart the server: restart [--safe [--within M] [--max-wait M] | --check [--within M]]", _daemon("cmd_restart"), "Server", where=D),
         Command(("stop", "quit", "exit", "q", "kill"), "Stop the server", _daemon("cmd_stop"), "Server", where=D),
         Command(("detach",), "Leave the console; the server keeps running", _daemon("cmd_detach"), "Server", where=D, console_only=True),
         Command(("clear", "cls"), "Clear the screen", _daemon("cmd_clear"), "Server", where=D, console_only=True),
-        Command(("reload devices",), "", _daemon("cmd_reload_devices"), "Server", where=D, hidden=True),
+        Command(("reload devices",), "Reload local devices: reload devices [--safe [--within M] [--max-wait M] | --check [--within M]]", _daemon("cmd_reload_devices"), "Server", where=D, hidden=True),
         # ---- devices ----
         Command(("devices list",), "Devices, with the host each is on", _shell("cmd_devices_list"), "Devices"),
         Command(("devices add",), "Add a device: guided (any type; Pluto USB/IP/PoE), or devices add <type> <name> --serial S [-y]; -h for all forms", _shell("cmd_devices_add"), "Devices", after="reload_devices"),
@@ -245,6 +245,15 @@ _SECTION_BLURB = {
     "Remote admin": "admins who reach this console from anywhere",
 }
 
+_SECTION_NOTES = {
+    "Server": (
+        "For upgrades or maintenance, use `restart --safe` (or `reload devices --safe`) "
+        "to wait until no reservation is live or starting soon. A plain `restart` disrupts "
+        "users mid-session (in-flight calls, Dynamic v2 sessions, and direct paths drop, "
+        "and local devices reopen or power-cycle), while reservations survive in the database."
+    ),
+}
+
 
 def _visible(in_daemon: bool) -> list[Command]:
     return [c for c in commands() if not c.hidden and (in_daemon or not c.console_only)]
@@ -300,6 +309,12 @@ def cmd_help(argv: list[str]) -> int:
             return 2
         rows = [c for c in _visible(_IN_DAEMON) if c.section == section]
         lines = [_SECTION_BLURB.get(section, ""), ""] + _columns([(prefix + c.names[0], c.help) for c in rows])
+        note = _SECTION_NOTES.get(section)
+        if note:
+            from ..common.utils.panel import MAX_CONTENT_WIDTH, MIN_CONTENT_WIDTH, _terminal_columns
+
+            width = max(MIN_CONTENT_WIDTH, min(MAX_CONTENT_WIDTH, _terminal_columns() - 4))
+            lines += ["", *textwrap.wrap(note, width)]
         print_panel(section, lines, literal=True)
         return 0
     lines: list[str] = []
@@ -337,10 +352,98 @@ def dispatch(argv: list[str], *, in_daemon: bool) -> int:
     return rc
 
 
+def _run_safe_in_daemon(command: Command, rest: list[str], handle_not_running: Callable[[], int]) -> int:
+    from . import safe_restart
+
+    action = command.names[0]
+    opts, error = safe_restart.parse_args(rest, action=action)
+    if error is not None or opts is None:
+        print(f"ERROR: {error}", file=sys.stderr, flush=True)
+        return 2
+    if opts.help:
+        print(safe_restart.usage_text(action), flush=True)
+        return 0
+    if opts.check:
+        return safe_restart.check_safe(action=action, within_minutes=opts.within_minutes)
+    timeout = 120.0 if action == "reload devices" else 30.0
+    if not opts.safe:
+        if not control.running():
+            return handle_not_running()
+        reply = control.call(action.split(), timeout=timeout)
+        if reply is None:
+            print("The server stopped answering.", file=sys.stderr)
+            return 1
+        rc, out = reply
+        sys.stdout.write(out)
+        return rc
+
+    if not control.running():
+        return handle_not_running()
+
+    mono_fn = safe_restart._make_monotonic(safe_restart._now)
+    deadline_mono = mono_fn() + opts.max_wait_minutes * 60.0
+    verify_args = ["--safe", "--within", str(opts.within_minutes), "--max-wait", "0"]
+    retrying_after_busy = False
+    last_busy_out = ""
+
+    while True:
+        before_mono = mono_fn()
+        rc = safe_restart.wait_until_safe(
+            action=action,
+            within_minutes=opts.within_minutes,
+            max_wait_minutes=opts.max_wait_minutes,
+            monotonic=mono_fn,
+            deadline_mono=deadline_mono,
+        )
+        if rc != 0:
+            return rc
+        # After a busy reply, back off unless our own wait already spent a poll interval.
+        if retrying_after_busy and mono_fn() - before_mono < safe_restart.POLL_INTERVAL_SECONDS:
+            remaining = deadline_mono - mono_fn()
+            if remaining <= 0.0:
+                if last_busy_out:
+                    sys.stderr.write(last_busy_out)
+                    sys.stderr.flush()
+                else:
+                    print(
+                        f"Timed out after {opts.max_wait_minutes} min: server reported busy; "
+                        f"{safe_restart._aborted_action_noun(action)}.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                return 1
+            try:
+                safe_restart._sleep(min(safe_restart.POLL_INTERVAL_SECONDS, remaining))
+            except KeyboardInterrupt:
+                print(f"\nAborted; {safe_restart._aborted_action_noun(action)}.", file=sys.stderr, flush=True)
+                return 130
+            retrying_after_busy = False
+            continue
+        retrying_after_busy = False
+        reply = control.call([*action.split(), *verify_args], timeout=timeout)
+        if reply is None:
+            if not control.running():
+                return handle_not_running()
+            print("The server stopped answering.", file=sys.stderr)
+            return 1
+        rc, out = reply
+        if rc == safe_restart.BUSY_EXIT_CODE:
+            last_busy_out = out
+            retrying_after_busy = True
+            continue
+        if rc != 0:
+            if out:
+                sys.stderr.write(out)
+                sys.stderr.flush()
+            return rc
+        sys.stdout.write(out)
+        return 0
+
+
 def _run_in_daemon(command: Command, rest: list[str]) -> int:
     from . import console
 
-    if not control.running():
+    def _handle_not_running() -> int:
         if command.names[0] == "restart":
             from .global_onboarding import cfg_dir
 
@@ -349,6 +452,11 @@ def _run_in_daemon(command: Command, rest: list[str]) -> int:
             return 0 if ok else 1
         print("The server is not running. Start it with: serverrf -s", file=sys.stderr)
         return 1
+
+    if command.names[0] in ("restart", "reload devices") and rest:
+        return _run_safe_in_daemon(command, rest, _handle_not_running)
+    if not control.running():
+        return _handle_not_running()
     remote = bool(os.environ.get("REMOTERF_REMOTE_ADMIN"))
     if command.console_only and remote:
         print(f"`{command.names[0]}` works only at the lab console.", file=sys.stderr)
