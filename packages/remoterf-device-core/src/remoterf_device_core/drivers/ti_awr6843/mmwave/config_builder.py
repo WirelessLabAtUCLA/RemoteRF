@@ -5,6 +5,7 @@ Translates human-readable radar settings and presets into valid
 TI mmWave SDK command scripts without requiring users to hand-edit .cfg files.
 """
 
+import math
 import os
 from typing import List, Optional
 
@@ -45,6 +46,15 @@ PRESETS = {
         "sensitivity": "medium",
         "min_range": 0.50,
         "max_range": 10.0,
+    },
+    "heatmap": {
+        "description": "Range-azimuth static heatmap (TLV 4 enabled, 6.67 FPS, 3D mode)",
+        "mode": "3d",
+        "clutter_removal": False,
+        "fps": 6.67,
+        "sensitivity": "medium",
+        "min_range": 0.0,
+        "max_range": 8.92,
     },
 }
 
@@ -90,17 +100,28 @@ def build_config(
     # Defaults if not covered
     target_mode = settings.get("mode", "3d")
     target_clutter = settings.get("clutter_removal", False)
-    target_fps = settings.get("fps", 10.0)
+    target_fps = float(settings.get("fps", 10.0))
     target_sensitivity = settings.get("sensitivity", "medium")
-    target_min_r = settings.get("min_range", 0.25)
-    target_max_r = settings.get("max_range", 8.0)
+    target_min_r = float(settings.get("min_range", 0.25))
+    target_max_r = float(settings.get("max_range", 8.0))
+
+    if not (math.isfinite(target_fps) and target_fps > 0):
+        raise ValueError(f"FPS must be a finite positive number, got {target_fps!r}")
+    if not (math.isfinite(target_min_r) and target_min_r >= 0):
+        raise ValueError(f"min_range must be a finite non-negative number, got {target_min_r!r}")
+    if not (math.isfinite(target_max_r) and target_max_r > target_min_r):
+        raise ValueError(f"max_range ({target_max_r}) must be finite and greater than min_range ({target_min_r})")
+    if preset == "heatmap" and target_mode != "3d":
+        raise ValueError("Preset 'heatmap' requires mode='3d'")
 
     # Determine base template file
     if base_config_path and os.path.isfile(base_config_path):
         template_file = base_config_path
     else:
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if target_mode == "2d":
+        if preset == "heatmap":
+            template_file = os.path.join(root_dir, "configs", "awr6843_heatmap_default.cfg")
+        elif target_mode == "2d":
             template_file = os.path.join(root_dir, "configs", "awr6843_2d_default.cfg")
         else:
             template_file = os.path.join(root_dir, "configs", "awr6843_3d_default.cfg")

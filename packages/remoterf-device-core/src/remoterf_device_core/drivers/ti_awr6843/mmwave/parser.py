@@ -204,16 +204,13 @@ class TLVParser:
 
             elif tlv_type == MMWDEMO_OUTPUT_MSG_AZIMUT_STATIC_HEAT_MAP:
                 # Array of complex16 numbers: [Im0, Re0, Im1, Re1, ...]
-                # Each sample is 4 bytes (int16 imaginary, int16 real)
-                raw_samples = np.frombuffer(payload, dtype=np.int16)
-                if len(raw_samples) >= 2:
+                # Each range bin is 8 virtual azimuth antennas * 4 bytes (int16 Im, int16 Re) = 32 bytes.
+                if len(payload) >= 32 and len(payload) % 32 == 0:
+                    raw_samples = np.frombuffer(payload, dtype=np.int16)
                     imag = raw_samples[0::2].astype(np.float32)
                     real = raw_samples[1::2].astype(np.float32)
                     c_data = real + 1j * imag
-                    # Reshape to (num_range_bins, 8 virtual azimuth antennas);
-                    # any other length is not a heatmap this decoder understands.
-                    if len(c_data) % 8 == 0:
-                        frame.azimuth_static_heatmap = c_data.reshape(-1, 8)
+                    frame.azimuth_static_heatmap = c_data.reshape(-1, 8)
 
             offset = payload_end
 
